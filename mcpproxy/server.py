@@ -6,6 +6,11 @@ from fastmcp import FastMCP as FastMCPServer
 from fastmcp.server.providers.proxy import ProxyClient
 from fastmcp.client.transports import StreamableHttpTransport
 
+import base64
+
+from fastmcp.utilities.types import Image
+
+from optimizers.image import vt_object_store
 from .resilient import ResilientFastMCPProxy
 
 logger = logging.getLogger("voitta-desktop.mcp")
@@ -95,6 +100,26 @@ def run_mcp_proxy(app_ref, port: int, jira_mcp_port: int):
         name="jira",
     )
     main_server.mount(jira_proxy, prefix="jira")
+
+    @main_server.tool()
+    def get_vt_object(hash: str) -> Image | str:
+        """Retrieve a previously removed image or object by its hash."""
+        obj = vt_object_store.get(hash)
+        if obj is None:
+            return f"No object found for hash {hash}"
+
+        if obj["type"] == "image":
+            item = obj["data"]
+            src = item.get("source", {})
+            raw = base64.b64decode(src.get("data", ""))
+            media_type = src.get("media_type", "image/png")
+            fmt = media_type.split("/")[-1] if "/" in media_type else "png"
+            return Image(data=raw, format=fmt)
+
+        if obj["type"] == "bash":
+            return obj["data"]
+
+        return f"Unknown object type: {obj['type']}"
 
     logger.info("FastMCP proxy on http://127.0.0.1:%d/mcp", port)
     logger.info("  RAG -> %s", app_ref.voitta_rag_url)

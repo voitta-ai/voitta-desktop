@@ -1,4 +1,4 @@
-"""ImageOptimizer — strips images from older conversation turns, caches them for retrieval."""
+"""ImageOptimizer — strips images from older conversation turns, stores them by hash."""
 
 import hashlib
 
@@ -6,30 +6,22 @@ from . import BaseOptimizer, image_tokens
 
 IMAGE_KEEP_TURNS = 5
 
-# Tool definition injected when cached images exist
-IMAGE_RETRIEVAL_TOOL = {
-    "name": "voitta_proxy_get_image",
-    "description": (
-        "Retrieve a previously seen image that was removed from context to save tokens. "
-        "Call this when you need to re-examine an image referenced by its hash."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "image_hash": {
-                "type": "string",
-                "description": "The hash identifier of the image to retrieve.",
-            }
-        },
-        "required": ["image_hash"],
-    },
-}
+# Global hash→object store shared with the MCP get_vt_object tool.
+# Each entry: {"type": "image"|..., "data": <original content block>}
+vt_object_store: dict[str, dict] = {}
 
 
 def _image_hash(item: dict) -> str:
     """Compute a short hash from image data."""
     data = item.get("source", {}).get("data", "")
     return hashlib.sha256(data[:4096].encode()).hexdigest()[:12]
+
+
+def _store_image(item: dict) -> str:
+    """Store an image block in the global store and return its hash."""
+    img_hash = _image_hash(item)
+    vt_object_store[img_hash] = {"type": "image", "data": item}
+    return img_hash
 
 
 def _image_placeholder(item: dict, img_hash: str) -> dict:
@@ -42,7 +34,7 @@ def _image_placeholder(item: dict, img_hash: str) -> dict:
         "type": "text",
         "text": (
             f"[image removed — {media_type}, ~{raw_kb:.0f} KB. "
-            f'To see this image, call voitta_proxy_get_image(image_hash="{img_hash}")]'
+            f'Use MCP tool get_vt_object(hash="{img_hash}") to retrieve this image]'
         ),
     }
 
@@ -50,27 +42,12 @@ def _image_placeholder(item: dict, img_hash: str) -> dict:
 class ImageOptimizer(BaseOptimizer):
     """Strips images from older conversation turns to reduce context size.
 
-    Removed images are cached by hash and can be retrieved via
-    the voitta_proxy_get_image tool.
+    Removed images are stored by hash in the module-level vt_object_store
+    and can be retrieved via the get_vt_object MCP tool.
     """
 
     def __init__(self, keep_turns: int = IMAGE_KEEP_TURNS):
         super().__init__(keep_turns=keep_turns)
-        self.image_cache: dict[str, dict] = {}
-
-    def get_cached_image(self, img_hash: str) -> dict | None:
-        """Return the original image block for the given hash, or None."""
-        return self.image_cache.get(img_hash)
-
-    @property
-    def has_cached_images(self) -> bool:
-        return bool(self.image_cache)
-
-    def _cache_image(self, item: dict) -> str:
-        """Store an image block and return its hash."""
-        img_hash = _image_hash(item)
-        self.image_cache[img_hash] = item
-        return img_hash
 
     def _optimize(self, messages: list, threshold_msg_idx: int) -> int:
         tokens_removed = 0
@@ -91,7 +68,7 @@ class ImageOptimizer(BaseOptimizer):
 
                 if item.get("type") == "image":
                     tokens_removed += image_tokens(item)
-                    img_hash = self._cache_image(item)
+                    img_hash = _store_image(item)
                     new_content.append(_image_placeholder(item, img_hash))
 
                 elif item.get("type") == "tool_result":
@@ -101,7 +78,7 @@ class ImageOptimizer(BaseOptimizer):
                         for b in rc:
                             if isinstance(b, dict) and b.get("type") == "image":
                                 tokens_removed += image_tokens(b)
-                                img_hash = self._cache_image(b)
+                                img_hash = _store_image(b)
                                 new_rc.append(_image_placeholder(b, img_hash))
                             else:
                                 new_rc.append(b)

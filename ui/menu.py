@@ -3,6 +3,7 @@
 Auth section on top, conversations below. Dog icon in the menu bar.
 Two background servers: LLM proxy (aiohttp) and MCP proxy (FastMCP).
 """
+# Main UI module: manages menu bar interactions and background server lifecycle
 
 import asyncio
 import atexit
@@ -42,7 +43,8 @@ from config import (
 )
 from middleware import ConversationTracker, RequestLogger, BlockType, Turn
 from optimizers import OptimizerPipeline
-from optimizers.image import ImageOptimizer, IMAGE_KEEP_TURNS
+from optimizers.bash import BashOptimizer
+from optimizers.image import ImageOptimizer
 from optimizers.file_read import FileReadOptimizer
 from optimizers.thinking import ThinkingOptimizer
 from proxy import AnthropicProxy
@@ -158,9 +160,10 @@ class VoittaDesktopApp(rumps.App):
         self._tracker = ConversationTracker()
         self._request_logger = RequestLogger()
         self._image_optimizer = ImageOptimizer()
+        self._bash_optimizer = BashOptimizer()
         self._file_read_optimizer = FileReadOptimizer()
         self._thinking_optimizer = ThinkingOptimizer()
-        self._optimizer_pipeline = OptimizerPipeline([self._image_optimizer])
+        self._optimizer_pipeline = OptimizerPipeline([self._image_optimizer, self._bash_optimizer])
         self._proxy = AnthropicProxy(
             middlewares=[self._request_logger, self._tracker, self._optimizer_pipeline],
             port=self.llm_proxy_port,
@@ -858,6 +861,7 @@ class VoittaDesktopApp(rumps.App):
                 for t in conv.turns:
                     images_data = []
                     for img in t.images:
+                        token_chars = int(img.width * img.height / 750 * 3.5)
                         images_data.append({
                             "media_type": img.media_type,
                             "base64_chars": img.base64_chars,
@@ -865,6 +869,7 @@ class VoittaDesktopApp(rumps.App):
                             "width": img.width, "height": img.height,
                             "source_type": img.source_type,
                             "thumbnail": img.thumbnail_b64 if img.thumbnail_b64 else "",
+                            "token_chars": token_chars,
                         })
                     blocks_data = [
                         {"type": b.block_type.value, "summary": b.summary[:100]}
@@ -876,17 +881,19 @@ class VoittaDesktopApp(rumps.App):
                         "tool_result": t.tool_result_chars,
                         "assistant_text": t.assistant_text_chars,
                         "tool_call": t.tool_call_chars,
-                        "image": t.image_chars,
+                        "image": sum(int(img.width * img.height / 750 * 3.5) for img in t.images),
                         "stale_read": t.stale_read_chars,
+                        "bash": t.bash_chars,
                         "thinking": t.thinking_chars,
                         "images": images_data,
                         "blocks": blocks_data,
+                        "input_tokens": t.input_tokens,
+                        "output_tokens": t.output_tokens,
+                        "cache_read_input_tokens": t.cache_read_input_tokens,
+                        "cache_creation_input_tokens": t.cache_creation_input_tokens,
                     })
 
-        from optimizers.file_read import FILE_READ_KEEP_TURNS
-        from optimizers.thinking import THINKING_KEEP_TURNS
-        html = generate_chart_html(None, breakdown_data, turns_data,
-                                   IMAGE_KEEP_TURNS, FILE_READ_KEEP_TURNS, THINKING_KEEP_TURNS)
+        html = generate_chart_html(None, breakdown_data, turns_data)
 
         screen = NSScreen.mainScreen().frame()
         num_turns = len(turns_data)

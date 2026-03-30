@@ -156,6 +156,34 @@ class ConversationTracker(Middleware):
         except Exception as e:
             logger.debug("stale read analysis failed: %s", e)
 
+        # Compute bash tool_result chars per turn
+        try:
+            tool_names: dict[str, str] = {}
+            tool_result_msg_bash: dict[str, int] = {}
+            for mi, m in enumerate(messages):
+                content = m.get("content", [])
+                if not isinstance(content, list):
+                    continue
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("type") == "tool_use":
+                        tool_names[item.get("id", "")] = item.get("name", "")
+                    if item.get("type") == "tool_result":
+                        tid = item.get("tool_use_id", "")
+                        if tool_names.get(tid) == "Bash":
+                            rc = item.get("content", "")
+                            if isinstance(rc, str) and rc:
+                                tool_result_msg_bash[tid] = (mi, len(rc))
+
+            for turn in turns:
+                start, end = turn._msg_range
+                for tid, (mi, chars) in tool_result_msg_bash.items():
+                    if start <= mi < end:
+                        turn.bash_chars += chars
+        except Exception as e:
+            logger.debug("bash chars analysis failed: %s", e)
+
         raw = b"".join(pending["chunks"])
         encoding = pending.get("encoding", "")
         text = decompress(raw, encoding)
@@ -175,11 +203,57 @@ class ConversationTracker(Middleware):
                                   tool_call_chars=response_chars.get("tool_call", 0),
                                   thinking_chars=response_chars.get("thinking", 0)))
 
+        # Restore previously accumulated token counts FIRST, then add current call on top
+        old_token_data = {
+            t.index: (t.input_tokens, t.output_tokens,
+                      t.cache_read_input_tokens, t.cache_creation_input_tokens)
+            for t in conv.turns
+            if t.input_tokens or t.cache_read_input_tokens or t.cache_creation_input_tokens
+        }
+        for turn in turns:
+            if turn.index in old_token_data:
+                (turn.input_tokens, turn.output_tokens,
+                 turn.cache_read_input_tokens, turn.cache_creation_input_tokens) = old_token_data[turn.index]
+
         if usage and turns:
-            turns[-1].input_tokens = usage.get("input_tokens", 0)
-            turns[-1].output_tokens = usage.get("output_tokens", 0)
-            turns[-1].cache_read_input_tokens = usage.get("cache_read_input_tokens", 0)
-            turns[-1].cache_creation_input_tokens = usage.get("cache_creation_input_tokens", 0)
+            inp  = usage.get("input_tokens", 0)
+            out  = usage.get("output_tokens", 0)
+            cr   = usage.get("cache_read_input_tokens", 0)
+            cc   = usage.get("cache_creation_input_tokens", 0)
+            turns[-1].input_tokens             += inp
+            turns[-1].output_tokens            += out
+            turns[-1].cache_read_input_tokens  += cr
+            turns[-1].cache_creation_input_tokens += cc
+
+            # --- debug logging ---
+            orig_body   = pending["body"]
+            sent_body   = pending["request"].json or {}
+            orig_msgs   = orig_body.get("messages", [])
+            sent_msgs   = sent_body.get("messages", [])
+
+            def _count_images(msgs):
+                n = 0
+                for m in msgs:
+                    for item in (m.get("content") or []):
+                        if not isinstance(item, dict): continue
+                        if item.get("type") == "image": n += 1
+                        if item.get("type") == "tool_result":
+                            for b in (item.get("content") or []):
+                                if isinstance(b, dict) and b.get("type") == "image": n += 1
+                return n
+
+            orig_imgs  = _count_images(orig_msgs)
+            sent_imgs  = _count_images(sent_msgs)
+            orig_kb    = len(json.dumps(orig_msgs)) // 1024
+            sent_kb    = len(json.dumps(sent_msgs)) // 1024
+            total_tok  = inp + cr + cc
+            cache_pct  = int(cr * 100 / total_tok) if total_tok else 0
+            logger.info(
+                "tokens | turn=%d  sent=%dk(imgs=%d) orig=%dk(imgs=%d) | "
+                "input=%d cache_read=%d cache_create=%d output=%d total=%d cache_pct=%d%%",
+                turns[-1].index, sent_kb, sent_imgs, orig_kb, orig_imgs,
+                inp, cr, cc, out, total_tok, cache_pct,
+            )
 
         conv.turns = turns
         conv.breakdown = compute_breakdown(body)
@@ -225,6 +299,7 @@ class ConversationTracker(Middleware):
                     "tool_call_chars": t.tool_call_chars,
                     "image_chars": t.image_chars,
                     "stale_read_chars": t.stale_read_chars,
+                    "bash_chars": t.bash_chars,
                     "thinking_chars": t.thinking_chars,
                     "input_tokens": t.input_tokens,
                     "output_tokens": t.output_tokens,

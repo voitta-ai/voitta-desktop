@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Voitta Desktop — macOS menu bar app fusing LLM proxy and MCP auth proxy."""
+# Entry point: configures logging and launches the menu bar application
 
 import logging
 from logging.handlers import RotatingFileHandler
@@ -20,6 +21,7 @@ logging.getLogger().addHandler(file_handler)
 
 # Surface FastMCP proxy errors
 logging.getLogger("fastmcp.server.providers.aggregate").setLevel(logging.DEBUG)
+logging.getLogger("voitta-desktop.tracker").setLevel(logging.DEBUG)
 
 from ui.menu import VoittaDesktopApp
 

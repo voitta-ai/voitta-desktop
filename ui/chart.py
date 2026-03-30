@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import json
 
+from optimizers.bash import BASH_KEEP_TURNS
+from optimizers.file_read import FILE_READ_KEEP_TURNS
+from optimizers.image import IMAGE_KEEP_TURNS
+from optimizers.thinking import THINKING_KEEP_TURNS
+
 
 def generate_chart_html(
     title: str | None,
     breakdown: dict,
     turns: list[dict],
-    image_keep_turns: int = 5,
-    file_read_keep_turns: int = 5,
-    thinking_keep_turns: int = 5,
+    image_keep_turns: int = IMAGE_KEEP_TURNS,
+    file_read_keep_turns: int = FILE_READ_KEEP_TURNS,
+    thinking_keep_turns: int = THINKING_KEEP_TURNS,
+    bash_keep_turns: int = BASH_KEEP_TURNS,
 ) -> str:
     """Return a self-contained HTML page with a stacked-bar + cumulative-line chart.
 
@@ -92,6 +98,10 @@ def generate_chart_html(
                 <div class="legend-dot" style="background:transparent; border:1.5px solid #5e5ce6; border-radius:50%;"></div>
                 <span style="color:#86868b;">Cumulative (optimized)</span>
             </div>
+            <div class="legend-item">
+                <div class="legend-dot" style="background:transparent; border:1.5px solid #ff3b30; border-radius:50%;"></div>
+                <span style="color:#86868b;">API context ×3.5</span>
+            </div>
         </div>
         <div class="chart-container">
             <canvas id="chart"></canvas>
@@ -119,11 +129,13 @@ def generate_chart_html(
         const C_ASSIST   = '#ff9f0a';
         const C_CUM      = '#f5f5f7';
         const C_CUM_OPT  = '#5e5ce6';
+        const C_API      = '#ff3b30';
         const C_GRID     = 'rgba(255,255,255,0.06)';
         const C_LABEL    = '#86868b';
         const IMAGE_KEEP_TURNS = {image_keep_turns};
         const FILE_READ_KEEP_TURNS = {file_read_keep_turns};
         const THINKING_KEEP_TURNS = {thinking_keep_turns};
+        const BASH_KEEP_TURNS = {bash_keep_turns};
 
         // Generate distinct hues for individual images within the red family
         function imageColor(i, total) {{
@@ -236,6 +248,14 @@ def generate_chart_html(
                 return grid(rows);
             }}
 
+            if (hit.type === 'bash') {{
+                const blocks = filterBlocks(ti, 'tool_result').filter(b => b.summary.startsWith('Bash'));
+                let rows = row('Turn', turnLabel);
+                rows += row('Bash outputs', fmtChars(hit.value) + ' chars');
+                if (hit.stripped) rows += row('Status', '<span style="color:#5e5ce6;">stripped by optimizer</span>');
+                return grid(rows) + (blocks.length ? '<div style="margin-top:6px; border-top:1px solid #333; padding-top:6px;">' + blockList(blocks) + '</div>' : '');
+            }}
+
             if (hit.type === 'thinking') {{
                 let rows = row('Turn', turnLabel);
                 rows += row('Thinking', fmtChars(hit.value) + ' chars');
@@ -251,6 +271,25 @@ def generate_chart_html(
                 if (tcBlocks.length) rows += row('Tool calls', tcBlocks.length + '');
                 const all = [...txtBlocks, ...tcBlocks];
                 return grid(rows) + (all.length ? '<div style="margin-top:6px; border-top:1px solid #333; padding-top:6px;">' + blockList(all, 8) + '</div>' : '');
+            }}
+
+            if (hit.type === 'api_usage') {{
+                const ti = hit.turnIndex;
+                const t = turns[ti];
+                const turnLabel = t ? ('#' + t.index + ' ' + esc(t.label || '')) : '';
+                const inputTok = t ? (t.input_tokens || 0) : 0;
+                const outputTok = t ? (t.output_tokens || 0) : 0;
+                const cacheRead = t ? (t.cache_read_input_tokens || 0) : 0;
+                const cacheCreate = t ? (t.cache_creation_input_tokens || 0) : 0;
+                const totalTok = inputTok + cacheRead + cacheCreate;
+                let rows = row('Turn', turnLabel);
+                rows += row('Input tokens', inputTok.toLocaleString());
+                rows += row('Cache read tokens', cacheRead.toLocaleString());
+                rows += row('Cache create tokens', cacheCreate.toLocaleString());
+                rows += row('Total context tokens', totalTok.toLocaleString());
+                rows += row('Output tokens', outputTok.toLocaleString());
+                rows += row('Turn contribution ×3.5 (chars)', fmtChars(Math.round(hit.value)));
+                return grid(rows);
             }}
 
             // Fallback
@@ -298,11 +337,15 @@ def generate_chart_html(
                 const t = turns[ti];
                 const imgs = t.images || [];
                 const staleRead = t.stale_read || 0;
-                const freshToolRes = Math.max(0, t.tool_result - staleRead);
+                const bashChars = t.bash || 0;
+                const freshToolRes = Math.max(0, t.tool_result - staleRead - bashChars);
                 const segs = [
                     {{ color: C_USERTEXT, value: t.user_text, type: 'user_text' }},
                     {{ color: C_TOOLRES, value: freshToolRes, type: 'tool_result' }},
                 ];
+                if (bashChars > 0) {{
+                    segs.push({{ color: C_TOOLRES, value: bashChars, type: 'bash' }});
+                }}
                 if (staleRead > 0) {{
                     segs.push({{ color: C_TOOLRES, value: staleRead, type: 'stale_read' }});
                 }}
@@ -312,16 +355,13 @@ def generate_chart_html(
                     for (let ii = 0; ii < imgs.length; ii++) {{
                         segs.push({{
                             color: imageColor(ii, imgs.length),
-                            value: imgs[ii].base64_chars,
+                            value: imgs[ii].token_chars,
                             type: 'image',
                             imageInfo: imgs[ii],
                             imageIndex: ii,
                             turnIndex: ti,
                         }});
                     }}
-                }} else if (t.image > 0) {{
-                    // Fallback: single image bar if no per-image data
-                    segs.push({{ color: C_IMAGE, value: t.image, type: 'image' }});
                 }}
 
                 segs.push({{ color: C_ASSIST, value: t.assistant_text + t.tool_call, type: 'assistant' }});
@@ -334,13 +374,15 @@ def generate_chart_html(
             }}
 
             const colTotals = columns.map(segs => segs.reduce((s, seg) => s + seg.value, 0));
-            const maxVol = Math.max(...colTotals, 1);
+            let maxVol = Math.max(...colTotals, 1);
 
             // Cumulative lines: full and optimized (images stripped from older turns)
             const imgThreshold = Math.max(0, turns.length - IMAGE_KEEP_TURNS);
             const readThreshold = Math.max(0, turns.length - FILE_READ_KEEP_TURNS);
             const thinkThreshold = Math.max(0, turns.length - THINKING_KEEP_TURNS);
-            const threshold = Math.max(imgThreshold, readThreshold, thinkThreshold);
+            const bashThreshold = Math.max(0, turns.length - BASH_KEEP_TURNS);
+            const threshold = Math.max(imgThreshold, readThreshold, thinkThreshold, bashThreshold);
+            const overhead = (bd.system || 0) + (bd.tools || 0);
             let cumFullValues = [];
             let cumOptValues = [];
             let cumFullSum = 0;
@@ -350,12 +392,22 @@ def generate_chart_html(
                 let stripped = 0;
                 if (i < imgThreshold) stripped += (turns[i].image || 0);
                 if (i < readThreshold) stripped += (turns[i].stale_read || 0);
+                if (i < bashThreshold) stripped += (turns[i].bash || 0);
                 if (i < thinkThreshold) stripped += (turns[i].thinking || 0);
                 cumOptSum += colTotals[i + 1] - stripped;
-                cumFullValues.push(cumFullSum);
-                cumOptValues.push(cumOptSum);
+                cumFullValues.push(cumFullSum + overhead);
+                cumOptValues.push(cumOptSum + overhead);
             }}
-            const maxCum = Math.max(...cumFullValues, 1);
+            // API-reported total context per observed turn (tokens × 3.5)
+            let apiValues = [];
+            for (let i = 0; i < turns.length; i++) {{
+                const t = turns[i];
+                const tok = (t.input_tokens || 0) + (t.cache_read_input_tokens || 0) + (t.cache_creation_input_tokens || 0);
+                apiValues.push(tok > 0 ? tok * 3.5 : null);
+            }}
+            const apiMax = Math.max(...apiValues.filter(v => v !== null), 1);
+            const maxCum = Math.max(...cumFullValues, apiMax, 1);
+            const maxVol2 = maxVol;
 
             // Grid lines & left Y-axis (per-turn volume)
             ctx.strokeStyle = C_GRID;
@@ -417,8 +469,9 @@ def generate_chart_html(
 
                     const isStrippedImage = segs[s].type === 'image' && c > 0 && (c - 1) < imgThreshold;
                     const isStrippedRead = segs[s].type === 'stale_read' && c > 0 && (c - 1) < readThreshold;
+                    const isStrippedBash = segs[s].type === 'bash' && c > 0 && (c - 1) < bashThreshold;
                     const isStrippedThinking = segs[s].type === 'thinking' && c > 0 && (c - 1) < thinkThreshold;
-                    const isHatched = isStrippedImage || isStrippedRead || isStrippedThinking;
+                    const isHatched = isStrippedImage || isStrippedRead || isStrippedBash || isStrippedThinking;
 
                     if (isHatched) {{
                         // Hatched fill for content removed by optimizer
@@ -549,6 +602,42 @@ def generate_chart_html(
                     ctx.fill();
                 }}
                 ctx.globalAlpha = 1;
+
+                // API-reported total context (red) — right axis, same scale as white/purple
+                if (apiValues.some(v => v !== null)) {{
+                    ctx.strokeStyle = C_API;
+                    ctx.lineWidth = 1.5;
+                    ctx.globalAlpha = 0.85;
+                    ctx.beginPath();
+                    let started = false;
+                    for (let i = 0; i < apiValues.length; i++) {{
+                        if (apiValues[i] === null) {{ started = false; continue; }}
+                        const x = pad.left + (i + 1) * gap + gap / 2;
+                        const y = pad.top + cH - (apiValues[i] / maxCum) * cH;
+                        if (!started) {{ ctx.moveTo(x, y); started = true; }}
+                        else ctx.lineTo(x, y);
+                    }}
+                    ctx.stroke();
+                    ctx.fillStyle = C_API;
+                    for (let i = 0; i < apiValues.length; i++) {{
+                        if (apiValues[i] === null) continue;
+                        const x = pad.left + (i + 1) * gap + gap / 2;
+                        const y = pad.top + cH - (apiValues[i] / maxCum) * cH;
+                        ctx.beginPath();
+                        ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+                        ctx.fill();
+                        hitRegions.push({{
+                            x: x - 6, y: y - 6, w: 12, h: 12,
+                            type: 'api_usage',
+                            value: apiValues[i],
+                            colIndex: i + 1,
+                            turnIndex: i,
+                            info: null,
+                            stripped: false,
+                        }});
+                    }}
+                    ctx.globalAlpha = 1;
+                }}
             }}
 
             // X-axis labels
