@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voitta Desktop — Settings</title>
+<style>
+  :root {
+    --bg: #f5f5f7;
+    --card-bg: #ffffff;
+    --card-border: #d2d2d7;
+    --text: #1d1d1f;
+    --text-secondary: #86868b;
+    --accent: #0071e3;
+    --danger: #ff3b30;
+    --input-bg: #ffffff;
+    --input-border: #c7c7cc;
+    --section-bg: #e8e8ed;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1c1e;
+      --card-bg: #2c2c2e;
+      --card-border: #3a3a3c;
+      --text: #f5f5f7;
+      --text-secondary: #98989d;
+      --accent: #0a84ff;
+      --danger: #ff453a;
+      --input-bg: #1c1c1e;
+      --input-border: #48484a;
+      --section-bg: #38383a;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    color: var(--text);
+    background: var(--bg);
+    padding: 20px;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  h1 { font-size: 20px; font-weight: 600; margin-bottom: 20px; }
+  h2 {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+    margin: 20px 0 8px 4px;
+  }
+  h2:first-of-type { margin-top: 0; }
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 8px;
+  }
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .card-header input[type="text"] {
+    flex: 1;
+    font-weight: 600;
+    font-size: 14px;
+    border: none;
+    background: transparent;
+    color: var(--text);
+    outline: none;
+    padding: 2px 0;
+  }
+  .card-header select {
+    font-size: 12px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--input-border);
+    background: var(--input-bg);
+    color: var(--text);
+    cursor: pointer;
+  }
+  .field {
+    display: flex;
+    align-items: center;
+    margin-bottom: 8px;
+    gap: 8px;
+  }
+  .field:last-child { margin-bottom: 0; }
+  .field label {
+    width: 90px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    text-align: right;
+    flex-shrink: 0;
+  }
+  .field input[type="text"],
+  .field input[type="password"] {
+    flex: 1;
+    padding: 5px 8px;
+    border: 1px solid var(--input-border);
+    border-radius: 6px;
+    background: var(--input-bg);
+    color: var(--text);
+    font-size: 12px;
+    font-family: ui-monospace, "SF Mono", monospace;
+  }
+  .field input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(0,113,227,0.2);
+  }
+  .checkboxes {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+  }
+  .checkboxes label {
+    width: auto;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text);
+  }
+  .card-footer {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--card-border);
+  }
+  .btn {
+    padding: 5px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--input-border);
+    background: var(--card-bg);
+    color: var(--text);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .btn:hover { background: var(--section-bg); }
+  .btn-primary {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+  }
+  .btn-primary:hover { opacity: 0.9; }
+  .btn-danger {
+    color: var(--danger);
+    border-color: transparent;
+    background: transparent;
+    font-size: 11px;
+  }
+  .btn-danger:hover { background: rgba(255,59,48,0.1); }
+  .btn-add {
+    width: 100%;
+    padding: 10px;
+    border: 2px dashed var(--card-border);
+    border-radius: 10px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 13px;
+    cursor: pointer;
+    margin-bottom: 8px;
+  }
+  .btn-add:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .bottom-bar {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 24px;
+    padding-top: 16px;
+    border-top: 1px solid var(--card-border);
+  }
+</style>
+</head>
+<body>
+
+<h2>OAuth Applications</h2>
+<div id="apps-container"></div>
+<button class="btn-add" onclick="addApp()">+ Add Application</button>
+
+<h2>Jira</h2>
+<div class="card" id="jira-card">
+  <div class="field">
+    <label>Server URL</label>
+    <input type="text" id="jira_url" placeholder="https://company.atlassian.net">
+  </div>
+  <div class="field">
+    <label>Email</label>
+    <input type="text" id="jira_email" placeholder="you@company.com">
+  </div>
+  <div class="field">
+    <label>API Token</label>
+    <input type="password" id="jira_api_token" placeholder="API token">
+  </div>
+  <div class="field">
+    <label>Project(s)</label>
+    <select id="jira_project" multiple style="flex:1; min-height:80px; padding:4px; border:1px solid var(--input-border); border-radius:6px; background:var(--input-bg); color:var(--text); font-size:12px; font-family:ui-monospace,'SF Mono',monospace;">
+    </select>
+    <span id="jira_project_status" style="font-size:11px; color:var(--text-secondary); min-width:60px; text-align:center;"></span>
+  </div>
+</div>
+
+<h2>MCP Proxy</h2>
+<div class="card" id="proxy-card">
+  <div class="field">
+    <label>Port</label>
+    <input type="text" id="proxy_port" placeholder="18765">
+  </div>
+  <div class="field">
+    <label>Edit Proxy URL</label>
+    <input type="text" id="edit_proxy_url" placeholder="http://localhost:18766">
+  </div>
+  <div class="field">
+    <label>RAG URL</label>
+    <input type="text" id="rag_url" placeholder="https://rag.voitta.ai">
+  </div>
+</div>
+
+<h2>LLM Proxy</h2>
+<div class="card" id="llm-proxy-card">
+  <div class="field">
+    <label>Port</label>
+    <input type="text" id="llm_proxy_port" placeholder="18900">
+  </div>
+</div>
+
+<div class="bottom-bar">
+  <button class="btn" onclick="cancel()">Cancel</button>
+  <button class="btn btn-primary" onclick="save()">Save</button>
+</div>
+
+<script>
+/*INJECT_CONFIG*/
+let config = (typeof _initialConfig !== 'undefined') ? _initialConfig : { apps: [], jira: {}, mcp_proxy: {}, llm_proxy: {} };
+
+function uuid() {
+  return crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2);
+}
+
+function renderApps() {
+  const c = document.getElementById('apps-container');
+  c.innerHTML = '';
+  config.apps.forEach((app, i) => {
+    const isMicrosoft = app.type === 'microsoft';
+    c.innerHTML += `
+      <div class="card" data-index="${i}">
+        <div class="card-header">
+          <input type="text" value="${esc(app.name)}" onchange="config.apps[${i}].name=this.value">
+          <select onchange="typeChanged(${i}, this.value)">
+            <option value="microsoft" ${isMicrosoft ? 'selected' : ''}>Microsoft</option>
+            <option value="google" ${!isMicrosoft ? 'selected' : ''}>Google</option>
+          </select>
+        </div>
+        ${isMicrosoft ? `
+        <div class="field">
+          <label>Tenant ID</label>
+          <input type="text" value="${esc(app.tenant_id || '')}" onchange="config.apps[${i}].tenant_id=this.value">
+        </div>` : ''}
+        <div class="field">
+          <label>Client ID</label>
+          <input type="text" value="${esc(app.client_id || '')}" onchange="config.apps[${i}].client_id=this.value">
+        </div>
+        ${!isMicrosoft ? `
+        <div class="field">
+          <label>Secret</label>
+          <input type="password" value="${esc(app.client_secret || '')}" onchange="config.apps[${i}].client_secret=this.value">
+        </div>` : ''}
+        <div class="field">
+          <label>Use for</label>
+          <div class="checkboxes">
+            <label><input type="checkbox" ${app.use_for.includes('rag') ? 'checked' : ''}
+              onchange="toggleUseFor(${i}, 'rag', this.checked)"> RAG</label>
+            ${!isMicrosoft ? `<label><input type="checkbox" ${app.use_for.includes('google_workspace') ? 'checked' : ''}
+              onchange="toggleUseFor(${i}, 'google_workspace', this.checked)"> Google Workspace</label>` : ''}
+          </div>
+        </div>
+        <div class="card-footer">
+          <button class="btn btn-danger" onclick="deleteApp(${i})">Delete</button>
+        </div>
+      </div>`;
+  });
+}
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function typeChanged(i, type) {
+  config.apps[i].type = type;
+  if (type === 'microsoft') {
+    delete config.apps[i].client_secret;
+    config.apps[i].tenant_id = config.apps[i].tenant_id || '';
+    config.apps[i].use_for = config.apps[i].use_for.filter(x => x !== 'google_workspace');
+  } else {
+    delete config.apps[i].tenant_id;
+    config.apps[i].client_secret = config.apps[i].client_secret || '';
+  }
+  renderApps();
+}
+
+function toggleUseFor(i, backend, checked) {
+  const uf = config.apps[i].use_for;
+  if (checked && !uf.includes(backend)) uf.push(backend);
+  if (!checked) config.apps[i].use_for = uf.filter(x => x !== backend);
+}
+
+function addApp() {
+  config.apps.push({
+    id: uuid(),
+    name: 'New Application',
+    type: 'google',
+    client_id: '',
+    client_secret: '',
+    use_for: []
+  });
+  renderApps();
+}
+
+function deleteApp(i) {
+  const app = config.apps[i];
+  const name = app.name || 'Unnamed';
+  const typed = prompt('To delete "' + name + '", type its name below:');
+  if (typed === null) return;
+  if (typed.trim() !== name.trim()) {
+    alert('Name does not match. Deletion cancelled.');
+    return;
+  }
+  config.apps.splice(i, 1);
+  renderApps();
+}
+
+function loadJira() {
+  document.getElementById('jira_url').value = config.jira.server_url || '';
+  document.getElementById('jira_email').value = config.jira.email || '';
+  document.getElementById('jira_api_token').value = config.jira.api_token || '';
+
+  // Attach change listeners to trigger project fetch
+  ['jira_url', 'jira_email', 'jira_api_token'].forEach(id => {
+    const el = document.getElementById(id);
+    el.addEventListener('change', maybeLoadProjects);
+    el.addEventListener('blur', maybeLoadProjects);
+  });
+
+  // Load projects if credentials already present
+  maybeLoadProjects();
+}
+
+var _lastFetchKey = '';
+function maybeLoadProjects() {
+  const url = document.getElementById('jira_url').value.trim();
+  const email = document.getElementById('jira_email').value.trim();
+  const token = document.getElementById('jira_api_token').value.trim();
+  const key = url + '|' + email + '|' + token;
+  if (!url || !email || !token) return;
+  if (key === _lastFetchKey) return;
+  _lastFetchKey = key;
+  document.getElementById('jira_project_status').textContent = 'Loading\u2026';
+  // Signal Python to fetch projects via title KVO
+  document.title = 'VOITTA_FETCH_JIRA_PROJECTS:' + btoa(unescape(encodeURIComponent(key)));
+}
+
+// Called from Python after fetching projects
+function _setJiraProjects(projects) {
+  const sel = document.getElementById('jira_project');
+  const saved = (config.jira.project || '').split(',').map(s => s.trim()).filter(Boolean);
+  sel.innerHTML = '';
+  projects.forEach(function(p) {
+    const opt = document.createElement('option');
+    opt.value = p[0];
+    opt.textContent = p[0] + ' \u2014 ' + p[1];
+    if (saved.includes(p[0])) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  const status = document.getElementById('jira_project_status');
+  status.textContent = projects.length ? projects.length + ' found' : 'None found';
+}
+
+function _setJiraProjectsError(msg) {
+  document.getElementById('jira_project_status').textContent = msg;
+}
+
+function loadProxy() {
+  var mcp = config.mcp_proxy || config.proxy || {};
+  var llm = config.llm_proxy || {};
+  document.getElementById('proxy_port').value = mcp.port || '18765';
+  document.getElementById('edit_proxy_url').value = mcp.edit_proxy_url || '';
+  document.getElementById('rag_url').value = mcp.rag_url || '';
+  document.getElementById('llm_proxy_port').value = llm.port || '18900';
+}
+
+function collectAll() {
+  // Re-read input values that might have changed without onchange firing
+  const selProj = document.getElementById('jira_project');
+  const selectedProjects = Array.from(selProj.selectedOptions).map(o => o.value).join(',');
+  config.jira = {
+    server_url: document.getElementById('jira_url').value,
+    email: document.getElementById('jira_email').value,
+    api_token: document.getElementById('jira_api_token').value,
+    project: selectedProjects,
+  };
+  config.mcp_proxy = {
+    port: parseInt(document.getElementById('proxy_port').value) || 18765,
+    edit_proxy_url: document.getElementById('edit_proxy_url').value,
+    rag_url: document.getElementById('rag_url').value,
+  };
+  config.llm_proxy = {
+    port: parseInt(document.getElementById('llm_proxy_port').value) || 18900,
+  };
+  return config;
+}
+
+function save() {
+  // Signal Python via document.title (KVO observed, data read via evaluateJavaScript)
+  document.title = 'VOITTA_SAVE';
+}
+
+function cancel() {
+  document.title = 'VOITTA_CANCEL';
+}
+
+// Init from embedded config
+renderApps();
+loadJira();
+loadProxy();
+</script>
+</body>
+</html>

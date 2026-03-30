@@ -1,0 +1,22 @@
+# Menu bar UI
+rumps>=0.4.0
+
+# LLM reverse proxy
+aiohttp>=3.9.0
+
+# OAuth2
+msal>=1.28.0
+requests>=2.31.0
+
+# MCP proxy
+fastmcp>=2.10.0
+
+# macOS native UI
+pyobjc-framework-Cocoa>=10.0
+pyobjc-framework-WebKit>=10.0
+
+# Config
+python-dotenv>=1.0.0
+
+# Image processing (thumbnails)
+Pillow>=10.0
