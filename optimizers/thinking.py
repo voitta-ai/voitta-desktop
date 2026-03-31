@@ -13,6 +13,8 @@ THINKING_KEEP_TURNS = 5
 class ThinkingOptimizer(BaseOptimizer):
     """Omit older thinking blocks from assistant turns."""
 
+    chart_key = "thinking"
+
     def __init__(self, keep_turns: int = THINKING_KEEP_TURNS):
         super().__init__(keep_turns=keep_turns)
 

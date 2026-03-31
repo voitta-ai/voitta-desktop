@@ -36,13 +36,14 @@ class RequestLogger(Middleware):
 
     async def on_request(self, request: ProxyRequest) -> ProxyRequest:
         started_at = time.time()
+        request_body = request.require_json() if request.body else None
         entry = {
             "timestamp": time.time(),
             "method": request.method,
             "path": request.path,
             "request_headers": {k: v for k, v in request.headers.items()
                                 if k.lower() not in ("x-api-key", "authorization", "cookie")},
-            "request_body": request.json if request.json else None,
+            "request_body": request_body,
             "started_at": started_at,
             "last_activity_at": started_at,
             "chunk_count": 0,
@@ -106,16 +107,10 @@ class RequestLogger(Middleware):
             for line in response_text.split("\n"):
                 line = line.strip()
                 if line.startswith("data: "):
-                    try:
-                        events.append(json.loads(line[6:]))
-                    except json.JSONDecodeError:
-                        events.append(line[6:])
+                    events.append(json.loads(line[6:]))
             entry["response_events"] = events
         else:
-            try:
-                entry["response_body"] = json.loads(response_text)
-            except (json.JSONDecodeError, ValueError):
-                entry["response_body"] = response_text[:2000] if response_text else None
+            entry["response_body"] = json.loads(response_text) if response_text else None
 
         entry["duration_ms"] = int((time.time() - entry["timestamp"]) * 1000)
         logger.info(
@@ -128,11 +123,8 @@ class RequestLogger(Middleware):
             entry.get("response_bytes", 0),
         )
 
-        try:
-            with open(self._log_path(), "a") as f:
-                f.write(json.dumps(entry, default=str) + "\n")
-        except Exception as e:
-            logger.warning("Failed to write request log: %s", e)
+        with open(self._log_path(), "a") as f:
+            f.write(json.dumps(entry, default=str) + "\n")
 
     def _watch_pending(self):
         """Periodically log requests that appear stuck or unusually long-lived."""

@@ -137,6 +137,8 @@ def _find_stale_ops(ops: list[_FileOp]) -> set[str]:
 class FileReadOptimizer(BaseOptimizer):
     """Replace stale file-access results in older turns with a short placeholder."""
 
+    chart_key = "stale_read"
+
     def __init__(self, keep_turns: int = FILE_READ_KEEP_TURNS):
         super().__init__(keep_turns=keep_turns)
 

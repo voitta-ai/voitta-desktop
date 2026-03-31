@@ -70,6 +70,9 @@ class AnthropicProxy:
             body=body,
         )
 
+        recv_kb = len(body) / 1024
+        logger.debug("VOL recv %s %.1f KB", request.path.split("?")[0], recv_kb)
+
         # Run request middleware
         for mw in self.middlewares:
             mw_started_at = time.monotonic()
@@ -90,18 +93,20 @@ class AnthropicProxy:
         if proxy_req.body:
             upstream_headers["Content-Length"] = str(len(proxy_req.body))
 
+        sent_kb = len(proxy_req.body or b"") / 1024
+        logger.debug("VOL send %s %.1f KB (delta %+.1f KB)",
+                     proxy_req.path.split("?")[0], sent_kb, sent_kb - recv_kb)
+
         try:
-            logger.info("Forwarding upstream: %s %s (%d bytes)",
-                        proxy_req.method, upstream_url, len(proxy_req.body or b""))
             upstream_resp = await self._session.request(
                 method=proxy_req.method,
                 url=upstream_url,
                 headers=upstream_headers,
                 data=proxy_req.body,
             )
-            logger.info("Upstream response received: %s %s -> %d (%s)",
-                        proxy_req.method, proxy_req.path, upstream_resp.status,
-                        upstream_resp.headers.get("Content-Type", "unknown"))
+            logger.debug("VOL resp %s -> %d (%s)",
+                         proxy_req.path.split("?")[0], upstream_resp.status,
+                         upstream_resp.headers.get("Content-Type", "unknown"))
         except Exception as e:
             logger.error("Upstream request failed: %s", e)
             return web.Response(status=502, text=f"Upstream error: {e}")
@@ -112,15 +117,11 @@ class AnthropicProxy:
         # Run response-started middleware
         for mw in self.middlewares:
             mw_started_at = time.monotonic()
-            try:
-                proxy_resp = await mw.on_response_started(proxy_req, proxy_resp)
-            except Exception as e:
-                logger.error("Middleware %s.on_response_started failed: %s", type(mw).__name__, e, exc_info=True)
-            else:
-                mw_duration_ms = int((time.monotonic() - mw_started_at) * 1000)
-                if mw_duration_ms >= 250:
-                    logger.info("Middleware %s.on_response_started took %d ms for %s",
-                                type(mw).__name__, mw_duration_ms, proxy_req.path)
+            proxy_resp = await mw.on_response_started(proxy_req, proxy_resp)
+            mw_duration_ms = int((time.monotonic() - mw_started_at) * 1000)
+            if mw_duration_ms >= 250:
+                logger.info("Middleware %s.on_response_started took %d ms for %s",
+                            type(mw).__name__, mw_duration_ms, proxy_req.path)
 
         content_type = upstream_resp.headers.get("Content-Type", "")
         is_streaming = "text/event-stream" in content_type
@@ -149,10 +150,7 @@ class AnthropicProxy:
                 chunk_count += 1
                 byte_count += len(chunk)
                 for mw in self.middlewares:
-                    try:
-                        chunk = await mw.on_response_chunk(proxy_req, chunk)
-                    except Exception as e:
-                        logger.error("Middleware %s.on_response_chunk failed: %s", type(mw).__name__, e, exc_info=True)
+                    chunk = await mw.on_response_chunk(proxy_req, chunk)
                 await response.write(chunk)
         except ConnectionResetError:
             logger.debug("Client disconnected during streaming")
@@ -161,17 +159,14 @@ class AnthropicProxy:
             raise
         finally:
             for mw in self.middlewares:
-                try:
-                    await mw.on_response_done(proxy_req, proxy_resp)
-                except Exception as e:
-                    logger.error("Middleware %s.on_response_done failed: %s", type(mw).__name__, e, exc_info=True)
+                await mw.on_response_done(proxy_req, proxy_resp)
             try:
                 await response.write_eof()
             except ConnectionResetError:
                 logger.debug("Client disconnected before write_eof for %s", proxy_req.path)
             duration_ms = int((time.monotonic() - started_at) * 1000)
-            logger.info("Streaming response finished for %s in %d ms (%d chunks, %d bytes)",
-                        proxy_req.path, duration_ms, chunk_count, byte_count)
+            logger.debug("VOL done %s %.1f KB in %d ms (stream, %d chunks)",
+                         proxy_req.path.split("?")[0], byte_count / 1024, duration_ms, chunk_count)
 
         return response
 
@@ -180,7 +175,6 @@ class AnthropicProxy:
     ) -> web.Response:
         """Read full response body then return."""
         body = await upstream_resp.read()
-        logger.info("Buffered response read for %s (%d bytes)", proxy_req.path, len(body))
 
         for mw in self.middlewares:
             mw_started_at = time.monotonic()
@@ -191,13 +185,11 @@ class AnthropicProxy:
                             type(mw).__name__, mw_duration_ms, proxy_req.path)
 
         for mw in self.middlewares:
-            try:
-                await mw.on_response_done(proxy_req, proxy_resp)
-            except Exception as e:
-                logger.error("Middleware %s.on_response_done failed: %s", type(mw).__name__, e, exc_info=True)
+            await mw.on_response_done(proxy_req, proxy_resp)
 
         duration_ms = int((time.monotonic() - started_at) * 1000)
-        logger.info("Buffered response finished for %s in %d ms", proxy_req.path, duration_ms)
+        logger.debug("VOL done %s %.1f KB in %d ms (buffered)",
+                     proxy_req.path.split("?")[0], len(body) / 1024, duration_ms)
 
         return web.Response(
             status=proxy_resp.status,

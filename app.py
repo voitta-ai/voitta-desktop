@@ -22,6 +22,7 @@ logging.getLogger().addHandler(file_handler)
 # Surface FastMCP proxy errors
 logging.getLogger("fastmcp.server.providers.aggregate").setLevel(logging.DEBUG)
 logging.getLogger("voitta-desktop.tracker").setLevel(logging.DEBUG)
+logging.getLogger("voitta-desktop.proxy").setLevel(logging.DEBUG)
 
 from ui.menu import VoittaDesktopApp
 

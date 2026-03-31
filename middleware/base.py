@@ -24,10 +24,24 @@ class ProxyRequest:
                 pass
         return self._json
 
+    def require_json(self) -> dict:
+        """Parse request body as JSON or raise a descriptive error."""
+        if self._json is not None:
+            return self._json
+        if not self.body:
+            raise ValueError("Expected JSON request body, got empty body")
+        try:
+            self._json = json.loads(self.body)
+        except UnicodeDecodeError as e:
+            raise ValueError("Request body is not valid UTF-8 JSON") from e
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Request body is not valid JSON: {e}") from e
+        return self._json
+
     @json.setter
     def json(self, value: dict):
         self._json = value
-        self.body = json.dumps(value).encode()
+        self.body = json.dumps(value, separators=(',', ':')).encode()
 
 
 @dataclass
@@ -56,17 +70,16 @@ class Middleware:
 def decompress(data: bytes, encoding: str) -> str:
     """Decompress response body based on Content-Encoding header."""
     encoding = encoding.lower().strip()
-    try:
-        if encoding == "gzip":
-            return gzip.decompress(data).decode("utf-8", errors="replace")
-        elif encoding == "deflate":
-            return zlib.decompress(data).decode("utf-8", errors="replace")
-        elif encoding == "br":
-            try:
-                import brotli
-                return brotli.decompress(data).decode("utf-8", errors="replace")
-            except ImportError:
-                pass
-    except Exception:
-        pass
-    return data.decode("utf-8", errors="replace")
+    if not encoding or encoding == "identity":
+        return data.decode("utf-8", errors="replace")
+    if encoding == "gzip":
+        return gzip.decompress(data).decode("utf-8", errors="replace")
+    if encoding == "deflate":
+        return zlib.decompress(data).decode("utf-8", errors="replace")
+    if encoding == "br":
+        try:
+            import brotli
+        except ImportError as e:
+            raise RuntimeError("brotli support is required for br-encoded responses") from e
+        return brotli.decompress(data).decode("utf-8", errors="replace")
+    raise ValueError(f"Unsupported Content-Encoding: {encoding}")

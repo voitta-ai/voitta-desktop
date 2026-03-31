@@ -46,6 +46,8 @@ class ImageOptimizer(BaseOptimizer):
     and can be retrieved via the get_vt_object MCP tool.
     """
 
+    chart_key = "image"
+
     def __init__(self, keep_turns: int = IMAGE_KEEP_TURNS):
         super().__init__(keep_turns=keep_turns)
 

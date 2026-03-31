@@ -26,6 +26,7 @@ def _default_config() -> dict:
         "llm_proxy": {
             "port": int(os.environ.get("LLM_PROXY_PORT", "18900")),
         },
+        "disabled_tools": [],
     }
 
 

@@ -1,0 +1,44 @@
+# MCP backend definitions — single source of truth.
+#
+# Core backends (no url) use custom auth and are mounted explicitly.
+# Simple backends (with url) are auto-mounted from this file.
+#
+# Fields:
+#   prefix      — tool-name prefix and mount point
+#   label       — human-readable name for UI / logs
+#   description — one-liner for the LLM instructions block
+#   url         — (simple only) HTTP endpoint
+#   headers     — (simple only) static headers dict
+
+# ── core (custom auth, mounted explicitly) ──────────────────────────
+
+- prefix: voitta_rag
+  label: RAG
+  description: RAG search, memory, file retrieval
+
+- prefix: google_workspace
+  label: Google Workspace
+  description: Google Workspace (Gmail, Drive, Sheets, Docs, Calendar)
+
+- prefix: jira
+  label: Jira
+  description: Jira issues, sprints, boards
+
+# ── simple (auto-mounted from url) ─────────────────────────────────
+
+- prefix: voitta_pptx
+  label: PPTX
+  description: PowerPoint slide rendering
+  url: http://192.168.88.212:8001/mcp
+
+- prefix: pubmed
+  label: PubMed
+  description: PubMed literature search & memory
+  url: http://192.168.88.210:8000/mcp/mcp
+  headers:
+    X-User-Name: roman
+
+- prefix: freecad
+  label: FreeCAD
+  description: FreeCAD CAD manipulation
+  url: http://127.0.0.1:50005/mcp

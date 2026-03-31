@@ -148,6 +148,9 @@ class VoittaDesktopApp(rumps.App):
             if app["type"] == "microsoft":
                 self._rebuild_msal_for_app(app)
 
+        self.disabled_tools = set(self._config.get("disabled_tools", []))
+        self._mcp_tools = {}
+
         self._active_app = {}
         self._init_active_defaults()
 
@@ -999,8 +1002,90 @@ class VoittaDesktopApp(rumps.App):
 
     # ── Settings ─────────────────────────────────────────────────────────────
 
+    def _poll_mcp_tools(self):
+        """Poll the MCP proxy for ALL tool names (blocking HTTP). Run from a thread."""
+        import urllib.request
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{self.mcp_proxy_port}/mcp",
+                data=json.dumps({"jsonrpc": "2.0", "method": "initialize", "id": 1,
+                                 "params": {"protocolVersion": "2025-03-26",
+                                            "capabilities": {},
+                                            "clientInfo": {"name": "settings", "version": "1"}}}).encode(),
+                headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+                method="POST",
+            )
+            resp = urllib.request.urlopen(req, timeout=5)
+            session_id = resp.headers.get("Mcp-Session-Id", "")
+
+            headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+            if session_id:
+                headers["Mcp-Session-Id"] = session_id
+            req2 = urllib.request.Request(
+                f"http://127.0.0.1:{self.mcp_proxy_port}/mcp",
+                data=json.dumps({"jsonrpc": "2.0", "method": "tools/list", "id": 2, "params": {}}).encode(),
+                headers=headers,
+                method="POST",
+            )
+            resp2 = urllib.request.urlopen(req2, timeout=10)
+            body = resp2.read().decode()
+
+            if body.strip().startswith("event:") or body.strip().startswith("data:"):
+                for line in body.splitlines():
+                    if line.startswith("data:"):
+                        body = line[5:].strip()
+                        break
+
+            result = json.loads(body)
+            # These are the *filtered* tools (disabled ones excluded by the proxy).
+            # Merge with _mcp_tools which has ALL tools (stashed before filtering).
+            return [t["name"] for t in result.get("result", {}).get("tools", [])]
+        except Exception as e:
+            logger.warning("Failed to poll MCP proxy for tools: %s", e)
+            return []
+
+    def _build_tool_tree(self):
+        """Build tool tree from _mcp_tools (always has ALL tools, including disabled)."""
+        all_tools = set()
+        for names in self._mcp_tools.values():
+            all_tools.update(names)
+
+        from mcpproxy.backends import tool_tree_groups
+        groups = tool_tree_groups()
+        tree = []
+        used = set()
+        for prefix, label in groups:
+            matching = sorted([t for t in all_tools if t.startswith(prefix + "_")])
+            used.update(matching)
+            if matching:
+                tree.append({"prefix": prefix, "label": label, "tools": matching})
+
+        remaining = sorted(all_tools - used)
+        if remaining:
+            tree.append({"prefix": "", "label": "Other", "tools": remaining})
+
+        return tree
+
     def show_settings(self, _):
+        # Prevent double-open: if window still exists, just bring it forward
+        if hasattr(self, "_settings_refs") and self._settings_refs:
+            win = self._settings_refs[0]
+            try:
+                if win.isVisible():
+                    NSApp.setActivationPolicy_(0)
+                    NSApp.activateIgnoringOtherApps_(True)
+                    win.makeKeyAndOrderFront_(None)
+                    return
+            except Exception:
+                pass
+
         from WebKit import WKWebView
+
+        # Bump generation counter so stale background threads skip their callback
+        if not hasattr(self, "_settings_gen"):
+            self._settings_gen = 0
+        self._settings_gen += 1
+        gen = self._settings_gen
 
         mask = 1 | 2 | 8
         frame = NSMakeRect(200, 200, 540, 650)
@@ -1014,12 +1099,13 @@ class VoittaDesktopApp(rumps.App):
         webview.setAutoresizingMask_(18)
         window.contentView().addSubview_(webview)
 
+        # Load HTML immediately with empty tool tree — tools injected after poll
         html_path = Path(__file__).parent / "settings.html"
         html_content = html_path.read_text(encoding="utf-8")
         config_json = json.dumps(self._config)
         html_content = html_content.replace(
             "/*INJECT_CONFIG*/",
-            f"var _initialConfig = {config_json};",
+            f"var _initialConfig = {config_json};\nvar _toolTree = [];",
         )
         webview.loadHTMLString_baseURL_(html_content, None)
 
@@ -1039,6 +1125,24 @@ class VoittaDesktopApp(rumps.App):
             0.1, trigger, "focus:", None, False
         )
         NSRunLoop.mainRunLoop().addTimer_forMode_(timer, "NSDefaultRunLoopMode")
+
+        # Poll MCP proxy in background, then inject tools into webview
+        def _poll_and_inject():
+            self._poll_mcp_tools()
+            tree = self._build_tool_tree()
+            js = f"_toolGroups = {json.dumps(tree)}; renderToolTree();"
+            from PyObjCTools import AppHelper
+            def _inject():
+                # Guard: skip if settings window was closed or reopened since we started
+                if self._settings_gen != gen or not self._settings_refs:
+                    return
+                wv = self._settings_refs[1]
+                try:
+                    wv.evaluateJavaScript_completionHandler_(js, None)
+                except Exception:
+                    logger.debug("Settings webview gone before tool inject")
+            AppHelper.callAfter(_inject)
+        threading.Thread(target=_poll_and_inject, daemon=True).start()
 
     def _apply_settings(self, new_config):
         old_keys = set(self._auth.keys())
@@ -1068,6 +1172,7 @@ class VoittaDesktopApp(rumps.App):
         mcp_proxy_cfg = new_config.get("mcp_proxy", {})
         self.voitta_rag_url = mcp_proxy_cfg.get("rag_url", "https://rag.voitta.ai")
         self.edit_proxy_url = mcp_proxy_cfg.get("edit_proxy_url", f"http://localhost:{GOOGLE_MCP_PORT}")
+        self.disabled_tools = set(new_config.get("disabled_tools", []))
 
         self._init_active_defaults()
         self._sync_edit_mcp_env()
@@ -1155,7 +1260,8 @@ class _SettingsTitleObserver(NSObject):
             obj.evaluateJavaScript_completionHandler_(
                 "document.title = 'Voitta Desktop \u2014 Settings'", None
             )
-            webview_ref = obj
+            app_ref = self._app
+            gen = getattr(app_ref, "_settings_gen", 0)
 
             def _do_fetch():
                 try:
@@ -1165,9 +1271,15 @@ class _SettingsTitleObserver(NSObject):
                 except Exception as e:
                     js = f"_setJiraProjectsError({json.dumps(str(e))})"
                 from PyObjCTools import AppHelper
-                AppHelper.callAfter(
-                    lambda: webview_ref.evaluateJavaScript_completionHandler_(js, None)
-                )
+                def _inject():
+                    if getattr(app_ref, "_settings_gen", 0) != gen or not app_ref._settings_refs:
+                        return
+                    wv = app_ref._settings_refs[1]
+                    try:
+                        wv.evaluateJavaScript_completionHandler_(js, None)
+                    except Exception:
+                        pass
+                AppHelper.callAfter(_inject)
 
             threading.Thread(target=_do_fetch, daemon=True).start()
             return
@@ -1210,4 +1322,5 @@ class _SettingsTitleObserver(NSObject):
     def doClose_(self, timer):
         if self._window:
             self._window.orderOut_(None)
+        self._app._settings_refs = None
         NSApp.setActivationPolicy_(1)

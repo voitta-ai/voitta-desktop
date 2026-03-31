@@ -1,4 +1,4 @@
-"""FastMCP proxy server setup — mounts RAG, Google Workspace, and Jira backends."""
+"""FastMCP proxy server setup — mounts all MCP backends."""
 
 import logging
 
@@ -12,6 +12,7 @@ from fastmcp.utilities.types import Image
 
 from optimizers.image import vt_object_store
 from .resilient import ResilientFastMCPProxy
+from .backends import MCP_BACKENDS, simple_backends, build_instructions
 
 logger = logging.getLogger("voitta-desktop.mcp")
 
@@ -66,40 +67,52 @@ def run_mcp_proxy(app_ref, port: int, jira_mcp_port: int):
     """Run unified FastMCP proxy server mounting all backends. Blocks forever."""
     main_server = FastMCPServer(
         "voitta-desktop",
-        instructions=(
-            "You are connected through Voitta Desktop, a unified MCP proxy. "
-            "All tool names are prefixed by backend:\n"
-            "  \u2022 voitta_rag_*   \u2014 RAG search, memory, file retrieval\n"
-            "  \u2022 google_workspace_* \u2014 Google Workspace (Gmail, Drive, Sheets, Docs, Calendar)\n"
-            "  \u2022 jira_*         \u2014 Jira issues, sprints, boards\n"
-            "If a google_workspace_* tool fails with an auth error, "
-            "ask the user to log in via the Voitta Desktop menu bar icon."
-        ),
+        instructions=build_instructions(),
     )
 
-    # RAG proxy with dynamic per-provider auth headers
+    # ── Core backends (custom auth) ─────────────────────────────────
+
     rag_proxy = ResilientFastMCPProxy(
         client_factory=make_rag_client_factory(app_ref),
         name="voitta-rag",
         backend_name="RAG",
+        app_ref=app_ref, prefix="voitta_rag",
     )
     main_server.mount(rag_proxy, prefix="voitta_rag")
 
-    # Google Workspace proxy with dynamic Bearer token
     google_proxy = ResilientFastMCPProxy(
         client_factory=make_google_client_factory(app_ref),
         name="google-workspace",
         backend_name="Google Workspace",
         cache_listings=True,
+        app_ref=app_ref, prefix="google_workspace",
     )
     main_server.mount(google_proxy, prefix="google_workspace")
 
-    # Jira proxy (credentials already in subprocess .env)
-    jira_proxy = FastMCPServer.as_proxy(
-        f"http://localhost:{jira_mcp_port}/mcp",
+    jira_proxy = ResilientFastMCPProxy(
+        client_factory=lambda: ProxyClient(
+            StreamableHttpTransport(url=f"http://localhost:{jira_mcp_port}/mcp")
+        ),
         name="jira",
+        backend_name="Jira",
+        app_ref=app_ref, prefix="jira",
     )
     main_server.mount(jira_proxy, prefix="jira")
+
+    # ── Simple backends (driven from backends.py) ───────────────────
+
+    for b in simple_backends():
+        proxy = ResilientFastMCPProxy(
+            client_factory=lambda b=b: ProxyClient(
+                StreamableHttpTransport(url=b["url"], headers=b.get("headers", {}))
+            ),
+            name=b["prefix"].replace("_", "-"),
+            backend_name=b["label"],
+            app_ref=app_ref, prefix=b["prefix"],
+        )
+        main_server.mount(proxy, prefix=b["prefix"])
+
+    # ── Built-in tools ──────────────────────────────────────────────
 
     @main_server.tool()
     def get_vt_object(hash: str) -> Image | str:
@@ -121,8 +134,12 @@ def run_mcp_proxy(app_ref, port: int, jira_mcp_port: int):
 
         return f"Unknown object type: {obj['type']}"
 
+    # ── Logging ─────────────────────────────────────────────────────
+
     logger.info("FastMCP proxy on http://127.0.0.1:%d/mcp", port)
     logger.info("  RAG -> %s", app_ref.voitta_rag_url)
     logger.info("  Google -> %s", app_ref.edit_proxy_url)
     logger.info("  Jira -> http://localhost:%d/mcp", jira_mcp_port)
+    for b in simple_backends():
+        logger.info("  %s -> %s", b["label"], b["url"])
     main_server.run(transport="streamable-http", host="127.0.0.1", port=port)

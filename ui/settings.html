@@ -180,6 +180,84 @@
     padding-top: 16px;
     border-top: 1px solid var(--card-border);
   }
+  /* MCP Tools tree */
+  .tool-tree { list-style: none; padding: 0; margin: 0; }
+  .tool-group { margin-bottom: 2px; }
+  .tool-group-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    cursor: pointer;
+    border-radius: 6px;
+  }
+  .tool-group-header:hover { background: var(--section-bg); }
+  .tool-group-arrow {
+    font-size: 10px;
+    width: 12px;
+    text-align: center;
+    color: var(--text-secondary);
+    transition: transform 0.15s;
+  }
+  .tool-group-arrow.open { transform: rotate(90deg); }
+  .tool-group-label { font-size: 13px; font-weight: 600; flex: 1; }
+  .tool-group-count { font-size: 11px; color: var(--text-secondary); }
+  .tool-children { list-style: none; padding: 0 0 0 32px; margin: 0; display: none; }
+  .tool-children.open { display: block; }
+  .tool-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-family: ui-monospace, "SF Mono", monospace;
+    color: var(--text);
+  }
+  .tool-item:hover { background: var(--section-bg); }
+  /* Toggle switch */
+  .toggle {
+    position: relative;
+    width: 32px; height: 18px;
+    background: var(--input-border);
+    border-radius: 9px;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.2s;
+  }
+  .toggle.on { background: var(--accent); }
+  .toggle.partial { background: var(--accent); opacity: 0.5; }
+  .toggle::after {
+    content: '';
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 14px; height: 14px;
+    background: white;
+    border-radius: 50%;
+    transition: transform 0.2s;
+  }
+  .toggle.on::after, .toggle.partial::after { transform: translateX(14px); }
+  .tool-filter {
+    width: 100%;
+    padding: 7px 10px;
+    border: 1px solid var(--input-border);
+    border-radius: 6px;
+    background: var(--input-bg);
+    color: var(--text);
+    font-size: 12px;
+    margin-bottom: 8px;
+    outline: none;
+  }
+  .tool-filter:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(0,113,227,0.2);
+  }
+  .tool-empty {
+    padding: 16px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
 </style>
 </head>
 <body>
@@ -232,6 +310,12 @@
     <label>Port</label>
     <input type="text" id="llm_proxy_port" placeholder="18900">
   </div>
+</div>
+
+<h2>MCP Tools</h2>
+<div class="card" id="mcp-tools-card">
+  <input type="text" class="tool-filter" id="tool-filter" placeholder="Filter tools..." oninput="filterTools(this.value)">
+  <ul class="tool-tree" id="tool-tree"></ul>
 </div>
 
 <div class="bottom-bar">
@@ -414,7 +498,160 @@ function collectAll() {
   config.llm_proxy = {
     port: parseInt(document.getElementById('llm_proxy_port').value) || 18900,
   };
+  config.disabled_tools = collectDisabledTools();
   return config;
+}
+
+// ── MCP Tools tree ──────────────────────────────────────────────────────────
+
+var _disabledSet = new Set((config.disabled_tools || []));
+var _toolGroups = (typeof _toolTree !== 'undefined') ? _toolTree : [];
+
+function collectDisabledTools() {
+  return Array.from(_disabledSet).sort();
+}
+
+function renderToolTree() {
+  var container = document.getElementById('tool-tree');
+  container.innerHTML = '';
+  if (!_toolGroups.length) {
+    container.innerHTML = '<li class="tool-empty">Loading tools\u2026</li>';
+    return;
+  }
+  _toolGroups.forEach(function(group) {
+    var li = document.createElement('li');
+    li.className = 'tool-group';
+    li.dataset.prefix = group.prefix;
+
+    var header = document.createElement('div');
+    header.className = 'tool-group-header';
+
+    var arrow = document.createElement('span');
+    arrow.className = 'tool-group-arrow';
+    arrow.textContent = '\u25B6';
+
+    var toggle = document.createElement('span');
+    toggle.className = 'toggle';
+    updateGroupToggle(toggle, group);
+
+    var label = document.createElement('span');
+    label.className = 'tool-group-label';
+    label.textContent = group.label;
+
+    var count = document.createElement('span');
+    count.className = 'tool-group-count';
+    var enabledCount = group.tools.filter(function(t) { return !_disabledSet.has(t); }).length;
+    count.textContent = enabledCount + '/' + group.tools.length;
+
+    toggle.onclick = function(e) {
+      e.stopPropagation();
+      toggleGroup(group, toggle, count);
+    };
+
+    header.appendChild(arrow);
+    header.appendChild(toggle);
+    header.appendChild(label);
+    header.appendChild(count);
+
+    header.onclick = function() {
+      arrow.classList.toggle('open');
+      childList.classList.toggle('open');
+    };
+
+    var childList = document.createElement('ul');
+    childList.className = 'tool-children';
+
+    group.tools.forEach(function(toolName) {
+      var tli = document.createElement('li');
+      tli.className = 'tool-item';
+      tli.dataset.tool = toolName;
+
+      var tToggle = document.createElement('span');
+      tToggle.className = 'toggle' + (_disabledSet.has(toolName) ? '' : ' on');
+
+      var tLabel = document.createElement('span');
+      tLabel.textContent = toolName;
+
+      tToggle.onclick = function() {
+        if (_disabledSet.has(toolName)) {
+          _disabledSet.delete(toolName);
+          tToggle.className = 'toggle on';
+        } else {
+          _disabledSet.add(toolName);
+          tToggle.className = 'toggle';
+        }
+        updateGroupToggle(toggle, group);
+        updateGroupCount(count, group);
+      };
+
+      tli.appendChild(tToggle);
+      tli.appendChild(tLabel);
+      childList.appendChild(tli);
+    });
+
+    li.appendChild(header);
+    li.appendChild(childList);
+    container.appendChild(li);
+  });
+}
+
+function updateGroupToggle(el, group) {
+  var disabledCount = group.tools.filter(function(t) { return _disabledSet.has(t); }).length;
+  if (disabledCount === 0) {
+    el.className = 'toggle on';
+  } else if (disabledCount === group.tools.length) {
+    el.className = 'toggle';
+  } else {
+    el.className = 'toggle partial';
+  }
+}
+
+function updateGroupCount(el, group) {
+  var enabledCount = group.tools.filter(function(t) { return !_disabledSet.has(t); }).length;
+  el.textContent = enabledCount + '/' + group.tools.length;
+}
+
+function toggleGroup(group, toggleEl, countEl) {
+  var disabledCount = group.tools.filter(function(t) { return _disabledSet.has(t); }).length;
+  var enableAll = disabledCount > 0;
+  group.tools.forEach(function(t) {
+    if (enableAll) {
+      _disabledSet.delete(t);
+    } else {
+      _disabledSet.add(t);
+    }
+  });
+  updateGroupToggle(toggleEl, group);
+  updateGroupCount(countEl, group);
+  // Update child toggles
+  var groupEl = toggleEl.closest('.tool-group');
+  groupEl.querySelectorAll('.tool-item .toggle').forEach(function(childToggle) {
+    var name = childToggle.parentElement.dataset.tool;
+    childToggle.className = 'toggle' + (_disabledSet.has(name) ? '' : ' on');
+  });
+}
+
+function filterTools(query) {
+  query = query.toLowerCase();
+  document.querySelectorAll('.tool-group').forEach(function(group) {
+    var children = group.querySelector('.tool-children');
+    var arrow = group.querySelector('.tool-group-arrow');
+    var items = children.querySelectorAll('.tool-item');
+    var anyVisible = false;
+    items.forEach(function(item) {
+      var match = !query || item.dataset.tool.toLowerCase().indexOf(query) !== -1;
+      item.style.display = match ? '' : 'none';
+      if (match) anyVisible = true;
+    });
+    group.style.display = anyVisible ? '' : 'none';
+    if (query && anyVisible) {
+      children.classList.add('open');
+      arrow.classList.add('open');
+    } else if (!query) {
+      children.classList.remove('open');
+      arrow.classList.remove('open');
+    }
+  });
 }
 
 function save() {
@@ -430,6 +667,7 @@ function cancel() {
 renderApps();
 loadJira();
 loadProxy();
+renderToolTree();
 </script>
 </body>
 </html>

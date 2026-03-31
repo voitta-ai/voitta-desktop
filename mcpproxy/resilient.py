@@ -64,24 +64,46 @@ def _load_cache(backend_name: str, kind: str, model_cls, client_factory=None):
 class ResilientProxyProvider(ProxyProvider):
     """ProxyProvider that catches all upstream errors and falls back to cache."""
 
-    def __init__(self, client_factory, *, backend_name: str = "upstream", cache_listings: bool = False):
+    def __init__(self, client_factory, *, backend_name: str = "upstream", cache_listings: bool = False,
+                 app_ref=None, prefix: str = ""):
         super().__init__(client_factory)
         self._backend_name = backend_name
         self._cache_listings = cache_listings
+        self._app_ref = app_ref
+        self._prefix = prefix
+
+    def _is_tool_disabled(self, tool_name: str) -> bool:
+        if self._app_ref is None:
+            return False
+        disabled = getattr(self._app_ref, "disabled_tools", set())
+        full_name = f"{self._prefix}_{tool_name}" if self._prefix else tool_name
+        return full_name in disabled
+
+    def _stash_tool_names(self, tools):
+        if self._app_ref is not None and tools:
+            names = [f"{self._prefix}_{t.name}" if self._prefix else t.name for t in tools]
+            self._app_ref._mcp_tools[self._prefix] = sorted(names)
+
+    def _filter_disabled(self, tools):
+        if not tools:
+            return tools
+        return [t for t in tools if not self._is_tool_disabled(t.name)]
 
     async def _list_tools(self):
         try:
             tools = await super()._list_tools()
             if self._cache_listings and tools:
                 _save_cache(self._backend_name, "tools", tools)
-            return tools
+            self._stash_tool_names(tools)
+            return self._filter_disabled(tools)
         except Exception as e:
             logger.warning("[%s] Upstream unavailable for tool listing: %s", self._backend_name, e)
             if self._cache_listings:
                 cached = _load_cache(self._backend_name, "tools", mcp.types.Tool, client_factory=self.client_factory)
                 if cached is not None:
                     logger.info("[%s] Returning %d cached tools", self._backend_name, len(cached))
-                    return cached
+                    self._stash_tool_names(cached)
+                    return self._filter_disabled(cached)
             return []
 
     async def _list_resources(self):
@@ -133,8 +155,12 @@ class ResilientProxyProvider(ProxyProvider):
 class ResilientFastMCPProxy(FastMCPProxy):
     """FastMCPProxy that uses ResilientProxyProvider for graceful upstream failure handling."""
 
-    def __init__(self, *, client_factory, backend_name: str = "upstream", cache_listings: bool = False, **kwargs):
+    def __init__(self, *, client_factory, backend_name: str = "upstream", cache_listings: bool = False,
+                 app_ref=None, prefix: str = "", **kwargs):
         FastMCPServer.__init__(self, **kwargs)
         self.client_factory = client_factory
-        provider = ResilientProxyProvider(client_factory, backend_name=backend_name, cache_listings=cache_listings)
+        provider = ResilientProxyProvider(
+            client_factory, backend_name=backend_name, cache_listings=cache_listings,
+            app_ref=app_ref, prefix=prefix,
+        )
         self.add_provider(provider)
