@@ -164,9 +164,28 @@ class ConversationTracker(Middleware):
                     turn.bash_chars += chars
 
         # Extract cache_control directives per turn
+        # Check system, tools, and messages for cache_control blocks
+        system_cache_types = set()
+        system = body.get("system", [])
+        if isinstance(system, list):
+            for item in system:
+                if isinstance(item, dict) and item.get("cache_control"):
+                    cc = item["cache_control"]
+                    if isinstance(cc, dict) and "type" in cc:
+                        system_cache_types.add(cc["type"])
+
+        tools_cache_types = set()
+        tools = body.get("tools", [])
+        if isinstance(tools, list):
+            for tool in tools:
+                if isinstance(tool, dict) and tool.get("cache_control"):
+                    cc = tool["cache_control"]
+                    if isinstance(cc, dict) and "type" in cc:
+                        tools_cache_types.add(cc["type"])
+
         for turn in turns:
             start, end = turn._msg_range
-            cache_types = set()
+            cache_types = system_cache_types | tools_cache_types
             for mi in range(start, end):
                 m = messages[mi]
                 content = m.get("content", [])
