@@ -899,6 +899,7 @@ class VoittaDesktopApp(rumps.App):
                         "output_tokens": t.output_tokens,
                         "cache_read_input_tokens": t.cache_read_input_tokens,
                         "cache_creation_input_tokens": t.cache_creation_input_tokens,
+                        "cache_control_types": t.cache_control_types,
                     })
 
         active = self._optimizer_pipeline.active_optimizers

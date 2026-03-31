@@ -4,20 +4,12 @@ from __future__ import annotations
 
 import json
 
-from optimizers.bash import BASH_KEEP_TURNS
-from optimizers.file_read import FILE_READ_KEEP_TURNS
-from optimizers.image import IMAGE_KEEP_TURNS
-from optimizers.thinking import THINKING_KEEP_TURNS
-
 
 def generate_chart_html(
     title: str | None,
     breakdown: dict,
     turns: list[dict],
-    image_keep_turns: int = IMAGE_KEEP_TURNS,
-    file_read_keep_turns: int = FILE_READ_KEEP_TURNS,
-    thinking_keep_turns: int = THINKING_KEEP_TURNS,
-    bash_keep_turns: int = BASH_KEEP_TURNS,
+    active_optimizers: dict[str, int] | None = None,
 ) -> str:
     """Return a self-contained HTML page with a stacked-bar + cumulative-line chart.
 
@@ -33,11 +25,16 @@ def generate_chart_html(
         Per-turn dicts with keys such as ``index``, ``label``, ``user_text``,
         ``tool_result``, ``assistant_text``, ``tool_call``, ``image``,
         ``images``, and optional ``blocks``.
-    image_keep_turns:
-        Number of most-recent turns whose images are kept by the optimizer.
+    active_optimizers:
+        ``{chart_key: keep_turns}`` for each enabled optimizer.  Only
+        keys present here will be hatched and subtracted from the
+        cumulative optimized line.  ``None`` means no optimizers.
     """
+    if active_optimizers is None:
+        active_optimizers = {}
     breakdown_json = json.dumps(breakdown)
     turns_json = json.dumps(turns)
+    active_opt_json = json.dumps(active_optimizers)
 
     chart_height = "calc(100vh - 80px)" if title else "calc(100vh - 60px)"
     title_div = f'<div class="title">{title}</div>' if title else ""
@@ -102,6 +99,18 @@ def generate_chart_html(
                 <div class="legend-dot" style="background:transparent; border:1.5px solid #ff3b30; border-radius:50%;"></div>
                 <span style="color:#86868b;">API context ×3.5</span>
             </div>
+            <div class="legend-item">
+                <div class="legend-dot" style="background:transparent; border:1.5px solid #30d158; border-radius:50%;"></div>
+                <span style="color:#86868b;">Cache read ×3.5</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-dot" style="background:#5e5ce6;"></div>
+                <span style="color:#86868b;">Cache: ephemeral</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-dot" style="background:#f59e0b;"></div>
+                <span style="color:#86868b;">Cache: custom</span>
+            </div>
         </div>
         <div class="chart-container">
             <canvas id="chart"></canvas>
@@ -130,12 +139,16 @@ def generate_chart_html(
         const C_CUM      = '#f5f5f7';
         const C_CUM_OPT  = '#5e5ce6';
         const C_API      = '#ff3b30';
+        const C_CACHE    = '#30d158';
         const C_GRID     = 'rgba(255,255,255,0.06)';
         const C_LABEL    = '#86868b';
-        const IMAGE_KEEP_TURNS = {image_keep_turns};
-        const FILE_READ_KEEP_TURNS = {file_read_keep_turns};
-        const THINKING_KEEP_TURNS = {thinking_keep_turns};
-        const BASH_KEEP_TURNS = {bash_keep_turns};
+        const ACTIVE_OPT = {active_opt_json};
+
+        // Cache control type colors
+        const CACHE_COLORS = {{
+            'ephemeral': '#5e5ce6',
+            'custom': '#f59e0b'
+        }};
 
         // Generate distinct hues for individual images within the red family
         function imageColor(i, total) {{
@@ -286,9 +299,10 @@ def generate_chart_html(
                 rows += row('Input tokens', inputTok.toLocaleString());
                 rows += row('Cache read tokens', cacheRead.toLocaleString());
                 rows += row('Cache create tokens', cacheCreate.toLocaleString());
+                const cachePct = totalTok > 0 ? Math.round(cacheRead * 100 / totalTok) : 0;
                 rows += row('Total context tokens', totalTok.toLocaleString());
+                rows += row('Cache hit', cachePct + '%');
                 rows += row('Output tokens', outputTok.toLocaleString());
-                rows += row('Turn contribution ×3.5 (chars)', fmtChars(Math.round(hit.value)));
                 return grid(rows);
             }}
 
@@ -377,10 +391,13 @@ def generate_chart_html(
             let maxVol = Math.max(...colTotals, 1);
 
             // Cumulative lines: full and optimized (images stripped from older turns)
-            const imgThreshold = Math.max(0, turns.length - IMAGE_KEEP_TURNS);
-            const readThreshold = Math.max(0, turns.length - FILE_READ_KEEP_TURNS);
-            const thinkThreshold = Math.max(0, turns.length - THINKING_KEEP_TURNS);
-            const bashThreshold = Math.max(0, turns.length - BASH_KEEP_TURNS);
+            function optThreshold(key) {{
+                return key in ACTIVE_OPT ? Math.max(0, turns.length - ACTIVE_OPT[key]) : -1;
+            }}
+            const imgThreshold = optThreshold('image');
+            const readThreshold = optThreshold('stale_read');
+            const thinkThreshold = optThreshold('thinking');
+            const bashThreshold = optThreshold('bash');
             const threshold = Math.max(imgThreshold, readThreshold, thinkThreshold, bashThreshold);
             const overhead = (bd.system || 0) + (bd.tools || 0);
             let cumFullValues = [];
@@ -398,12 +415,16 @@ def generate_chart_html(
                 cumFullValues.push(cumFullSum + overhead);
                 cumOptValues.push(cumOptSum + overhead);
             }}
-            // API-reported total context per observed turn (tokens × 3.5)
+            // API-reported total context and cache read per observed turn (tokens × 3.5)
             let apiValues = [];
+            let cacheValues = [];
             for (let i = 0; i < turns.length; i++) {{
                 const t = turns[i];
                 const tok = (t.input_tokens || 0) + (t.cache_read_input_tokens || 0) + (t.cache_creation_input_tokens || 0);
-                apiValues.push(tok > 0 ? tok * 3.5 : null);
+                const cr = t.cache_read_input_tokens || 0;
+                const observed = tok > 0;
+                apiValues.push(observed ? tok * 3.5 : null);
+                cacheValues.push(observed ? cr * 3.5 : null);
             }}
             const apiMax = Math.max(...apiValues.filter(v => v !== null), 1);
             const maxCum = Math.max(...cumFullValues, apiMax, 1);
@@ -638,6 +659,33 @@ def generate_chart_html(
                     }}
                     ctx.globalAlpha = 1;
                 }}
+
+                // Cache read (green) — same axis
+                if (cacheValues.some(v => v !== null)) {{
+                    ctx.strokeStyle = C_CACHE;
+                    ctx.lineWidth = 1.5;
+                    ctx.globalAlpha = 0.7;
+                    ctx.beginPath();
+                    let started = false;
+                    for (let i = 0; i < cacheValues.length; i++) {{
+                        if (cacheValues[i] === null) {{ started = false; continue; }}
+                        const x = pad.left + (i + 1) * gap + gap / 2;
+                        const y = pad.top + cH - (cacheValues[i] / maxCum) * cH;
+                        if (!started) {{ ctx.moveTo(x, y); started = true; }}
+                        else ctx.lineTo(x, y);
+                    }}
+                    ctx.stroke();
+                    ctx.fillStyle = C_CACHE;
+                    for (let i = 0; i < cacheValues.length; i++) {{
+                        if (cacheValues[i] === null) continue;
+                        const x = pad.left + (i + 1) * gap + gap / 2;
+                        const y = pad.top + cH - (cacheValues[i] / maxCum) * cH;
+                        ctx.beginPath();
+                        ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+                        ctx.fill();
+                    }}
+                    ctx.globalAlpha = 1;
+                }}
             }}
 
             // X-axis labels
@@ -653,6 +701,36 @@ def generate_chart_html(
                 ctx.rotate(-0.5);
                 ctx.fillText(labels[c], 0, 0);
                 ctx.restore();
+            }}
+
+            // Cache control markers
+            ctx.font = '7px -apple-system, sans-serif';
+            ctx.textAlign = 'center';
+            const markerSpacing = 3;
+            for (let c = 1; c < nCols; c++) {{
+                const turnIdx = c - 1;
+                if (turnIdx >= turns.length) continue;
+                const t = turns[turnIdx];
+                if (!t.cache_control_types || t.cache_control_types.length === 0) continue;
+
+                const x = pad.left + c * gap + gap / 2;
+                let markerY = pad.top + cH + 30;
+
+                for (let i = 0; i < t.cache_control_types.length; i++) {{
+                    const type = t.cache_control_types[i];
+                    const color = CACHE_COLORS[type] || '#ccc';
+
+                    // Draw small colored square
+                    const size = 4;
+                    ctx.fillStyle = color;
+                    ctx.fillRect(x - size/2, markerY - size/2, size, size);
+
+                    // Label
+                    ctx.fillStyle = color;
+                    ctx.fillText(type, x, markerY + 8);
+
+                    markerY += markerSpacing + 8;
+                }}
             }}
         }}
 
