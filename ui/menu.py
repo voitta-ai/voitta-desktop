@@ -163,7 +163,7 @@ class VoittaDesktopApp(rumps.App):
         self._bash_optimizer = BashOptimizer()
         self._file_read_optimizer = FileReadOptimizer()
         self._thinking_optimizer = ThinkingOptimizer()
-        self._optimizer_pipeline = OptimizerPipeline([self._image_optimizer, self._bash_optimizer])
+        self._optimizer_pipeline = OptimizerPipeline([self._image_optimizer, self._bash_optimizer, self._thinking_optimizer])
         self._proxy = AnthropicProxy(
             middlewares=[self._request_logger, self._tracker, self._optimizer_pipeline],
             port=self.llm_proxy_port,
@@ -306,6 +306,14 @@ class VoittaDesktopApp(rumps.App):
         self._llm_status = rumps.MenuItem(f"LLM Proxy  http://127.0.0.1:{self.llm_proxy_port}")
         self._llm_status.set_callback(self._noop)
         menu_list.append(self._llm_status)
+
+        self._optimize_toggle = rumps.MenuItem("  Optimize context", callback=self._toggle_optimizer)
+        self._optimize_toggle.state = self._optimizer_pipeline.enabled
+        menu_list.append(self._optimize_toggle)
+
+        self._haiku_only_toggle = rumps.MenuItem("    Haiku only", callback=self._toggle_haiku_only)
+        self._haiku_only_toggle.state = self._optimizer_pipeline.haiku_only
+        menu_list.append(self._haiku_only_toggle)
 
         self._no_conversations = rumps.MenuItem("  (none yet)")
         self._no_conversations.set_callback(self._noop)
@@ -893,7 +901,8 @@ class VoittaDesktopApp(rumps.App):
                         "cache_creation_input_tokens": t.cache_creation_input_tokens,
                     })
 
-        html = generate_chart_html(None, breakdown_data, turns_data)
+        active = self._optimizer_pipeline.active_optimizers
+        html = generate_chart_html(None, breakdown_data, turns_data, active)
 
         screen = NSScreen.mainScreen().frame()
         num_turns = len(turns_data)
@@ -1100,6 +1109,14 @@ class VoittaDesktopApp(rumps.App):
         elif tokens >= 1_000:
             return f"{tokens / 1_000:.1f}k"
         return str(tokens)
+
+    def _toggle_optimizer(self, sender):
+        self._optimizer_pipeline.enabled = not self._optimizer_pipeline.enabled
+        sender.state = self._optimizer_pipeline.enabled
+
+    def _toggle_haiku_only(self, sender):
+        self._optimizer_pipeline.haiku_only = not self._optimizer_pipeline.haiku_only
+        sender.state = self._optimizer_pipeline.haiku_only
 
     def _quit(self, _):
         rumps.quit_application()

@@ -56,7 +56,13 @@ class BaseOptimizer(Middleware):
 
     Subclasses implement `_optimize()` to modify messages and return tokens saved.
     Common infrastructure: turn-boundary detection, per-model savings tracking.
+
+    Each subclass should set `chart_key` to the turn-data field it strips
+    (e.g. "image", "bash", "stale_read", "thinking").  The pipeline uses
+    this to tell the chart which optimizers are active.
     """
+
+    chart_key: str = ""
 
     def __init__(self, keep_turns: int = 5):
         self.keep_turns = keep_turns
@@ -92,7 +98,7 @@ class BaseOptimizer(Middleware):
         return starts[len(starts) - self.keep_turns]
 
     async def on_request(self, request: ProxyRequest) -> ProxyRequest:
-        body = request.json
+        body = request.require_json()
         if not body or not body.get("messages"):
             return request
 
@@ -127,14 +133,34 @@ class BaseOptimizer(Middleware):
 class OptimizerPipeline(Middleware):
     """Runs multiple optimizers in sequence, aggregates savings."""
 
-    def __init__(self, optimizers: list[BaseOptimizer]):
+    def __init__(self, optimizers: list[BaseOptimizer], enabled: bool = False, haiku_only: bool = True):
         self.optimizers = optimizers
+        self.enabled = enabled
+        self.haiku_only = haiku_only
 
     @property
     def total_savings_usd(self) -> float:
         return sum(o.total_savings_usd for o in self.optimizers)
 
+    @property
+    def active_optimizers(self) -> dict[str, int]:
+        """Return {chart_key: keep_turns} for each enabled optimizer."""
+        if not self.enabled:
+            return {}
+        return {o.chart_key: o.keep_turns for o in self.optimizers if o.chart_key}
+
     async def on_request(self, request: ProxyRequest) -> ProxyRequest:
+        if not self.enabled:
+            return request
+
+        # Check haiku_only filter
+        if self.haiku_only:
+            body = request.require_json()
+            if body:
+                model = body.get("model", "").lower()
+                if "haiku" not in model:
+                    return request
+
         for o in self.optimizers:
             request = await o.on_request(request)
         return request
