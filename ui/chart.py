@@ -36,7 +36,7 @@ def generate_chart_html(
     turns_json = json.dumps(turns)
     active_opt_json = json.dumps(active_optimizers)
 
-    chart_height = "calc(100vh - 80px)" if title else "calc(100vh - 60px)"
+    chart_height = "calc(100vh - 100px)" if title else "calc(100vh - 80px)"
     title_div = f'<div class="title">{title}</div>' if title else ""
 
     return f"""
@@ -47,7 +47,7 @@ def generate_chart_html(
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{
             font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
-            background: #000; color: #f5f5f7; padding: 20px;
+            background: #000; color: #f5f5f7; padding: 8px;
             -webkit-font-smoothing: antialiased;
         }}
         .title {{ font-size: 14px; font-weight: 600; margin-bottom: 10px; color: #f5f5f7; }}

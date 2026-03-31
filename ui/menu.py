@@ -908,7 +908,7 @@ class VoittaDesktopApp(rumps.App):
         screen = NSScreen.mainScreen().frame()
         num_turns = len(turns_data)
         width = max(720, min(int(screen.size.width * 0.9), 40 * (num_turns + 1) + 140))
-        height = max(600, int(screen.size.height * 0.85))
+        height = 420
         frame = NSMakeRect(0, 0, width, height)
         style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
         window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
