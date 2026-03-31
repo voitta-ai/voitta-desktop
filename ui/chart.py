@@ -54,10 +54,10 @@ def generate_chart_html(
         .chart-container {{ position: relative; width: 100%; height: {chart_height}; }}
         canvas {{ width: 100% !important; height: 100% !important; }}
         .legend {{
-            display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 14px; font-size: 10px;
+            display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 14px; font-size: 12px;
         }}
-        .legend-item {{ display: flex; align-items: center; gap: 5px; }}
-        .legend-dot {{ width: 8px; height: 8px; border-radius: 2px; }}
+        .legend-item {{ display: flex; align-items: center; gap: 6px; font-weight: 500; }}
+        .legend-dot {{ width: 10px; height: 10px; border-radius: 2px; }}
     </style>
     </head>
     <body>
@@ -65,51 +65,51 @@ def generate_chart_html(
         <div class="legend">
             <div class="legend-item">
                 <div class="legend-dot" style="background:#86868b;"></div>
-                <span style="color:#86868b;">System prompt</span>
+                <span style="color:#c9c9ce;">System prompt</span>
             </div>
             <div class="legend-item">
                 <div class="legend-dot" style="background:#a1a1a6;"></div>
-                <span style="color:#86868b;">Tools</span>
+                <span style="color:#d1d1d6;">Tools</span>
             </div>
             <div class="legend-item">
                 <div class="legend-dot" style="background:#2997ff;"></div>
-                <span style="color:#86868b;">User text</span>
+                <span style="color:#2997ff;">User text</span>
             </div>
             <div class="legend-item">
                 <div class="legend-dot" style="background:#30d158;"></div>
-                <span style="color:#86868b;">Tool results</span>
+                <span style="color:#30d158;">Tool results</span>
             </div>
             <div class="legend-item">
                 <div class="legend-dot" style="background:#ff375f;"></div>
-                <span style="color:#86868b;">Images</span>
+                <span style="color:#ff375f;">Images</span>
             </div>
             <div class="legend-item">
                 <div class="legend-dot" style="background:#ff9f0a;"></div>
-                <span style="color:#86868b;">Assistant output</span>
+                <span style="color:#ff9f0a;">Assistant output</span>
             </div>
             <div class="legend-item">
                 <div class="legend-dot" style="background:transparent; border:1.5px solid #f5f5f7; border-radius:50%;"></div>
-                <span style="color:#86868b;">Cumulative (full)</span>
+                <span style="color:#f5f5f7;">Cumulative (full)</span>
             </div>
             <div class="legend-item">
                 <div class="legend-dot" style="background:transparent; border:1.5px solid #5e5ce6; border-radius:50%;"></div>
-                <span style="color:#86868b;">Cumulative (optimized)</span>
+                <span style="color:#5e5ce6;">Cumulative (optimized)</span>
             </div>
             <div class="legend-item">
                 <div class="legend-dot" style="background:transparent; border:1.5px solid #ff3b30; border-radius:50%;"></div>
-                <span style="color:#86868b;">API context ×3.5</span>
+                <span style="color:#ff3b30;">API context ×3.5</span>
             </div>
             <div class="legend-item">
                 <div class="legend-dot" style="background:transparent; border:1.5px solid #30d158; border-radius:50%;"></div>
-                <span style="color:#86868b;">Cache read ×3.5</span>
+                <span style="color:#30d158;">Cache read ×3.5</span>
             </div>
             <div class="legend-item">
                 <div class="legend-dot" style="background:#5e5ce6;"></div>
-                <span style="color:#86868b;">Cache: ephemeral</span>
+                <span style="color:#5e5ce6;">Cache: ephemeral</span>
             </div>
             <div class="legend-item">
                 <div class="legend-dot" style="background:#f59e0b;"></div>
-                <span style="color:#86868b;">Cache: custom</span>
+                <span style="color:#f59e0b;">Cache: custom</span>
             </div>
         </div>
         <div class="chart-container">
@@ -434,7 +434,7 @@ def generate_chart_html(
             ctx.strokeStyle = C_GRID;
             ctx.lineWidth = 1;
             ctx.fillStyle = '#f5f5f7';
-            ctx.font = '10px -apple-system, sans-serif';
+            ctx.font = 'bold 11px -apple-system, sans-serif';
             ctx.textAlign = 'right';
             const yTicks = 5;
             for (let i = 0; i <= yTicks; i++) {{
@@ -447,8 +447,8 @@ def generate_chart_html(
             }}
             // Left axis title
             ctx.save();
-            ctx.fillStyle = C_LABEL;
-            ctx.font = '9px -apple-system, sans-serif';
+            ctx.fillStyle = '#f5f5f7';
+            ctx.font = 'bold 11px -apple-system, sans-serif';
             ctx.textAlign = 'center';
             ctx.translate(12, pad.top + cH / 2);
             ctx.rotate(-Math.PI / 2);
@@ -457,16 +457,16 @@ def generate_chart_html(
 
             // Right Y-axis (cumulative input)
             ctx.textAlign = 'left';
-            ctx.fillStyle = 'rgba(245,245,247,0.35)';
-            ctx.font = '10px -apple-system, sans-serif';
+            ctx.fillStyle = 'rgba(245,245,247,0.5)';
+            ctx.font = 'bold 11px -apple-system, sans-serif';
             for (let i = 0; i <= yTicks; i++) {{
                 const y = pad.top + cH - (i / yTicks) * cH;
                 ctx.fillText(fmtChars(Math.round(maxCum * i / yTicks)), W - pad.right + 8, y + 3);
             }}
             // Right axis title
             ctx.save();
-            ctx.fillStyle = 'rgba(245,245,247,0.35)';
-            ctx.font = '9px -apple-system, sans-serif';
+            ctx.fillStyle = 'rgba(245,245,247,0.5)';
+            ctx.font = 'bold 11px -apple-system, sans-serif';
             ctx.textAlign = 'center';
             ctx.translate(W - 6, pad.top + cH / 2);
             ctx.rotate(Math.PI / 2);
@@ -689,8 +689,8 @@ def generate_chart_html(
             }}
 
             // X-axis labels
-            ctx.fillStyle = C_LABEL;
-            ctx.font = '9px -apple-system, sans-serif';
+            ctx.fillStyle = '#f5f5f7';
+            ctx.font = 'bold 11px -apple-system, sans-serif';
             ctx.textAlign = 'center';
             const maxLabels = Math.floor(cW / 40);
             const step = Math.max(1, Math.ceil(nCols / maxLabels));
@@ -704,9 +704,9 @@ def generate_chart_html(
             }}
 
             // Cache control markers
-            ctx.font = '7px -apple-system, sans-serif';
+            ctx.font = 'bold 9px -apple-system, sans-serif';
             ctx.textAlign = 'center';
-            const markerSpacing = 3;
+            const markerSpacing = 4;
             for (let c = 1; c < nCols; c++) {{
                 const turnIdx = c - 1;
                 if (turnIdx >= turns.length) continue;
@@ -721,15 +721,15 @@ def generate_chart_html(
                     const color = CACHE_COLORS[type] || '#ccc';
 
                     // Draw small colored square
-                    const size = 4;
+                    const size = 5;
                     ctx.fillStyle = color;
                     ctx.fillRect(x - size/2, markerY - size/2, size, size);
 
                     // Label
                     ctx.fillStyle = color;
-                    ctx.fillText(type, x, markerY + 8);
+                    ctx.fillText(type, x, markerY + 10);
 
-                    markerY += markerSpacing + 8;
+                    markerY += markerSpacing + 10;
                 }}
             }}
         }}
