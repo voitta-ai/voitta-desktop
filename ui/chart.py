@@ -860,7 +860,6 @@ def generate_chart_html(
                 const x = pad.left + c * gap + (gap - barW) / 2;
                 const total = turns[ti].cache_sim_total || 0;
                 const prefix = turns[ti].cache_sim_prefix || 0;
-                if (total === 0) continue;
 
                 // Total bar (dim gray)
                 const totalH = (total / maxBytes) * cH;
@@ -880,15 +879,13 @@ def generate_chart_html(
             cacheCtx.lineWidth = 1.5;
             cacheCtx.globalAlpha = 0.9;
             cacheCtx.beginPath();
-            let started = false;
             for (let ti = 0; ti < turns.length; ti++) {{
-                const total = turns[ti].cache_sim_total || 0;
-                if (total === 0) continue;
                 const c = ti + 1;
                 const x = pad.left + c * gap + gap / 2;
-                const pct = (turns[ti].cache_sim_prefix || 0) / total;
+                const total = turns[ti].cache_sim_total || 0;
+                const pct = total > 0 ? (turns[ti].cache_sim_prefix || 0) / total : 0;
                 const y = pad.top + cH - pct * cH;
-                if (!started) {{ cacheCtx.moveTo(x, y); started = true; }}
+                if (ti === 0) cacheCtx.moveTo(x, y);
                 else cacheCtx.lineTo(x, y);
             }}
             cacheCtx.stroke();
@@ -896,11 +893,10 @@ def generate_chart_html(
             // Percentage dots
             cacheCtx.fillStyle = '#5e5ce6';
             for (let ti = 0; ti < turns.length; ti++) {{
-                const total = turns[ti].cache_sim_total || 0;
-                if (total === 0) continue;
                 const c = ti + 1;
                 const x = pad.left + c * gap + gap / 2;
-                const pct = (turns[ti].cache_sim_prefix || 0) / total;
+                const total = turns[ti].cache_sim_total || 0;
+                const pct = total > 0 ? (turns[ti].cache_sim_prefix || 0) / total : 0;
                 const y = pad.top + cH - pct * cH;
                 cacheCtx.beginPath();
                 cacheCtx.arc(x, y, 2.5, 0, Math.PI * 2);
