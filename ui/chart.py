@@ -395,7 +395,7 @@ def generate_chart_html(
             let cumOptSum = 0;
             for (let i = 0; i < turns.length; i++) {{
                 cumFullSum += colTotals[i + 1];
-                const stripped = (turns[i].stripped_tool || 0) + (turns[i].stripped_thinking || 0);
+                const stripped = Math.min(colTotals[i + 1], (turns[i].stripped_tool || 0) + (turns[i].stripped_thinking || 0));
                 cumOptSum += colTotals[i + 1] - stripped;
                 cumFullValues.push(cumFullSum + overhead);
                 cumOptValues.push(cumOptSum + overhead);
