@@ -921,10 +921,12 @@ class VoittaDesktopApp(rumps.App):
 
         active = self._optimizer_pipeline.active_optimizers
         cache_history = self._cache_sim.get_history(conv_id) if conv_id else []
-        # Attach cache data to corresponding turns
+        # Align cache data from the end (cache resets on restart, turns don't)
+        offset = len(turns_data) - len(cache_history)
         for i, td in enumerate(turns_data):
-            if i < len(cache_history):
-                total, prefix = cache_history[i]
+            ci = i - offset
+            if 0 <= ci < len(cache_history):
+                total, prefix = cache_history[ci]
                 td["cache_sim_total"] = total
                 td["cache_sim_prefix"] = prefix
             else:
