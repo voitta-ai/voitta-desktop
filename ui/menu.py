@@ -921,11 +921,16 @@ class VoittaDesktopApp(rumps.App):
 
         active = self._optimizer_pipeline.active_optimizers
         cache_history = self._cache_sim.get_history(conv_id) if conv_id else []
-        cache_data = [
-            {"total_bytes": total, "prefix_bytes": prefix}
-            for total, prefix in cache_history
-        ]
-        html = generate_chart_html(None, breakdown_data, turns_data, active, cache_data)
+        # Attach cache data to corresponding turns
+        for i, td in enumerate(turns_data):
+            if i < len(cache_history):
+                total, prefix = cache_history[i]
+                td["cache_sim_total"] = total
+                td["cache_sim_prefix"] = prefix
+            else:
+                td["cache_sim_total"] = 0
+                td["cache_sim_prefix"] = 0
+        html = generate_chart_html(None, breakdown_data, turns_data, active)
 
         screen = NSScreen.mainScreen().frame()
         num_turns = len(turns_data)

@@ -10,7 +10,6 @@ def generate_chart_html(
     breakdown: dict,
     turns: list[dict],
     active_optimizers: dict[str, int] | None = None,
-    cache_sim: list[dict] | None = None,
 ) -> str:
     """Return a self-contained HTML page with a stacked-bar + cumulative-line chart.
 
@@ -33,12 +32,9 @@ def generate_chart_html(
     """
     if active_optimizers is None:
         active_optimizers = {}
-    if cache_sim is None:
-        cache_sim = []
     breakdown_json = json.dumps(breakdown)
     turns_json = json.dumps(turns)
     active_opt_json = json.dumps(active_optimizers)
-    cache_sim_json = json.dumps(cache_sim)
 
     chart_height = "calc(100vh - 100px)" if title else "calc(100vh - 80px)"
     title_div = f'<div class="title">{title}</div>' if title else ""
@@ -132,7 +128,6 @@ def generate_chart_html(
         "></div>
         <script>
         const bd = {breakdown_json};
-        const cacheSim = {cache_sim_json};
         const turns = {turns_json};
         const canvas = document.getElementById('chart');
         const ctx = canvas.getContext('2d');
@@ -782,7 +777,9 @@ def generate_chart_html(
         const cacheCtx = cacheCanvas.getContext('2d');
 
         function drawCache() {{
-            if (!cacheSim.length) return;
+            // Check if any turn has cache sim data
+            const hasData = turns.some(t => (t.cache_sim_total || 0) > 0);
+            if (!hasData) return;
 
             const dpr = window.devicePixelRatio || 1;
             const rect = cacheCanvas.parentElement.getBoundingClientRect();
@@ -792,21 +789,19 @@ def generate_chart_html(
             cacheCanvas.height = H * dpr;
             cacheCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-            // Match main chart padding and column layout
+            // Use same column layout as main chart
             const nCols = 1 + turns.length;
-            const pad = {{ top: 8, right: 60, bottom: 20, left: 60 }};
+            const pad = {{ top: 8, right: 60, bottom: 4, left: 60 }};
             const cW = W - pad.left - pad.right;
             const cH = H - pad.top - pad.bottom;
             const gap = cW / nCols;
             const barW = Math.max(4, Math.min(40, gap * 0.7));
 
-            // Find max total bytes for absolute scale
-            const maxBytes = Math.max(...cacheSim.map(c => c.total_bytes), 1);
+            const maxBytes = Math.max(...turns.map(t => t.cache_sim_total || 0), 1);
 
-            // Clear
             cacheCtx.clearRect(0, 0, W, H);
 
-            // Y-axis label
+            // Y-axis label (left — bytes)
             cacheCtx.save();
             cacheCtx.fillStyle = '#86868b';
             cacheCtx.font = '9px -apple-system, sans-serif';
@@ -816,7 +811,7 @@ def generate_chart_html(
             cacheCtx.fillText('cache sim (bytes)', 0, 0);
             cacheCtx.restore();
 
-            // Right Y-axis label (percentage)
+            // Y-axis label (right — percentage)
             cacheCtx.save();
             cacheCtx.fillStyle = '#86868b';
             cacheCtx.font = '9px -apple-system, sans-serif';
@@ -837,7 +832,7 @@ def generate_chart_html(
                 cacheCtx.stroke();
             }}
 
-            // Left Y-axis tick labels (bytes)
+            // Left Y ticks (bytes)
             cacheCtx.fillStyle = '#86868b';
             cacheCtx.font = '9px -apple-system, sans-serif';
             cacheCtx.textAlign = 'right';
@@ -851,7 +846,7 @@ def generate_chart_html(
                 cacheCtx.fillText(label, pad.left - 6, y + 3);
             }}
 
-            // Right Y-axis tick labels (percentage)
+            // Right Y ticks (percentage)
             cacheCtx.textAlign = 'left';
             for (let i = 0; i <= 4; i++) {{
                 const y = pad.top + (cH / 4) * i;
@@ -859,20 +854,20 @@ def generate_chart_html(
                 cacheCtx.fillText(pct.toFixed(0) + '%', pad.left + cW + 6, y + 3);
             }}
 
-            // Bars: total (dim) and prefix (bright) stacked
-            for (let i = 0; i < cacheSim.length; i++) {{
-                const c = i + 1;  // skip overhead column
-                if (c >= nCols) break;
+            // Bars per turn — same column index as main chart
+            for (let ti = 0; ti < turns.length; ti++) {{
+                const c = ti + 1;  // column index (0 = overhead, 1+ = turns)
                 const x = pad.left + c * gap + (gap - barW) / 2;
-                const total = cacheSim[i].total_bytes;
-                const prefix = cacheSim[i].prefix_bytes;
+                const total = turns[ti].cache_sim_total || 0;
+                const prefix = turns[ti].cache_sim_prefix || 0;
+                if (total === 0) continue;
 
-                // Total bar (dim)
+                // Total bar (dim gray)
                 const totalH = (total / maxBytes) * cH;
                 cacheCtx.fillStyle = 'rgba(134,134,139,0.3)';
                 cacheCtx.fillRect(x, pad.top + cH - totalH, barW, totalH);
 
-                // Prefix bar (bright green)
+                // Prefix bar (green)
                 const prefixH = (prefix / maxBytes) * cH;
                 cacheCtx.fillStyle = '#30d158';
                 cacheCtx.globalAlpha = 0.7;
@@ -886,13 +881,12 @@ def generate_chart_html(
             cacheCtx.globalAlpha = 0.9;
             cacheCtx.beginPath();
             let started = false;
-            for (let i = 0; i < cacheSim.length; i++) {{
-                const c = i + 1;
-                if (c >= nCols) break;
+            for (let ti = 0; ti < turns.length; ti++) {{
+                const total = turns[ti].cache_sim_total || 0;
+                if (total === 0) continue;
+                const c = ti + 1;
                 const x = pad.left + c * gap + gap / 2;
-                const pct = cacheSim[i].total_bytes > 0
-                    ? cacheSim[i].prefix_bytes / cacheSim[i].total_bytes
-                    : 0;
+                const pct = (turns[ti].cache_sim_prefix || 0) / total;
                 const y = pad.top + cH - pct * cH;
                 if (!started) {{ cacheCtx.moveTo(x, y); started = true; }}
                 else cacheCtx.lineTo(x, y);
@@ -901,13 +895,12 @@ def generate_chart_html(
 
             // Percentage dots
             cacheCtx.fillStyle = '#5e5ce6';
-            for (let i = 0; i < cacheSim.length; i++) {{
-                const c = i + 1;
-                if (c >= nCols) break;
+            for (let ti = 0; ti < turns.length; ti++) {{
+                const total = turns[ti].cache_sim_total || 0;
+                if (total === 0) continue;
+                const c = ti + 1;
                 const x = pad.left + c * gap + gap / 2;
-                const pct = cacheSim[i].total_bytes > 0
-                    ? cacheSim[i].prefix_bytes / cacheSim[i].total_bytes
-                    : 0;
+                const pct = (turns[ti].cache_sim_prefix || 0) / total;
                 const y = pad.top + cH - pct * cH;
                 cacheCtx.beginPath();
                 cacheCtx.arc(x, y, 2.5, 0, Math.PI * 2);
