@@ -73,6 +73,16 @@ class CacheSimulator(Middleware):
         return request
 
 
+def _normalize_system(system_bytes: bytes) -> bytes:
+    """Strip volatile per-request identifiers from the system prompt.
+
+    Claude Code embeds a cch=XXXXX hash that changes every request,
+    breaking prefix matching. Normalize it to a fixed value.
+    """
+    import re
+    return re.sub(rb'cch=[0-9a-f]+', b'cch=0', system_bytes)
+
+
 def _reorder_for_cache(body: dict) -> tuple[bytes, tuple[int, int, int], list[int]]:
     """Serialize request body in Anthropic's cache order: system → tools → messages.
 
@@ -81,7 +91,9 @@ def _reorder_for_cache(body: dict) -> tuple[bytes, tuple[int, int, int], list[in
     """
     import json
 
-    system_bytes = json.dumps(body.get("system", []), separators=(",", ":")).encode()
+    system_bytes = _normalize_system(
+        json.dumps(body.get("system", []), separators=(",", ":")).encode()
+    )
     tools_bytes = json.dumps(body.get("tools", []), separators=(",", ":")).encode()
     messages_bytes = json.dumps(body.get("messages", []), separators=(",", ":")).encode()
 
