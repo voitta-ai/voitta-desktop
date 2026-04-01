@@ -1,10 +1,15 @@
-"""Cache simulator — measures byte-level prefix overlap between consecutive API requests.
+"""Cache simulator — simulates Anthropic's prompt caching at content block level.
 
-Runs as the last middleware, after all optimizers, to capture the exact bytes
-that would be sent to the API. Computes the longest common prefix (Anthropic's
-cache model) between the current and previous request body per session.
+Anthropic's cache processes in order: tools → system → messages.
+Cache operates at content block boundaries with cumulative prefix hashing.
+A change in any block invalidates all subsequent blocks' cache entries.
+The system walks backward from cache_control breakpoints to find the
+longest matching prefix of identical content blocks.
+
+Reference: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
 """
 
+import json
 import logging
 
 from .base import Middleware, ProxyRequest
@@ -13,16 +18,15 @@ logger = logging.getLogger("voitta-desktop.cache_sim")
 
 
 class CacheSimulator(Middleware):
-    """Tracks per-session request bodies and computes prefix cache overlap."""
+    """Simulates Anthropic's content-block-level prefix caching."""
 
     def __init__(self):
-        # session_id -> last request body bytes
-        self._prev_body: dict[str, bytes] = {}
+        # session_id -> previous request's block sequence
+        self._prev_blocks: dict[str, list[str]] = {}
         # session_id -> list of per-turn cache data dicts
         self.history: dict[str, list[dict]] = {}
 
     def get_history(self, session_id: str) -> list[dict]:
-        """Return [{"total": int, "prefix": int, "msg_offsets": [int, ...]}, ...] per turn."""
         return self.history.get(session_id, [])
 
     async def on_request(self, request: ProxyRequest) -> ProxyRequest:
@@ -31,138 +35,141 @@ class CacheSimulator(Middleware):
         if not request.body:
             return request
 
-        # Skip quota-check requests (max_tokens=1)
         body = request.json
-        if body and body.get("max_tokens") == 1:
+        if not body or body.get("max_tokens") == 1:
             return request
 
         sid = request.headers.get("X-Claude-Code-Session-Id", "")
         if not sid:
             return request
 
-        current = request.body
-        body_dict = request.json
+        # Build ordered block sequence: tools → system → messages
+        blocks = _extract_blocks(body)
+        total_blocks = len(blocks)
 
-        # Reorder to system → tools → messages to match Anthropic's cache processing
-        reordered, section_sizes, msg_offsets = _reorder_for_cache(body_dict)
-        total = len(reordered)
-
-        prev = self._prev_body.get(sid)
+        # Find longest matching prefix of identical blocks
+        prev = self._prev_blocks.get(sid)
         if prev is None:
-            prefix = 0
+            cached_blocks = 0
         else:
-            prefix = _common_prefix_len(prev, reordered)
+            cached_blocks = _matching_prefix_blocks(prev, blocks)
 
-        self._prev_body[sid] = reordered
+        self._prev_blocks[sid] = blocks
+
+        # Compute byte sizes for chart display
+        tools_list = body.get("tools", [])
+        system_list = body.get("system", [])
+        messages_list = body.get("messages", [])
+
+        tools_block_count = len(tools_list)
+        system_block_count = len(system_list)
+        # Each message is one block in the sequence
+
+        total_bytes = len(request.body)
+        # Estimate cached bytes from block ratio
+        cached_ratio = cached_blocks / total_blocks if total_blocks > 0 else 0
+
+        # Find which section the cache boundary falls in
+        # Block sequence: tools[0..T-1], system[0..S-1], messages[0..M-1]
+        boundary_section, boundary_index = _locate_boundary(
+            cached_blocks, tools_block_count, system_block_count
+        )
 
         if sid not in self.history:
             self.history[sid] = []
         self.history[sid].append({
-            "total": total,
-            "prefix": prefix,
-            "system_bytes": section_sizes[0],
-            "tools_bytes": section_sizes[1],
-            "messages_bytes": section_sizes[2],
-            "msg_offsets": msg_offsets,
+            "total_blocks": total_blocks,
+            "cached_blocks": cached_blocks,
+            "total_bytes": total_bytes,
+            "cached_ratio": cached_ratio,
+            "tools_blocks": tools_block_count,
+            "system_blocks": system_block_count,
+            "boundary_section": boundary_section,
+            "boundary_index": boundary_index,
         })
 
-        pct = (prefix / total * 100) if total > 0 else 0
-        logger.debug("cache_sim | sid=%s turn=%d total=%d prefix=%d (%.1f%%)",
-                     sid[:12], len(self.history[sid]) - 1, total, prefix, pct)
+        pct = cached_ratio * 100
+        logger.debug("cache_sim | sid=%s turn=%d blocks=%d/%d (%.1f%%) boundary=%s[%d]",
+                     sid[:12], len(self.history[sid]) - 1,
+                     cached_blocks, total_blocks, pct,
+                     boundary_section, boundary_index)
 
         return request
 
 
-def _normalize_system(system_bytes: bytes) -> bytes:
-    """Strip volatile per-request identifiers from the system prompt.
-
-    Claude Code embeds a cch=XXXXX hash that changes every request,
-    breaking prefix matching. Normalize it to a fixed value.
-    """
+def _normalize_cch(s: str) -> str:
+    """Normalize volatile cch= hash in system prompt blocks."""
     import re
-    return re.sub(rb'cch=[0-9a-f]+', b'cch=0', system_bytes)
+    return re.sub(r'cch=[0-9a-f]+', 'cch=0', s)
 
 
-def _reorder_for_cache(body: dict) -> tuple[bytes, tuple[int, int, int], list[int]]:
-    """Serialize request body in Anthropic's cache order: system → tools → messages.
+def _extract_blocks(body: dict) -> list[str]:
+    """Extract content blocks in Anthropic's cache order: tools → system → messages.
 
-    Returns (reordered_bytes, (system_bytes, tools_bytes, messages_bytes), msg_offsets).
-    msg_offsets are byte positions of each message's "role": marker in the reordered bytes.
+    Each block is serialized to a canonical JSON string for comparison.
+    Returns a list of block strings.
     """
-    import json
+    blocks = []
+    sep = (",", ":")
 
-    system_bytes = _normalize_system(
-        json.dumps(body.get("system", []), separators=(",", ":")).encode()
-    )
-    tools_bytes = json.dumps(body.get("tools", []), separators=(",", ":")).encode()
-    messages_bytes = json.dumps(body.get("messages", []), separators=(",", ":")).encode()
+    # Tools — each tool definition is one block
+    for tool in body.get("tools", []):
+        blocks.append(json.dumps(tool, separators=sep, sort_keys=True))
 
-    reordered = system_bytes + tools_bytes + messages_bytes
+    # System — each content block in the system array
+    for block in body.get("system", []):
+        # Strip cache_control for comparison — it's a directive, not content
+        b = {k: v for k, v in block.items() if k != "cache_control"} if isinstance(block, dict) else block
+        # Normalize volatile per-request identifiers (cch=XXXXX)
+        s = json.dumps(b, separators=sep, sort_keys=True)
+        blocks.append(_normalize_cch(s))
 
-    # Find message "role": offsets within the messages portion
-    msg_start = len(system_bytes) + len(tools_bytes)
-    marker = b'"role":'
-    msg_offsets = []
-    pos = msg_start
-    while True:
-        pos = reordered.find(marker, pos)
-        if pos < 0:
-            break
-        msg_offsets.append(pos)
-        pos += len(marker)
+    # Messages — each message is one block
+    for msg in body.get("messages", []):
+        # Strip cache_control from content blocks within messages
+        m = _strip_cache_control(msg)
+        blocks.append(json.dumps(m, separators=sep, sort_keys=True))
 
-    return reordered, (len(system_bytes), len(tools_bytes), len(messages_bytes)), msg_offsets
+    return blocks
 
 
-def _find_section_offsets(body: bytes) -> dict:
-    """Find byte offsets of system, tools, and messages sections, plus per-message offsets.
+def _strip_cache_control(msg: dict) -> dict:
+    """Remove cache_control annotations from a message for comparison.
 
-    Returns {"system": int, "tools": int, "messages": int,
-             "msg_offsets": [int, ...], "total": int}
+    cache_control is a caching directive, not semantic content.
+    Its presence/absence shouldn't affect content equality.
     """
-    result = {
-        "system": 0,
-        "tools": 0,
-        "messages": 0,
-        "msg_offsets": [],
-        "total": len(body),
-    }
+    content = msg.get("content")
+    if isinstance(content, list):
+        cleaned = []
+        for block in content:
+            if isinstance(block, dict) and "cache_control" in block:
+                block = {k: v for k, v in block.items() if k != "cache_control"}
+            cleaned.append(block)
+        return {**msg, "content": cleaned}
+    return msg
 
-    # Find top-level section starts
-    for key, field in [("system", b'"system":'), ("tools", b'"tools":'), ("messages", b'"messages":')]:
-        pos = body.find(field)
-        if pos >= 0:
-            result[key] = pos
 
-    # Find per-message offsets within the messages array
-    marker = b'"role":'
-    pos = result["messages"]
-    while True:
-        pos = body.find(marker, pos)
-        if pos < 0:
+def _matching_prefix_blocks(prev: list[str], curr: list[str]) -> int:
+    """Count how many blocks from the start are identical between prev and curr."""
+    count = 0
+    for a, b in zip(prev, curr):
+        if a != b:
             break
-        result["msg_offsets"].append(pos)
-        pos += len(marker)
-
-    return result
+        count += 1
+    return count
 
 
-def _common_prefix_len(a: bytes, b: bytes) -> int:
-    """Return the length of the longest common prefix between two byte strings."""
-    min_len = min(len(a), len(b))
-    # Compare in chunks for performance
-    chunk = 4096
-    matched = 0
-    for offset in range(0, min_len, chunk):
-        end = min(offset + chunk, min_len)
-        a_chunk = a[offset:end]
-        b_chunk = b[offset:end]
-        if a_chunk == b_chunk:
-            matched = end
-        else:
-            # Find exact divergence point within this chunk
-            for i in range(len(a_chunk)):
-                if a_chunk[i] != b_chunk[i]:
-                    return matched + i
-            return matched + len(a_chunk)
-    return matched
+def _locate_boundary(cached_blocks: int, tools_count: int, system_count: int) -> tuple[str, int]:
+    """Determine which section and index the cache boundary falls in.
+
+    Block order: tools[0..T-1], system[0..S-1], messages[0..M-1]
+    Returns (section_name, index_within_section).
+    """
+    if cached_blocks < tools_count:
+        return ("tools", cached_blocks)
+    cached_blocks -= tools_count
+    if cached_blocks < system_count:
+        return ("system", cached_blocks)
+    cached_blocks -= system_count
+    return ("messages", cached_blocks)
