@@ -540,40 +540,33 @@ def generate_chart_html(
                 }}
             }}
 
-            // Cache boundary marker on selected turn
+            // Cache boundary: vertical dashed line at the turn where prefix ends
             if (cacheBoundaryTurn >= 0 && cacheBoundaryTurn < turns.length) {{
                 const t = turns[cacheBoundaryTurn];
-                const total = t.cache_sim_total || 0;
-                const prefix = t.cache_sim_prefix || 0;
-                if (total > 0) {{
-                    const c = cacheBoundaryTurn + 1;
-                    const x = pad.left + c * gap + (gap - barW) / 2;
-                    const colTotal = colTotals[c] || 1;
-                    const fraction = prefix / total;
-                    // Boundary line: fraction of the bar from the bottom
-                    const boundaryY = pad.top + cH - fraction * (colTotal / maxVol) * cH;
+                const bt = t.cache_sim_boundary_turn;
+                if (bt !== undefined && bt >= 0) {{
+                    // Vertical line between the cached turn and the next
+                    const boundaryC = bt + 1;  // column index of last cached turn
+                    const boundaryX = pad.left + (boundaryC + 1) * gap;
 
-                    // Shaded region above boundary (not cached)
-                    ctx.save();
-                    ctx.fillStyle = 'rgba(255,59,48,0.15)';
-                    ctx.fillRect(x - 2, pad.top, barW + 4, boundaryY - pad.top);
-                    ctx.restore();
-
-                    // Boundary line
                     ctx.strokeStyle = '#ff3b30';
                     ctx.lineWidth = 2;
-                    ctx.setLineDash([4, 2]);
+                    ctx.setLineDash([6, 3]);
                     ctx.beginPath();
-                    ctx.moveTo(x - 4, boundaryY);
-                    ctx.lineTo(x + barW + 4, boundaryY);
+                    ctx.moveTo(boundaryX, pad.top);
+                    ctx.lineTo(boundaryX, pad.top + cH);
                     ctx.stroke();
                     ctx.setLineDash([]);
 
                     // Label
                     ctx.fillStyle = '#ff3b30';
                     ctx.font = '9px -apple-system, sans-serif';
-                    ctx.textAlign = 'left';
-                    ctx.fillText((fraction * 100).toFixed(0) + '% cached', x + barW + 6, boundaryY + 3);
+                    ctx.textAlign = 'center';
+                    ctx.fillText('cache boundary', boundaryX, pad.top - 4);
+
+                    // Shade the cached region (left of boundary)
+                    ctx.fillStyle = 'rgba(48,209,88,0.06)';
+                    ctx.fillRect(pad.left, pad.top, boundaryX - pad.left, cH);
                 }}
             }}
 

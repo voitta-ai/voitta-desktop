@@ -922,16 +922,26 @@ class VoittaDesktopApp(rumps.App):
         active = self._optimizer_pipeline.active_optimizers
         cache_history = self._cache_sim.get_history(conv_id) if conv_id else []
         # Align cache data from the end (cache resets on restart, turns don't)
-        offset = len(turns_data) - len(cache_history)
+        ch_offset = len(turns_data) - len(cache_history)
         for i, td in enumerate(turns_data):
-            ci = i - offset
+            ci = i - ch_offset
             if 0 <= ci < len(cache_history):
-                total, prefix = cache_history[ci]
+                total, prefix, boundary_msg = cache_history[ci]
                 td["cache_sim_total"] = total
                 td["cache_sim_prefix"] = prefix
+                # Convert message index to turn index using _msg_range
+                boundary_turn = -1
+                if boundary_msg >= 0 and conv:
+                    for ti2, t2 in enumerate(conv.turns):
+                        start, end = t2._msg_range
+                        if boundary_msg < end:
+                            boundary_turn = ti2
+                            break
+                td["cache_sim_boundary_turn"] = boundary_turn
             else:
                 td["cache_sim_total"] = 0
                 td["cache_sim_prefix"] = 0
+                td["cache_sim_boundary_turn"] = -1
         html = generate_chart_html(None, breakdown_data, turns_data, active)
 
         screen = NSScreen.mainScreen().frame()
