@@ -41,27 +41,29 @@ class CacheSimulator(Middleware):
             return request
 
         current = request.body
-        total = len(current)
+        body_dict = request.json
+
+        # Reorder to system → tools → messages to match Anthropic's cache processing
+        reordered, section_sizes, msg_offsets = _reorder_for_cache(body_dict)
+        total = len(reordered)
 
         prev = self._prev_body.get(sid)
         if prev is None:
             prefix = 0
         else:
-            prefix = _common_prefix_len(prev, current)
+            prefix = _common_prefix_len(prev, reordered)
 
-        sections = _find_section_offsets(current)
-
-        self._prev_body[sid] = current
+        self._prev_body[sid] = reordered
 
         if sid not in self.history:
             self.history[sid] = []
         self.history[sid].append({
             "total": total,
             "prefix": prefix,
-            "system_offset": sections["system"],
-            "tools_offset": sections["tools"],
-            "messages_offset": sections["messages"],
-            "msg_offsets": sections["msg_offsets"],
+            "system_bytes": section_sizes[0],
+            "tools_bytes": section_sizes[1],
+            "messages_bytes": section_sizes[2],
+            "msg_offsets": msg_offsets,
         })
 
         pct = (prefix / total * 100) if total > 0 else 0
@@ -69,6 +71,35 @@ class CacheSimulator(Middleware):
                      sid[:12], len(self.history[sid]) - 1, total, prefix, pct)
 
         return request
+
+
+def _reorder_for_cache(body: dict) -> tuple[bytes, tuple[int, int, int], list[int]]:
+    """Serialize request body in Anthropic's cache order: system → tools → messages.
+
+    Returns (reordered_bytes, (system_bytes, tools_bytes, messages_bytes), msg_offsets).
+    msg_offsets are byte positions of each message's "role": marker in the reordered bytes.
+    """
+    import json
+
+    system_bytes = json.dumps(body.get("system", []), separators=(",", ":")).encode()
+    tools_bytes = json.dumps(body.get("tools", []), separators=(",", ":")).encode()
+    messages_bytes = json.dumps(body.get("messages", []), separators=(",", ":")).encode()
+
+    reordered = system_bytes + tools_bytes + messages_bytes
+
+    # Find message "role": offsets within the messages portion
+    msg_start = len(system_bytes) + len(tools_bytes)
+    marker = b'"role":'
+    msg_offsets = []
+    pos = msg_start
+    while True:
+        pos = reordered.find(marker, pos)
+        if pos < 0:
+            break
+        msg_offsets.append(pos)
+        pos += len(marker)
+
+    return reordered, (len(system_bytes), len(tools_bytes), len(messages_bytes)), msg_offsets
 
 
 def _find_section_offsets(body: bytes) -> dict:

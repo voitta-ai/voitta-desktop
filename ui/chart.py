@@ -544,36 +544,32 @@ def generate_chart_html(
             if (cacheBoundaryTurn >= 0 && cacheBoundaryTurn < turns.length) {{
                 const cs = turns[cacheBoundaryTurn].cache_sim;
                 if (cs && cs.total > 0 && cs.prefix > 0) {{
-                    // Actual byte order in serialized JSON:
-                    //   messages come first, then system, then tools
-                    //   (Claude Code serializes: model, messages, system, tools)
-                    // Chart layout:
-                    //   column 0 = overhead (system + tools)
-                    //   columns 1..N = turns (messages)
-                    // The prefix covers messages from the start, breaking when
-                    // cache_control annotations shift between requests.
-
+                    // Cache order: system → tools → messages
+                    // Chart: column 0 = overhead (system+tools), columns 1..N = turns
                     const prefix = cs.prefix;
+                    const sysBytes = cs.system_bytes || 0;
+                    const toolsBytes = cs.tools_bytes || 0;
+                    const overheadBytes = sysBytes + toolsBytes;
                     const msgOffsets = cs.msg_offsets || [];
 
-                    // Count messages before the prefix boundary
-                    let msgsBeforePrefix = 0;
-                    for (let m = 0; m < msgOffsets.length; m++) {{
-                        if (msgOffsets[m] < prefix) msgsBeforePrefix = m + 1;
-                        else break;
-                    }}
-
-                    // Map message index to turn column using per-turn msg counts
-                    let cumMsgs = [0];
-                    for (let ti = 0; ti < turns.length; ti++) {{
-                        cumMsgs.push(cumMsgs[ti] + (turns[ti].msg_count || 2));
-                    }}
-
                     let boundaryX;
-                    if (msgsBeforePrefix === 0) {{
-                        // Prefix breaks before first message
-                        boundaryX = pad.left;
+                    if (prefix <= overheadBytes) {{
+                        // Prefix ends within system+tools (overhead column)
+                        const frac = overheadBytes > 0 ? prefix / overheadBytes : 0;
+                        boundaryX = pad.left + frac * gap;
                     }} else {{
+                        // Prefix extends into messages — find which message
+                        let msgsBeforePrefix = 0;
+                        for (let m = 0; m < msgOffsets.length; m++) {{
+                            if (msgOffsets[m] < prefix) msgsBeforePrefix = m + 1;
+                            else break;
+                        }}
+
+                        let cumMsgs = [0];
+                        for (let ti = 0; ti < turns.length; ti++) {{
+                            cumMsgs.push(cumMsgs[ti] + (turns[ti].msg_count || 2));
+                        }}
+
                         let bTurn = turns.length - 1;
                         for (let ti = 0; ti < turns.length; ti++) {{
                             if (cumMsgs[ti + 1] >= msgsBeforePrefix) {{
