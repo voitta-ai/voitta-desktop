@@ -546,29 +546,32 @@ def generate_chart_html(
                 const total = t.cache_sim_total || 0;
                 const prefix = t.cache_sim_prefix || 0;
                 if (total > 0 && prefix > 0) {{
+                    // The request is: overhead + messages for turns 0..N
+                    // cumFullValues[i] = overhead + sum(turn chars 0..i)
+                    // Map prefix fraction onto this cumulative scale
                     const fraction = prefix / total;
-                    // Build cumulative char positions per column
-                    const cumChars = [0];
-                    let running = 0;
-                    for (let c = 0; c < nCols; c++) {{
-                        running += colTotals[c];
-                        cumChars.push(running);
-                    }}
-                    const totalChars = running || 1;
-                    const targetChars = fraction * totalChars;
+                    const selectedTurnTotal = cumFullValues[cacheBoundaryTurn] || 1;
+                    const targetChars = fraction * selectedTurnTotal;
 
-                    // Find which column and where within it
-                    let boundaryX = pad.left + cW;  // default: end
-                    for (let c = 0; c < nCols; c++) {{
-                        if (cumChars[c + 1] >= targetChars) {{
-                            // Boundary falls within column c
-                            const colStart = cumChars[c];
-                            const colEnd = cumChars[c + 1];
-                            const withinCol = (colEnd > colStart)
-                                ? (targetChars - colStart) / (colEnd - colStart)
-                                : 0.5;
-                            boundaryX = pad.left + c * gap + withinCol * gap;
-                            break;
+                    // Find X position by interpolating along cumulative values
+                    // overhead sits at column 0 (X = pad.left + gap/2)
+                    // turn i sits at column i+1 (X = pad.left + (i+1)*gap + gap/2)
+                    let boundaryX = pad.left;
+                    if (targetChars <= overhead) {{
+                        // Boundary is within overhead
+                        const frac = overhead > 0 ? targetChars / overhead : 0;
+                        boundaryX = pad.left + frac * gap;
+                    }} else {{
+                        // Boundary is within the turns
+                        const prev = [overhead, ...cumFullValues];
+                        for (let i = 0; i < cumFullValues.length; i++) {{
+                            if (cumFullValues[i] >= targetChars) {{
+                                const lo = prev[i];
+                                const hi = cumFullValues[i];
+                                const within = (hi > lo) ? (targetChars - lo) / (hi - lo) : 0.5;
+                                boundaryX = pad.left + (i + 1) * gap + within * gap;
+                                break;
+                            }}
                         }}
                     }}
 
@@ -584,7 +587,8 @@ def generate_chart_html(
                     ctx.fillStyle = '#ff3b30';
                     ctx.font = '9px -apple-system, sans-serif';
                     ctx.textAlign = 'center';
-                    ctx.fillText('cache boundary', boundaryX, pad.top - 4);
+                    const pctLabel = (fraction * 100).toFixed(0) + '% cached';
+                    ctx.fillText(pctLabel, boundaryX, pad.top - 4);
 
                     // Shade cached region
                     ctx.fillStyle = 'rgba(48,209,88,0.06)';
