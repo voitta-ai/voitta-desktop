@@ -67,6 +67,10 @@ class BaseOptimizer(Middleware):
     def __init__(self, keep_turns: int = 5):
         self.keep_turns = keep_turns
         self.tokens_saved: dict[str, int] = {}
+        # Populated by _optimize(): tool_use_id → chars stripped
+        self.last_stripped_ids: dict[str, int] = {}
+        # For thinking blocks: msg_index → chars stripped
+        self.last_stripped_msg_indices: dict[int, int] = {}
 
     @property
     def total_savings_usd(self) -> float:
@@ -104,6 +108,9 @@ class BaseOptimizer(Middleware):
 
         model = body.get("model", "")
         messages = body["messages"]
+
+        self.last_stripped_ids = {}
+        self.last_stripped_msg_indices = {}
 
         threshold = self._threshold_msg_index(messages)
         if threshold is None:
@@ -148,6 +155,22 @@ class OptimizerPipeline(Middleware):
         if not self.enabled:
             return {}
         return {o.chart_key: o.keep_turns for o in self.optimizers if o.chart_key}
+
+    @property
+    def stripped_tool_ids(self) -> dict[str, int]:
+        """Merged {tool_use_id: chars} across all optimizers from last request."""
+        merged: dict[str, int] = {}
+        for o in self.optimizers:
+            merged.update(o.last_stripped_ids)
+        return merged
+
+    @property
+    def stripped_msg_indices(self) -> dict[int, int]:
+        """Merged {msg_index: chars} for thinking blocks from last request."""
+        merged: dict[int, int] = {}
+        for o in self.optimizers:
+            merged.update(o.last_stripped_msg_indices)
+        return merged
 
     async def on_request(self, request: ProxyRequest) -> ProxyRequest:
         if not self.enabled:

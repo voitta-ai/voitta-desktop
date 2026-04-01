@@ -43,10 +43,10 @@ from config import (
 )
 from middleware import ConversationTracker, RequestLogger, BlockType, Turn
 from optimizers import OptimizerPipeline
-from optimizers.bash import BashOptimizer
 from optimizers.image import ImageOptimizer
 from optimizers.file_read import FileReadOptimizer
 from optimizers.thinking import ThinkingOptimizer
+from optimizers.tool_result import ToolResultOptimizer
 from proxy import AnthropicProxy
 from mcpproxy.server import run_mcp_proxy
 from ui.chart import generate_chart_html
@@ -162,11 +162,11 @@ class VoittaDesktopApp(rumps.App):
         # LLM proxy components
         self._tracker = ConversationTracker()
         self._request_logger = RequestLogger()
+        self._tool_result_optimizer = ToolResultOptimizer()
         self._image_optimizer = ImageOptimizer()
-        self._bash_optimizer = BashOptimizer()
         self._file_read_optimizer = FileReadOptimizer()
         self._thinking_optimizer = ThinkingOptimizer()
-        self._optimizer_pipeline = OptimizerPipeline([self._image_optimizer, self._bash_optimizer, self._thinking_optimizer])
+        self._optimizer_pipeline = OptimizerPipeline([self._tool_result_optimizer, self._image_optimizer, self._thinking_optimizer])
         self._proxy = AnthropicProxy(
             middlewares=[self._request_logger, self._tracker, self._optimizer_pipeline],
             port=self.llm_proxy_port,
@@ -673,8 +673,8 @@ class VoittaDesktopApp(rumps.App):
     def _run_mcp_proxy(self):
         try:
             run_mcp_proxy(self, self.mcp_proxy_port, JIRA_MCP_PORT)
-        except Exception as e:
-            logger.error("MCP proxy failed to start: %s", e)
+        except BaseException as e:
+            logger.error("MCP proxy failed: %s", e, exc_info=True)
 
     # ── Menu bar title + icon ────────────────────────────────────────────────
 
@@ -869,6 +869,8 @@ class VoittaDesktopApp(rumps.App):
                             for p, c in bd.system_blocks[:5]
                         ],
                     }
+                stripped_ids = self._optimizer_pipeline.stripped_tool_ids
+                stripped_msgs = self._optimizer_pipeline.stripped_msg_indices
                 for t in conv.turns:
                     images_data = []
                     for img in t.images:
@@ -886,6 +888,14 @@ class VoittaDesktopApp(rumps.App):
                         {"type": b.block_type.value, "summary": b.summary[:100]}
                         for b in t.blocks
                     ]
+                    # Compute per-turn stripped chars from optimizer data
+                    stripped_tool = sum(
+                        stripped_ids.get(tid, 0) for tid in t.tool_use_ids
+                    )
+                    stripped_think = sum(
+                        stripped_msgs.get(mi, 0)
+                        for mi in range(t._msg_range[0], t._msg_range[1])
+                    )
                     turns_data.append({
                         "index": t.index, "label": t.label[:30],
                         "user_text": t.user_text_chars,
@@ -896,6 +906,8 @@ class VoittaDesktopApp(rumps.App):
                         "stale_read": t.stale_read_chars,
                         "bash": t.bash_chars,
                         "thinking": t.thinking_chars,
+                        "stripped_tool": stripped_tool,
+                        "stripped_thinking": stripped_think,
                         "images": images_data,
                         "blocks": blocks_data,
                         "input_tokens": t.input_tokens,

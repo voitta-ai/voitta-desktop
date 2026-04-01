@@ -240,50 +240,46 @@ def generate_chart_html(
                 return thumbHtml + grid(rows);
             }}
 
-            if (hit.type === 'user_text') {{
-                const blocks = filterBlocks(ti, 'user_text');
-                let rows = row('Turn', turnLabel);
-                rows += row('User text', fmtChars(hit.value) + ' chars');
-                return grid(rows) + (blocks.length ? '<div style="margin-top:6px; border-top:1px solid #333; padding-top:6px;">' + blockList(blocks) + '</div>' : '');
-            }}
-
-            if (hit.type === 'tool_result') {{
-                const blocks = filterBlocks(ti, 'tool_result');
-                let rows = row('Turn', turnLabel);
-                rows += row('Tool results', fmtChars(hit.value) + ' chars, ' + blocks.length + ' result(s)');
-                return grid(rows) + (blocks.length ? '<div style="margin-top:6px; border-top:1px solid #333; padding-top:6px;">' + blockList(blocks) + '</div>' : '');
-            }}
-
-            if (hit.type === 'stale_read') {{
-                let rows = row('Turn', turnLabel);
-                rows += row('Stale reads', fmtChars(hit.value) + ' chars');
-                if (hit.stripped) rows += row('Status', '<span style="color:#5e5ce6;">stripped by optimizer</span>');
-                return grid(rows);
-            }}
-
-            if (hit.type === 'bash') {{
-                const blocks = filterBlocks(ti, 'tool_result').filter(b => b.summary.startsWith('Bash'));
-                let rows = row('Turn', turnLabel);
-                rows += row('Bash outputs', fmtChars(hit.value) + ' chars');
-                if (hit.stripped) rows += row('Status', '<span style="color:#5e5ce6;">stripped by optimizer</span>');
-                return grid(rows) + (blocks.length ? '<div style="margin-top:6px; border-top:1px solid #333; padding-top:6px;">' + blockList(blocks) + '</div>' : '');
-            }}
-
-            if (hit.type === 'thinking') {{
-                let rows = row('Turn', turnLabel);
-                rows += row('Thinking', fmtChars(hit.value) + ' chars');
-                if (hit.stripped) rows += row('Status', '<span style="color:#5e5ce6;">stripped by optimizer</span>');
-                return grid(rows);
-            }}
-
-            if (hit.type === 'assistant') {{
-                const txtBlocks = filterBlocks(ti, 'assistant_text', 'thinking');
+            // Unified turn breakdown tooltip
+            if (t) {{
+                const trBlocks = filterBlocks(ti, 'tool_result');
                 const tcBlocks = filterBlocks(ti, 'tool_call', 'mcp_tool_call', 'server_tool_call');
+                const txtBlocks = filterBlocks(ti, 'assistant_text', 'thinking');
+
                 let rows = row('Turn', turnLabel);
-                rows += row('Assistant output', fmtChars(hit.value) + ' chars');
-                if (tcBlocks.length) rows += row('Tool calls', tcBlocks.length + '');
-                const all = [...txtBlocks, ...tcBlocks];
-                return grid(rows) + (all.length ? '<div style="margin-top:6px; border-top:1px solid #333; padding-top:6px;">' + blockList(all, 8) + '</div>' : '');
+
+                // Breakdown table
+                const parts = [];
+                if (t.user_text) parts.push(row('<span style="color:' + C_USERTEXT + ';">&block;</span> User text', fmtChars(t.user_text) + ' chars'));
+                if (t.tool_result) {{
+                    let trLabel = fmtChars(t.tool_result) + ' chars';
+                    if (trBlocks.length) trLabel += ', ' + trBlocks.length + ' result(s)';
+                    parts.push(row('<span style="color:' + C_TOOLRES + ';">&block;</span> Tool results', trLabel));
+                }}
+                if (t.bash) parts.push(row('&emsp;Bash', fmtChars(t.bash) + ' chars'));
+                if (t.stale_read) parts.push(row('&emsp;Stale reads', fmtChars(t.stale_read) + ' chars'));
+                const assistChars = (t.assistant_text || 0) + (t.tool_call || 0);
+                if (assistChars) {{
+                    let aLabel = fmtChars(assistChars) + ' chars';
+                    if (tcBlocks.length) aLabel += ', ' + tcBlocks.length + ' tool call(s)';
+                    parts.push(row('<span style="color:' + C_ASSIST + ';">&block;</span> Assistant', aLabel));
+                }}
+                if (t.thinking) parts.push(row('&emsp;Thinking', fmtChars(t.thinking) + ' chars'));
+                if (t.image) parts.push(row('<span style="color:' + C_IMAGE + ';">&block;</span> Images', fmtChars(t.image) + ' chars'));
+
+                rows += parts.join('');
+
+                // Stripped status
+                const strippedTool = t.stripped_tool || 0;
+                const strippedThink = t.stripped_thinking || 0;
+                if (strippedTool + strippedThink > 0) {{
+                    let sLabel = '<span style="color:#5e5ce6;">stripped ' + fmtChars(strippedTool + strippedThink) + ' chars</span>';
+                    rows += row('Optimizer', sLabel);
+                }}
+
+                // Block list
+                const allBlocks = [...trBlocks, ...txtBlocks, ...tcBlocks];
+                return grid(rows) + (allBlocks.length ? '<div style="margin-top:6px; border-top:1px solid #333; padding-top:6px;">' + blockList(allBlocks, 8) + '</div>' : '');
             }}
 
             if (hit.type === 'api_usage') {{
@@ -390,15 +386,8 @@ def generate_chart_html(
             const colTotals = columns.map(segs => segs.reduce((s, seg) => s + seg.value, 0));
             let maxVol = Math.max(...colTotals, 1);
 
-            // Cumulative lines: full and optimized (images stripped from older turns)
-            function optThreshold(key) {{
-                return key in ACTIVE_OPT ? Math.max(0, turns.length - ACTIVE_OPT[key]) : -1;
-            }}
-            const imgThreshold = optThreshold('image');
-            const readThreshold = optThreshold('stale_read');
-            const thinkThreshold = optThreshold('thinking');
-            const bashThreshold = optThreshold('bash');
-            const threshold = Math.max(imgThreshold, readThreshold, thinkThreshold, bashThreshold);
+            // Cumulative lines: full and optimized
+            const hasAnyOpt = Object.keys(ACTIVE_OPT).length > 0;
             const overhead = (bd.system || 0) + (bd.tools || 0);
             let cumFullValues = [];
             let cumOptValues = [];
@@ -406,11 +395,7 @@ def generate_chart_html(
             let cumOptSum = 0;
             for (let i = 0; i < turns.length; i++) {{
                 cumFullSum += colTotals[i + 1];
-                let stripped = 0;
-                if (i < imgThreshold) stripped += (turns[i].image || 0);
-                if (i < readThreshold) stripped += (turns[i].stale_read || 0);
-                if (i < bashThreshold) stripped += (turns[i].bash || 0);
-                if (i < thinkThreshold) stripped += (turns[i].thinking || 0);
+                const stripped = (turns[i].stripped_tool || 0) + (turns[i].stripped_thinking || 0);
                 cumOptSum += colTotals[i + 1] - stripped;
                 cumFullValues.push(cumFullSum + overhead);
                 cumOptValues.push(cumOptSum + overhead);
@@ -488,11 +473,12 @@ def generate_chart_html(
                         isBottom ? 3 : 0, isBottom ? 3 : 0
                     ];
 
-                    const isStrippedImage = segs[s].type === 'image' && c > 0 && (c - 1) < imgThreshold;
-                    const isStrippedRead = segs[s].type === 'stale_read' && c > 0 && (c - 1) < readThreshold;
-                    const isStrippedBash = segs[s].type === 'bash' && c > 0 && (c - 1) < bashThreshold;
-                    const isStrippedThinking = segs[s].type === 'thinking' && c > 0 && (c - 1) < thinkThreshold;
-                    const isHatched = isStrippedImage || isStrippedRead || isStrippedBash || isStrippedThinking;
+                    const ti = c - 1;
+                    const turnStripped = c > 0 ? (turns[ti].stripped_tool || 0) : 0;
+                    const turnStrippedThink = c > 0 ? (turns[ti].stripped_thinking || 0) : 0;
+                    const isStrippedToolSeg = turnStripped > 0 && (segs[s].type === 'tool_result' || segs[s].type === 'bash' || segs[s].type === 'stale_read' || segs[s].type === 'image');
+                    const isStrippedThinking = turnStrippedThink > 0 && segs[s].type === 'thinking';
+                    const isHatched = isStrippedToolSeg || isStrippedThinking;
 
                     if (isHatched) {{
                         // Hatched fill for content removed by optimizer
@@ -558,24 +544,32 @@ def generate_chart_html(
             ctx.stroke();
             ctx.setLineDash([]);
 
-            // Vertical threshold line (image removal boundary)
-            if (threshold > 0 && threshold < turns.length) {{
-                const threshX = pad.left + threshold * gap + gap;
-                ctx.strokeStyle = '#5e5ce6';
-                ctx.lineWidth = 1;
-                ctx.globalAlpha = 0.5;
-                ctx.setLineDash([6, 4]);
-                ctx.beginPath();
-                ctx.moveTo(threshX, pad.top);
-                ctx.lineTo(threshX, pad.top + cH);
-                ctx.stroke();
-                ctx.setLineDash([]);
-                // Label
-                ctx.fillStyle = '#5e5ce6';
-                ctx.font = '8px -apple-system, sans-serif';
-                ctx.textAlign = 'center';
-                ctx.fillText('optimize cutoff', threshX, pad.top - 4);
-                ctx.globalAlpha = 1;
+            // Vertical threshold line — show at first turn that has stripping
+            if (hasAnyOpt) {{
+                let firstStripped = -1;
+                for (let i = 0; i < turns.length; i++) {{
+                    if ((turns[i].stripped_tool || 0) + (turns[i].stripped_thinking || 0) > 0) {{
+                        firstStripped = i;
+                        break;
+                    }}
+                }}
+                if (firstStripped >= 0) {{
+                    const threshX = pad.left + firstStripped * gap + gap;
+                    ctx.strokeStyle = '#5e5ce6';
+                    ctx.lineWidth = 1;
+                    ctx.globalAlpha = 0.5;
+                    ctx.setLineDash([6, 4]);
+                    ctx.beginPath();
+                    ctx.moveTo(threshX, pad.top);
+                    ctx.lineTo(threshX, pad.top + cH);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                    ctx.fillStyle = '#5e5ce6';
+                    ctx.font = '8px -apple-system, sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('optimize cutoff', threshX, pad.top - 4);
+                    ctx.globalAlpha = 1;
+                }}
             }}
 
             // Cumulative curves: full (white) and optimized (indigo)

@@ -1,5 +1,6 @@
 """FastMCP proxy server setup — mounts all MCP backends."""
 
+import json
 import logging
 
 from fastmcp import FastMCP as FastMCPServer
@@ -63,11 +64,47 @@ def make_google_client_factory(app_ref):
     return factory
 
 
+from fastmcp.server.middleware import Middleware as FastMCPMiddleware
+
+
+class ToolGateMiddleware(FastMCPMiddleware):
+    """FastMCP middleware that shows a tool gate popup on every tools/list request."""
+
+    def __init__(self, app_ref):
+        super().__init__()
+        self._app_ref = app_ref
+
+    async def on_list_tools(self, context, call_next):
+        logger.info("ToolGateMiddleware: tools/list intercepted")
+        try:
+            tools = await call_next(context)
+
+            if not tools:
+                return tools
+
+            tool_groups = self._app_ref._build_tool_tree()
+            disabled = set(getattr(self._app_ref, "disabled_tools", set()))
+
+            from ui.tool_gate import show_tool_gate
+            gate_result = await show_tool_gate(tool_groups, disabled)
+
+            if gate_result is None:
+                return []
+
+            disabled_set = set(gate_result)
+            return [t for t in tools if t.name not in disabled_set]
+        except Exception as e:
+            logger.error("ToolGateMiddleware error: %s", e, exc_info=True)
+            raise
+
+
 def run_mcp_proxy(app_ref, port: int, jira_mcp_port: int):
     """Run unified FastMCP proxy server mounting all backends. Blocks forever."""
+    logger.info("run_mcp_proxy starting (port=%d)", port)
     main_server = FastMCPServer(
         "voitta-desktop",
         instructions=build_instructions(),
+        middleware=[ToolGateMiddleware(app_ref)],
     )
 
     # ── Core backends (custom auth) ─────────────────────────────────
@@ -129,8 +166,8 @@ def run_mcp_proxy(app_ref, port: int, jira_mcp_port: int):
             fmt = media_type.split("/")[-1] if "/" in media_type else "png"
             return Image(data=raw, format=fmt)
 
-        if obj["type"] == "bash":
-            return obj["data"]
+        if obj["type"] in ("bash", "tool_result"):
+            return obj["data"] if isinstance(obj["data"], str) else json.dumps(obj["data"])
 
         return f"Unknown object type: {obj['type']}"
 

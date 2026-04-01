@@ -114,6 +114,18 @@ class ConversationTracker(Middleware):
                 if messages[mi].get("role") == "assistant"
             )
             turn._msg_range = (msg_index, turn_end)
+            for mi in range(msg_index, turn_end):
+                m = messages[mi]
+                if m.get("role") != "user":
+                    continue
+                content = m.get("content", [])
+                if not isinstance(content, list):
+                    continue
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "tool_result":
+                        tid = item.get("tool_use_id", "")
+                        if tid:
+                            turn.tool_use_ids.append(tid)
             msg_index = turn_end
 
         # Compute stale read chars per turn

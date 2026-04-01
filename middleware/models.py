@@ -71,6 +71,7 @@ class Turn:
     thinking_chars: int = 0
     images: list[ImageInfo] = field(default_factory=list)
     cache_control_types: list[str] = field(default_factory=list)
+    tool_use_ids: list[str] = field(default_factory=list)
 
     @property
     def total_tokens(self) -> int:

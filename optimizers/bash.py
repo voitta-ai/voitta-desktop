@@ -66,8 +66,13 @@ class BashOptimizer(BaseOptimizer):
 
                 rc = item.get("content", "")
                 if isinstance(rc, str) and rc:
-                    h = _store_bash(rc)
-                    item = dict(item, content=_bash_placeholder(rc, h))
+                    h = _bash_hash(rc)
+                    placeholder = _bash_placeholder(rc, h)
+                    if len(rc) < len(placeholder) * 2:
+                        new_content.append(item)
+                        continue
+                    _store_bash(rc)
+                    item = dict(item, content=placeholder)
                     tokens_removed += len(rc) // 4  # rough token estimate
 
                 new_content.append(item)

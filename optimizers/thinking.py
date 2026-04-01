@@ -41,6 +41,8 @@ class ThinkingOptimizer(BaseOptimizer):
                     signature = item.get("signature", "")
                     saved_chars = len(thinking_text) + len(signature)
                     tokens_removed += int(saved_chars / 3.5)
+                    self.last_stripped_msg_indices[i] = \
+                        self.last_stripped_msg_indices.get(i, 0) + saved_chars
                     modified = True
                     continue
 

@@ -77,8 +77,10 @@ class ImageOptimizer(BaseOptimizer):
                     rc = item.get("content")
                     if isinstance(rc, list):
                         new_rc = []
+                        img_chars = 0
                         for b in rc:
                             if isinstance(b, dict) and b.get("type") == "image":
+                                img_chars += image_tokens(b)
                                 tokens_removed += image_tokens(b)
                                 img_hash = _store_image(b)
                                 new_rc.append(_image_placeholder(b, img_hash))
@@ -86,6 +88,9 @@ class ImageOptimizer(BaseOptimizer):
                                 new_rc.append(b)
                         item = dict(item)
                         item["content"] = new_rc
+                        if img_chars > 0:
+                            tool_use_id = item.get("tool_use_id", "")
+                            self.last_stripped_ids[tool_use_id] = img_chars
                     new_content.append(item)
                 else:
                     new_content.append(item)
