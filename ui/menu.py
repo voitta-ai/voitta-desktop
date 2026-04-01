@@ -926,22 +926,12 @@ class VoittaDesktopApp(rumps.App):
         for i, td in enumerate(turns_data):
             ci = i - ch_offset
             if 0 <= ci < len(cache_history):
-                total, prefix, boundary_msg = cache_history[ci]
+                total, prefix = cache_history[ci]
                 td["cache_sim_total"] = total
                 td["cache_sim_prefix"] = prefix
-                # Convert message index to turn index using _msg_range
-                boundary_turn = -1
-                if boundary_msg >= 0 and conv:
-                    for ti2, t2 in enumerate(conv.turns):
-                        start, end = t2._msg_range
-                        if boundary_msg < end:
-                            boundary_turn = ti2
-                            break
-                td["cache_sim_boundary_turn"] = boundary_turn
             else:
                 td["cache_sim_total"] = 0
                 td["cache_sim_prefix"] = 0
-                td["cache_sim_boundary_turn"] = -1
         html = generate_chart_html(None, breakdown_data, turns_data, active)
 
         screen = NSScreen.mainScreen().frame()

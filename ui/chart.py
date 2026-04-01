@@ -540,14 +540,37 @@ def generate_chart_html(
                 }}
             }}
 
-            // Cache boundary: vertical dashed line at the turn where prefix ends
+            // Cache boundary: vertical dashed line at the char position where prefix ends
             if (cacheBoundaryTurn >= 0 && cacheBoundaryTurn < turns.length) {{
                 const t = turns[cacheBoundaryTurn];
-                const bt = t.cache_sim_boundary_turn;
-                if (bt !== undefined && bt >= 0) {{
-                    // Vertical line between the cached turn and the next
-                    const boundaryC = bt + 1;  // column index of last cached turn
-                    const boundaryX = pad.left + (boundaryC + 1) * gap;
+                const total = t.cache_sim_total || 0;
+                const prefix = t.cache_sim_prefix || 0;
+                if (total > 0 && prefix > 0) {{
+                    const fraction = prefix / total;
+                    // Build cumulative char positions per column
+                    const cumChars = [0];
+                    let running = 0;
+                    for (let c = 0; c < nCols; c++) {{
+                        running += colTotals[c];
+                        cumChars.push(running);
+                    }}
+                    const totalChars = running || 1;
+                    const targetChars = fraction * totalChars;
+
+                    // Find which column and where within it
+                    let boundaryX = pad.left + cW;  // default: end
+                    for (let c = 0; c < nCols; c++) {{
+                        if (cumChars[c + 1] >= targetChars) {{
+                            // Boundary falls within column c
+                            const colStart = cumChars[c];
+                            const colEnd = cumChars[c + 1];
+                            const withinCol = (colEnd > colStart)
+                                ? (targetChars - colStart) / (colEnd - colStart)
+                                : 0.5;
+                            boundaryX = pad.left + c * gap + withinCol * gap;
+                            break;
+                        }}
+                    }}
 
                     ctx.strokeStyle = '#ff3b30';
                     ctx.lineWidth = 2;
@@ -558,13 +581,12 @@ def generate_chart_html(
                     ctx.stroke();
                     ctx.setLineDash([]);
 
-                    // Label
                     ctx.fillStyle = '#ff3b30';
                     ctx.font = '9px -apple-system, sans-serif';
                     ctx.textAlign = 'center';
                     ctx.fillText('cache boundary', boundaryX, pad.top - 4);
 
-                    // Shade the cached region (left of boundary)
+                    // Shade cached region
                     ctx.fillStyle = 'rgba(48,209,88,0.06)';
                     ctx.fillRect(pad.left, pad.top, boundaryX - pad.left, cH);
                 }}
