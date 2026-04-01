@@ -310,6 +310,9 @@ def generate_chart_html(
             return grid(row('Type', hit.type) + row('Size', fmtChars(hit.value) + ' chars'));
         }}
 
+        // Shared state: selected cache turn for boundary display
+        let cacheBoundaryTurn = -1;  // -1 = none selected
+
         function draw() {{
             const dpr = window.devicePixelRatio || 1;
             const rect = canvas.getBoundingClientRect();
@@ -534,6 +537,43 @@ def generate_chart_html(
                     }});
 
                     y -= segH;
+                }}
+            }}
+
+            // Cache boundary marker on selected turn
+            if (cacheBoundaryTurn >= 0 && cacheBoundaryTurn < turns.length) {{
+                const t = turns[cacheBoundaryTurn];
+                const total = t.cache_sim_total || 0;
+                const prefix = t.cache_sim_prefix || 0;
+                if (total > 0) {{
+                    const c = cacheBoundaryTurn + 1;
+                    const x = pad.left + c * gap + (gap - barW) / 2;
+                    const colTotal = colTotals[c] || 1;
+                    const fraction = prefix / total;
+                    // Boundary line: fraction of the bar from the bottom
+                    const boundaryY = pad.top + cH - fraction * (colTotal / maxVol) * cH;
+
+                    // Shaded region above boundary (not cached)
+                    ctx.save();
+                    ctx.fillStyle = 'rgba(255,59,48,0.15)';
+                    ctx.fillRect(x - 2, pad.top, barW + 4, boundaryY - pad.top);
+                    ctx.restore();
+
+                    // Boundary line
+                    ctx.strokeStyle = '#ff3b30';
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([4, 2]);
+                    ctx.beginPath();
+                    ctx.moveTo(x - 4, boundaryY);
+                    ctx.lineTo(x + barW + 4, boundaryY);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+
+                    // Label
+                    ctx.fillStyle = '#ff3b30';
+                    ctx.font = '9px -apple-system, sans-serif';
+                    ctx.textAlign = 'left';
+                    ctx.fillText((fraction * 100).toFixed(0) + '% cached', x + barW + 6, boundaryY + 3);
                 }}
             }}
 
@@ -903,10 +943,40 @@ def generate_chart_html(
                 cacheCtx.fill();
             }}
             cacheCtx.globalAlpha = 1;
+
+            // Highlight selected bar
+            if (cacheBoundaryTurn >= 0 && cacheBoundaryTurn < turns.length) {{
+                const c = cacheBoundaryTurn + 1;
+                const x = pad.left + c * gap + (gap - barW) / 2;
+                cacheCtx.strokeStyle = '#ff3b30';
+                cacheCtx.lineWidth = 2;
+                cacheCtx.strokeRect(x - 1, pad.top, barW + 2, cH);
+            }}
         }}
 
         drawCache();
         window.addEventListener('resize', drawCache);
+
+        // Click on cache bar → show boundary on main chart
+        cacheCanvas.addEventListener('click', (e) => {{
+            const rect = cacheCanvas.getBoundingClientRect();
+            const mx = e.clientX - rect.left;
+            const W = rect.width;
+            const nCols = 1 + turns.length;
+            const cPad = {{ left: 60, right: 60 }};
+            const cW = W - cPad.left - cPad.right;
+            const gap = cW / nCols;
+            const c = Math.floor((mx - cPad.left) / gap);
+            const ti = c - 1;
+            if (ti >= 0 && ti < turns.length && (turns[ti].cache_sim_total || 0) > 0) {{
+                cacheBoundaryTurn = (cacheBoundaryTurn === ti) ? -1 : ti;  // toggle
+            }} else {{
+                cacheBoundaryTurn = -1;
+            }}
+            draw();
+            drawCache();
+        }});
+        cacheCanvas.style.cursor = 'pointer';
         </script>
     </body>
     </html>
