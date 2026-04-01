@@ -10,6 +10,7 @@ def generate_chart_html(
     breakdown: dict,
     turns: list[dict],
     active_optimizers: dict[str, int] | None = None,
+    cache_sim: list[dict] | None = None,
 ) -> str:
     """Return a self-contained HTML page with a stacked-bar + cumulative-line chart.
 
@@ -32,9 +33,12 @@ def generate_chart_html(
     """
     if active_optimizers is None:
         active_optimizers = {}
+    if cache_sim is None:
+        cache_sim = []
     breakdown_json = json.dumps(breakdown)
     turns_json = json.dumps(turns)
     active_opt_json = json.dumps(active_optimizers)
+    cache_sim_json = json.dumps(cache_sim)
 
     chart_height = "calc(100vh - 100px)" if title else "calc(100vh - 80px)"
     title_div = f'<div class="title">{title}</div>' if title else ""
@@ -51,7 +55,8 @@ def generate_chart_html(
             -webkit-font-smoothing: antialiased;
         }}
         .title {{ font-size: 14px; font-weight: 600; margin-bottom: 10px; color: #f5f5f7; }}
-        .chart-container {{ position: relative; width: 100%; height: {chart_height}; }}
+        .chart-container {{ position: relative; width: 100%; height: calc(70vh - 60px); }}
+        .cache-container {{ position: relative; width: 100%; height: calc(30vh - 40px); margin-top: 4px; }}
         canvas {{ width: 100% !important; height: 100% !important; }}
         .legend {{
             display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 14px; font-size: 12px;
@@ -115,6 +120,9 @@ def generate_chart_html(
         <div class="chart-container">
             <canvas id="chart"></canvas>
         </div>
+        <div class="cache-container">
+            <canvas id="cache-chart"></canvas>
+        </div>
         <div id="tooltip" style="
             display:none; position:fixed; pointer-events:none; z-index:100;
             background:rgba(30,30,30,0.95); border:1px solid rgba(255,255,255,0.15);
@@ -124,6 +132,7 @@ def generate_chart_html(
         "></div>
         <script>
         const bd = {breakdown_json};
+        const cacheSim = {cache_sim_json};
         const turns = {turns_json};
         const canvas = document.getElementById('chart');
         const ctx = canvas.getContext('2d');
@@ -767,6 +776,148 @@ def generate_chart_html(
 
         draw();
         window.addEventListener('resize', draw);
+
+        // ── Cache Simulator Chart ──────────────────────────────────────
+        const cacheCanvas = document.getElementById('cache-chart');
+        const cacheCtx = cacheCanvas.getContext('2d');
+
+        function drawCache() {{
+            if (!cacheSim.length) return;
+
+            const dpr = window.devicePixelRatio || 1;
+            const rect = cacheCanvas.parentElement.getBoundingClientRect();
+            const W = rect.width;
+            const H = rect.height;
+            cacheCanvas.width = W * dpr;
+            cacheCanvas.height = H * dpr;
+            cacheCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+            // Match main chart padding and column layout
+            const nCols = 1 + turns.length;
+            const pad = {{ top: 8, right: 60, bottom: 20, left: 60 }};
+            const cW = W - pad.left - pad.right;
+            const cH = H - pad.top - pad.bottom;
+            const gap = cW / nCols;
+            const barW = Math.max(4, Math.min(40, gap * 0.7));
+
+            // Find max total bytes for absolute scale
+            const maxBytes = Math.max(...cacheSim.map(c => c.total_bytes), 1);
+
+            // Clear
+            cacheCtx.clearRect(0, 0, W, H);
+
+            // Y-axis label
+            cacheCtx.save();
+            cacheCtx.fillStyle = '#86868b';
+            cacheCtx.font = '9px -apple-system, sans-serif';
+            cacheCtx.textAlign = 'center';
+            cacheCtx.translate(10, pad.top + cH / 2);
+            cacheCtx.rotate(-Math.PI / 2);
+            cacheCtx.fillText('cache sim (bytes)', 0, 0);
+            cacheCtx.restore();
+
+            // Right Y-axis label (percentage)
+            cacheCtx.save();
+            cacheCtx.fillStyle = '#86868b';
+            cacheCtx.font = '9px -apple-system, sans-serif';
+            cacheCtx.textAlign = 'center';
+            cacheCtx.translate(W - 8, pad.top + cH / 2);
+            cacheCtx.rotate(Math.PI / 2);
+            cacheCtx.fillText('prefix %', 0, 0);
+            cacheCtx.restore();
+
+            // Grid lines
+            cacheCtx.strokeStyle = 'rgba(255,255,255,0.06)';
+            cacheCtx.lineWidth = 0.5;
+            for (let i = 0; i <= 4; i++) {{
+                const y = pad.top + (cH / 4) * i;
+                cacheCtx.beginPath();
+                cacheCtx.moveTo(pad.left, y);
+                cacheCtx.lineTo(pad.left + cW, y);
+                cacheCtx.stroke();
+            }}
+
+            // Left Y-axis tick labels (bytes)
+            cacheCtx.fillStyle = '#86868b';
+            cacheCtx.font = '9px -apple-system, sans-serif';
+            cacheCtx.textAlign = 'right';
+            for (let i = 0; i <= 4; i++) {{
+                const y = pad.top + (cH / 4) * i;
+                const val = maxBytes * (1 - i / 4);
+                let label;
+                if (val >= 1e6) label = (val / 1e6).toFixed(1) + 'M';
+                else if (val >= 1e3) label = (val / 1e3).toFixed(1) + 'k';
+                else label = val.toFixed(0);
+                cacheCtx.fillText(label, pad.left - 6, y + 3);
+            }}
+
+            // Right Y-axis tick labels (percentage)
+            cacheCtx.textAlign = 'left';
+            for (let i = 0; i <= 4; i++) {{
+                const y = pad.top + (cH / 4) * i;
+                const pct = (1 - i / 4) * 100;
+                cacheCtx.fillText(pct.toFixed(0) + '%', pad.left + cW + 6, y + 3);
+            }}
+
+            // Bars: total (dim) and prefix (bright) stacked
+            for (let i = 0; i < cacheSim.length; i++) {{
+                const c = i + 1;  // skip overhead column
+                if (c >= nCols) break;
+                const x = pad.left + c * gap + (gap - barW) / 2;
+                const total = cacheSim[i].total_bytes;
+                const prefix = cacheSim[i].prefix_bytes;
+
+                // Total bar (dim)
+                const totalH = (total / maxBytes) * cH;
+                cacheCtx.fillStyle = 'rgba(134,134,139,0.3)';
+                cacheCtx.fillRect(x, pad.top + cH - totalH, barW, totalH);
+
+                // Prefix bar (bright green)
+                const prefixH = (prefix / maxBytes) * cH;
+                cacheCtx.fillStyle = '#30d158';
+                cacheCtx.globalAlpha = 0.7;
+                cacheCtx.fillRect(x, pad.top + cH - prefixH, barW, prefixH);
+                cacheCtx.globalAlpha = 1;
+            }}
+
+            // Percentage line
+            cacheCtx.strokeStyle = '#5e5ce6';
+            cacheCtx.lineWidth = 1.5;
+            cacheCtx.globalAlpha = 0.9;
+            cacheCtx.beginPath();
+            let started = false;
+            for (let i = 0; i < cacheSim.length; i++) {{
+                const c = i + 1;
+                if (c >= nCols) break;
+                const x = pad.left + c * gap + gap / 2;
+                const pct = cacheSim[i].total_bytes > 0
+                    ? cacheSim[i].prefix_bytes / cacheSim[i].total_bytes
+                    : 0;
+                const y = pad.top + cH - pct * cH;
+                if (!started) {{ cacheCtx.moveTo(x, y); started = true; }}
+                else cacheCtx.lineTo(x, y);
+            }}
+            cacheCtx.stroke();
+
+            // Percentage dots
+            cacheCtx.fillStyle = '#5e5ce6';
+            for (let i = 0; i < cacheSim.length; i++) {{
+                const c = i + 1;
+                if (c >= nCols) break;
+                const x = pad.left + c * gap + gap / 2;
+                const pct = cacheSim[i].total_bytes > 0
+                    ? cacheSim[i].prefix_bytes / cacheSim[i].total_bytes
+                    : 0;
+                const y = pad.top + cH - pct * cH;
+                cacheCtx.beginPath();
+                cacheCtx.arc(x, y, 2.5, 0, Math.PI * 2);
+                cacheCtx.fill();
+            }}
+            cacheCtx.globalAlpha = 1;
+        }}
+
+        drawCache();
+        window.addEventListener('resize', drawCache);
         </script>
     </body>
     </html>

@@ -42,6 +42,7 @@ from config import (
     CONFIG_PATH, CONFIG_DIR,
 )
 from middleware import ConversationTracker, RequestLogger, BlockType, Turn
+from middleware.cache_sim import CacheSimulator
 from optimizers import OptimizerPipeline
 from optimizers.image import ImageOptimizer
 from optimizers.file_read import FileReadOptimizer
@@ -167,8 +168,9 @@ class VoittaDesktopApp(rumps.App):
         self._file_read_optimizer = FileReadOptimizer()
         self._thinking_optimizer = ThinkingOptimizer()
         self._optimizer_pipeline = OptimizerPipeline([self._tool_result_optimizer, self._image_optimizer, self._thinking_optimizer])
+        self._cache_sim = CacheSimulator()
         self._proxy = AnthropicProxy(
-            middlewares=[self._request_logger, self._tracker, self._optimizer_pipeline],
+            middlewares=[self._request_logger, self._tracker, self._optimizer_pipeline, self._cache_sim],
             port=self.llm_proxy_port,
         )
         self._proxy_running = False
@@ -918,12 +920,17 @@ class VoittaDesktopApp(rumps.App):
                     })
 
         active = self._optimizer_pipeline.active_optimizers
-        html = generate_chart_html(None, breakdown_data, turns_data, active)
+        cache_history = self._cache_sim.get_history(conv_id) if conv_id else []
+        cache_data = [
+            {"total_bytes": total, "prefix_bytes": prefix}
+            for total, prefix in cache_history
+        ]
+        html = generate_chart_html(None, breakdown_data, turns_data, active, cache_data)
 
         screen = NSScreen.mainScreen().frame()
         num_turns = len(turns_data)
         width = max(720, min(int(screen.size.width * 0.9), 40 * (num_turns + 1) + 140))
-        height = 420
+        height = 520
         frame = NSMakeRect(0, 0, width, height)
         style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
         window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
