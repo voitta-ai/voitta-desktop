@@ -49,8 +49,7 @@ class CacheSimulator(Middleware):
         else:
             prefix = _common_prefix_len(prev, current)
 
-        # Find byte offsets of each message in the serialized body
-        msg_offsets = _find_msg_offsets(current)
+        sections = _find_section_offsets(current)
 
         self._prev_body[sid] = current
 
@@ -59,7 +58,10 @@ class CacheSimulator(Middleware):
         self.history[sid].append({
             "total": total,
             "prefix": prefix,
-            "msg_offsets": msg_offsets,
+            "system_offset": sections["system"],
+            "tools_offset": sections["tools"],
+            "messages_offset": sections["messages"],
+            "msg_offsets": sections["msg_offsets"],
         })
 
         pct = (prefix / total * 100) if total > 0 else 0
@@ -69,18 +71,37 @@ class CacheSimulator(Middleware):
         return request
 
 
-def _find_msg_offsets(body: bytes) -> list[int]:
-    """Find byte offsets of each message's {"role": marker in the serialized body."""
+def _find_section_offsets(body: bytes) -> dict:
+    """Find byte offsets of system, tools, and messages sections, plus per-message offsets.
+
+    Returns {"system": int, "tools": int, "messages": int,
+             "msg_offsets": [int, ...], "total": int}
+    """
+    result = {
+        "system": 0,
+        "tools": 0,
+        "messages": 0,
+        "msg_offsets": [],
+        "total": len(body),
+    }
+
+    # Find top-level section starts
+    for key, field in [("system", b'"system":'), ("tools", b'"tools":'), ("messages", b'"messages":')]:
+        pos = body.find(field)
+        if pos >= 0:
+            result[key] = pos
+
+    # Find per-message offsets within the messages array
     marker = b'"role":'
-    offsets = []
-    pos = 0
+    pos = result["messages"]
     while True:
         pos = body.find(marker, pos)
         if pos < 0:
             break
-        offsets.append(pos)
+        result["msg_offsets"].append(pos)
         pos += len(marker)
-    return offsets
+
+    return result
 
 
 def _common_prefix_len(a: bytes, b: bytes) -> int:

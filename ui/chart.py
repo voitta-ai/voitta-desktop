@@ -542,48 +542,54 @@ def generate_chart_html(
 
             // Cache boundary: vertical dashed line where prefix match ends
             if (cacheBoundaryTurn >= 0 && cacheBoundaryTurn < turns.length) {{
-                const t = turns[cacheBoundaryTurn];
-                const total = t.cache_sim_total || 0;
-                const prefix = t.cache_sim_prefix || 0;
-                const msgOffsets = t.cache_sim_msg_offsets || [];
-                if (total > 0 && prefix > 0 && msgOffsets.length > 0) {{
-                    const overheadBytes = msgOffsets[0] || 0;
+                const cs = turns[cacheBoundaryTurn].cache_sim;
+                if (cs && cs.total > 0 && cs.prefix > 0) {{
+                    // Request layout in bytes:
+                    //   [0..system_offset)       = model/other fields
+                    //   [system_offset..tools_offset) = system array
+                    //   [tools_offset..messages_offset) = tools array
+                    //   [messages_offset..total)  = messages array
+                    // Chart layout:
+                    //   column 0 = overhead (system + tools)
+                    //   columns 1..N = turns (messages)
+
+                    const prefix = cs.prefix;
+                    const messagesStart = cs.messages_offset || 0;
+                    const msgOffsets = cs.msg_offsets || [];
 
                     let boundaryX;
-                    if (prefix <= overheadBytes) {{
-                        const frac = overheadBytes > 0 ? prefix / overheadBytes : 0;
+                    if (prefix <= messagesStart) {{
+                        // Prefix ends within overhead (system + tools)
+                        const frac = messagesStart > 0 ? prefix / messagesStart : 0;
                         boundaryX = pad.left + frac * gap;
                     }} else {{
-                        // Count messages before the prefix boundary
+                        // Prefix ends within messages — find which message
                         let msgsBeforePrefix = 0;
                         for (let m = 0; m < msgOffsets.length; m++) {{
                             if (msgOffsets[m] < prefix) msgsBeforePrefix = m + 1;
                             else break;
                         }}
 
-                        // Build cumulative message counts per turn to map msg index → turn column
+                        // Map message index to turn column using per-turn msg counts
                         let cumMsgs = [0];
                         for (let ti = 0; ti < turns.length; ti++) {{
                             cumMsgs.push(cumMsgs[ti] + (turns[ti].msg_count || 2));
                         }}
 
-                        // Find which turn the boundary message falls in
-                        let boundaryTurnIdx = turns.length - 1;
+                        let bTurn = turns.length - 1;
                         for (let ti = 0; ti < turns.length; ti++) {{
                             if (cumMsgs[ti + 1] >= msgsBeforePrefix) {{
-                                boundaryTurnIdx = ti;
+                                bTurn = ti;
                                 break;
                             }}
                         }}
 
-                        // Interpolate within the turn column
-                        const turnMsgStart = cumMsgs[boundaryTurnIdx];
-                        const turnMsgEnd = cumMsgs[boundaryTurnIdx + 1];
-                        const within = (turnMsgEnd > turnMsgStart)
-                            ? (msgsBeforePrefix - turnMsgStart) / (turnMsgEnd - turnMsgStart)
+                        const tStart = cumMsgs[bTurn];
+                        const tEnd = cumMsgs[bTurn + 1];
+                        const within = (tEnd > tStart)
+                            ? (msgsBeforePrefix - tStart) / (tEnd - tStart)
                             : 0.5;
-                        const col = boundaryTurnIdx + 1;
-                        boundaryX = pad.left + col * gap + within * gap;
+                        boundaryX = pad.left + (bTurn + 1) * gap + within * gap;
                     }}
 
                     ctx.strokeStyle = '#ff3b30';
@@ -598,7 +604,7 @@ def generate_chart_html(
                     ctx.fillStyle = '#ff3b30';
                     ctx.font = '9px -apple-system, sans-serif';
                     ctx.textAlign = 'center';
-                    const pct = (prefix / total * 100).toFixed(0);
+                    const pct = (cs.prefix / cs.total * 100).toFixed(0);
                     ctx.fillText(pct + '% cached', boundaryX, pad.top - 4);
 
                     ctx.fillStyle = 'rgba(48,209,88,0.06)';
@@ -847,7 +853,7 @@ def generate_chart_html(
 
         function drawCache() {{
             // Check if any turn has cache sim data
-            const hasData = turns.some(t => (t.cache_sim_total || 0) > 0);
+            const hasData = turns.some(t => ((t.cache_sim ? t.cache_sim.total : 0)) > 0);
             if (!hasData) return;
 
             const dpr = window.devicePixelRatio || 1;
@@ -866,7 +872,7 @@ def generate_chart_html(
             const gap = cW / nCols;
             const barW = Math.max(4, Math.min(40, gap * 0.7));
 
-            const maxBytes = Math.max(...turns.map(t => t.cache_sim_total || 0), 1);
+            const maxBytes = Math.max(...turns.map(t => (t.cache_sim ? t.cache_sim.total : 0)), 1);
 
             cacheCtx.clearRect(0, 0, W, H);
 
@@ -927,8 +933,8 @@ def generate_chart_html(
             for (let ti = 0; ti < turns.length; ti++) {{
                 const c = ti + 1;  // column index (0 = overhead, 1+ = turns)
                 const x = pad.left + c * gap + (gap - barW) / 2;
-                const total = turns[ti].cache_sim_total || 0;
-                const prefix = turns[ti].cache_sim_prefix || 0;
+                const total = (turns[ti].cache_sim ? turns[ti].cache_sim.total : 0);
+                const prefix = (turns[ti].cache_sim ? turns[ti].cache_sim.prefix : 0);
 
                 // Total bar (dim gray)
                 const totalH = (total / maxBytes) * cH;
@@ -951,8 +957,8 @@ def generate_chart_html(
             for (let ti = 0; ti < turns.length; ti++) {{
                 const c = ti + 1;
                 const x = pad.left + c * gap + gap / 2;
-                const total = turns[ti].cache_sim_total || 0;
-                const pct = total > 0 ? (turns[ti].cache_sim_prefix || 0) / total : 0;
+                const total = (turns[ti].cache_sim ? turns[ti].cache_sim.total : 0);
+                const pct = total > 0 ? ((turns[ti].cache_sim ? turns[ti].cache_sim.prefix : 0)) / total : 0;
                 const y = pad.top + cH - pct * cH;
                 if (ti === 0) cacheCtx.moveTo(x, y);
                 else cacheCtx.lineTo(x, y);
@@ -964,8 +970,8 @@ def generate_chart_html(
             for (let ti = 0; ti < turns.length; ti++) {{
                 const c = ti + 1;
                 const x = pad.left + c * gap + gap / 2;
-                const total = turns[ti].cache_sim_total || 0;
-                const pct = total > 0 ? (turns[ti].cache_sim_prefix || 0) / total : 0;
+                const total = (turns[ti].cache_sim ? turns[ti].cache_sim.total : 0);
+                const pct = total > 0 ? ((turns[ti].cache_sim ? turns[ti].cache_sim.prefix : 0)) / total : 0;
                 const y = pad.top + cH - pct * cH;
                 cacheCtx.beginPath();
                 cacheCtx.arc(x, y, 2.5, 0, Math.PI * 2);
@@ -997,7 +1003,7 @@ def generate_chart_html(
             const gap = cW / nCols;
             const c = Math.floor((mx - cPad.left) / gap);
             const ti = c - 1;
-            if (ti >= 0 && ti < turns.length && (turns[ti].cache_sim_total || 0) > 0) {{
+            if (ti >= 0 && ti < turns.length && ((turns[ti].cache_sim ? turns[ti].cache_sim.total : 0)) > 0) {{
                 cacheBoundaryTurn = (cacheBoundaryTurn === ti) ? -1 : ti;  // toggle
             }} else {{
                 cacheBoundaryTurn = -1;

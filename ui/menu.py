@@ -928,13 +928,9 @@ class VoittaDesktopApp(rumps.App):
             ci = i - ch_offset
             if 0 <= ci < len(cache_history):
                 ch = cache_history[ci]
-                td["cache_sim_total"] = ch["total"]
-                td["cache_sim_prefix"] = ch["prefix"]
-                td["cache_sim_msg_offsets"] = ch["msg_offsets"]
+                td["cache_sim"] = ch
             else:
-                td["cache_sim_total"] = 0
-                td["cache_sim_prefix"] = 0
-                td["cache_sim_msg_offsets"] = []
+                td["cache_sim"] = None
         html = generate_chart_html(None, breakdown_data, turns_data, active)
 
         screen = NSScreen.mainScreen().frame()
