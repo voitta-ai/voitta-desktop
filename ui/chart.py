@@ -544,38 +544,36 @@ def generate_chart_html(
             if (cacheBoundaryTurn >= 0 && cacheBoundaryTurn < turns.length) {{
                 const cs = turns[cacheBoundaryTurn].cache_sim;
                 if (cs && cs.total > 0 && cs.prefix > 0) {{
-                    // Request layout in bytes:
-                    //   [0..system_offset)       = model/other fields
-                    //   [system_offset..tools_offset) = system array
-                    //   [tools_offset..messages_offset) = tools array
-                    //   [messages_offset..total)  = messages array
+                    // Actual byte order in serialized JSON:
+                    //   messages come first, then system, then tools
+                    //   (Claude Code serializes: model, messages, system, tools)
                     // Chart layout:
                     //   column 0 = overhead (system + tools)
                     //   columns 1..N = turns (messages)
+                    // The prefix covers messages from the start, breaking when
+                    // cache_control annotations shift between requests.
 
                     const prefix = cs.prefix;
-                    const messagesStart = cs.messages_offset || 0;
                     const msgOffsets = cs.msg_offsets || [];
 
+                    // Count messages before the prefix boundary
+                    let msgsBeforePrefix = 0;
+                    for (let m = 0; m < msgOffsets.length; m++) {{
+                        if (msgOffsets[m] < prefix) msgsBeforePrefix = m + 1;
+                        else break;
+                    }}
+
+                    // Map message index to turn column using per-turn msg counts
+                    let cumMsgs = [0];
+                    for (let ti = 0; ti < turns.length; ti++) {{
+                        cumMsgs.push(cumMsgs[ti] + (turns[ti].msg_count || 2));
+                    }}
+
                     let boundaryX;
-                    if (prefix <= messagesStart) {{
-                        // Prefix ends within overhead (system + tools)
-                        const frac = messagesStart > 0 ? prefix / messagesStart : 0;
-                        boundaryX = pad.left + frac * gap;
+                    if (msgsBeforePrefix === 0) {{
+                        // Prefix breaks before first message
+                        boundaryX = pad.left;
                     }} else {{
-                        // Prefix ends within messages — find which message
-                        let msgsBeforePrefix = 0;
-                        for (let m = 0; m < msgOffsets.length; m++) {{
-                            if (msgOffsets[m] < prefix) msgsBeforePrefix = m + 1;
-                            else break;
-                        }}
-
-                        // Map message index to turn column using per-turn msg counts
-                        let cumMsgs = [0];
-                        for (let ti = 0; ti < turns.length; ti++) {{
-                            cumMsgs.push(cumMsgs[ti] + (turns[ti].msg_count || 2));
-                        }}
-
                         let bTurn = turns.length - 1;
                         for (let ti = 0; ti < turns.length; ti++) {{
                             if (cumMsgs[ti + 1] >= msgsBeforePrefix) {{
