@@ -103,12 +103,29 @@ class RequestLogger(Middleware):
         response_text = decompress(raw, encoding)
 
         if "text/event-stream" in entry.get("response_headers", {}).get("Content-Type", ""):
-            events = []
+            # Parse SSE events, extract usage from final message_delta
+            response_body = {}
             for line in response_text.split("\n"):
                 line = line.strip()
-                if line.startswith("data: "):
-                    events.append(json.loads(line[6:]))
-            entry["response_events"] = events
+                if not line.startswith("data: "):
+                    continue
+                try:
+                    event = json.loads(line[6:])
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                # message_start has model/id, message_delta has usage
+                etype = event.get("type", "")
+                if etype == "message_start":
+                    msg = event.get("message", {})
+                    response_body["model"] = msg.get("model")
+                    response_body["id"] = msg.get("id")
+                    response_body["usage"] = msg.get("usage", {})
+                elif etype == "message_delta":
+                    # Merge delta usage (has output_tokens) into usage
+                    delta_usage = event.get("usage", {})
+                    if delta_usage:
+                        response_body.setdefault("usage", {}).update(delta_usage)
+            entry["response_body"] = response_body
         else:
             entry["response_body"] = json.loads(response_text) if response_text else None
 
