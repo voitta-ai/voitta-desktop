@@ -540,39 +540,67 @@ def generate_chart_html(
                 }}
             }}
 
-            // Cache boundary: vertical dashed line at the char position where prefix ends
+            // Cache boundary: vertical dashed line where prefix match ends
             if (cacheBoundaryTurn >= 0 && cacheBoundaryTurn < turns.length) {{
                 const t = turns[cacheBoundaryTurn];
                 const total = t.cache_sim_total || 0;
                 const prefix = t.cache_sim_prefix || 0;
-                if (total > 0 && prefix > 0) {{
-                    // The request is: overhead + messages for turns 0..N
-                    // cumFullValues[i] = overhead + sum(turn chars 0..i)
-                    // Map prefix fraction onto this cumulative scale
-                    const fraction = prefix / total;
-                    const selectedTurnTotal = cumFullValues[cacheBoundaryTurn] || 1;
-                    const targetChars = fraction * selectedTurnTotal;
+                const msgOffsets = t.cache_sim_msg_offsets || [];
+                if (total > 0 && prefix > 0 && msgOffsets.length > 0) {{
+                    // msgOffsets[i] = byte offset of i-th message's "role": marker
+                    // Messages are grouped into turns by the tracker.
+                    // The overhead (system+tools) ends at msgOffsets[0].
+                    // We need to find which turn column the prefix byte falls in.
 
-                    // Find X position by interpolating along cumulative values
-                    // overhead sits at column 0 (X = pad.left + gap/2)
-                    // turn i sits at column i+1 (X = pad.left + (i+1)*gap + gap/2)
-                    let boundaryX = pad.left;
-                    if (targetChars <= overhead) {{
-                        // Boundary is within overhead
-                        const frac = overhead > 0 ? targetChars / overhead : 0;
+                    // Count messages before the prefix boundary
+                    let msgsBeforePrefix = 0;
+                    for (let m = 0; m < msgOffsets.length; m++) {{
+                        if (msgOffsets[m] < prefix) msgsBeforePrefix = m + 1;
+                        else break;
+                    }}
+
+                    // Map message count to turn index.
+                    // The tracker groups messages into turns. Each turn has
+                    // a variable number of messages (user + assistant + tool results).
+                    // We approximate: scan turns' _msg_range via the turn data.
+                    // Since we don't have msg counts per turn in JS, use the msg offsets
+                    // to find fractional position between turn columns.
+
+                    // Simpler: place the line based on byte fraction of total,
+                    // mapped onto message-based column positions.
+                    // overhead column covers bytes [0, msgOffsets[0])
+                    // messages cover bytes [msgOffsets[0], total)
+                    const overheadBytes = msgOffsets[0] || 0;
+                    const msgBytes = total - overheadBytes;
+
+                    let boundaryX;
+                    if (prefix <= overheadBytes) {{
+                        // Within overhead
+                        const frac = overheadBytes > 0 ? prefix / overheadBytes : 0;
                         boundaryX = pad.left + frac * gap;
                     }} else {{
-                        // Boundary is within the turns
-                        const prev = [overhead, ...cumFullValues];
-                        for (let i = 0; i < cumFullValues.length; i++) {{
-                            if (cumFullValues[i] >= targetChars) {{
-                                const lo = prev[i];
-                                const hi = cumFullValues[i];
-                                const within = (hi > lo) ? (targetChars - lo) / (hi - lo) : 0.5;
-                                boundaryX = pad.left + (i + 1) * gap + within * gap;
+                        // Within messages: distribute across turn columns proportionally
+                        // Find which message the prefix falls in
+                        let prevOffset = overheadBytes;
+                        let turnCol = 1;
+                        // Group messages into turns: each pair of messages is roughly a turn
+                        // More accurately: use the message offsets to interpolate
+                        const nMsgs = msgOffsets.length;
+                        const nTurns = turns.length;
+                        // Each turn gets (nMsgs/nTurns) messages on average
+                        // Find which message index the prefix falls at
+                        let prefixMsgIdx = nMsgs;
+                        for (let m = 0; m < nMsgs; m++) {{
+                            if (msgOffsets[m] >= prefix) {{
+                                prefixMsgIdx = m;
                                 break;
                             }}
                         }}
+                        // Map message index to fractional turn position
+                        const turnFraction = nMsgs > 0 ? prefixMsgIdx / nMsgs : 1;
+                        // turnFraction 0..1 maps to columns 1..nCols
+                        const turnPos = turnFraction * (nCols - 1);
+                        boundaryX = pad.left + (1 + turnPos) * gap;
                     }}
 
                     ctx.strokeStyle = '#ff3b30';
@@ -587,8 +615,8 @@ def generate_chart_html(
                     ctx.fillStyle = '#ff3b30';
                     ctx.font = '9px -apple-system, sans-serif';
                     ctx.textAlign = 'center';
-                    const pctLabel = (fraction * 100).toFixed(0) + '% cached';
-                    ctx.fillText(pctLabel, boundaryX, pad.top - 4);
+                    const pct = (prefix / total * 100).toFixed(0);
+                    ctx.fillText(pct + '% cached', boundaryX, pad.top - 4);
 
                     // Shade cached region
                     ctx.fillStyle = 'rgba(48,209,88,0.06)';

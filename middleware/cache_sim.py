@@ -18,11 +18,11 @@ class CacheSimulator(Middleware):
     def __init__(self):
         # session_id -> last request body bytes
         self._prev_body: dict[str, bytes] = {}
-        # session_id -> list of (total_bytes, prefix_bytes) per turn
-        self.history: dict[str, list[tuple[int, int]]] = {}
+        # session_id -> list of per-turn cache data dicts
+        self.history: dict[str, list[dict]] = {}
 
-    def get_history(self, session_id: str) -> list[tuple[int, int]]:
-        """Return [(total_bytes, prefix_bytes), ...] for a session."""
+    def get_history(self, session_id: str) -> list[dict]:
+        """Return [{"total": int, "prefix": int, "msg_offsets": [int, ...]}, ...] per turn."""
         return self.history.get(session_id, [])
 
     async def on_request(self, request: ProxyRequest) -> ProxyRequest:
@@ -49,17 +49,38 @@ class CacheSimulator(Middleware):
         else:
             prefix = _common_prefix_len(prev, current)
 
+        # Find byte offsets of each message in the serialized body
+        msg_offsets = _find_msg_offsets(current)
+
         self._prev_body[sid] = current
 
         if sid not in self.history:
             self.history[sid] = []
-        self.history[sid].append((total, prefix))
+        self.history[sid].append({
+            "total": total,
+            "prefix": prefix,
+            "msg_offsets": msg_offsets,
+        })
 
         pct = (prefix / total * 100) if total > 0 else 0
         logger.debug("cache_sim | sid=%s turn=%d total=%d prefix=%d (%.1f%%)",
                      sid[:12], len(self.history[sid]) - 1, total, prefix, pct)
 
         return request
+
+
+def _find_msg_offsets(body: bytes) -> list[int]:
+    """Find byte offsets of each message's {"role": marker in the serialized body."""
+    marker = b'"role":'
+    offsets = []
+    pos = 0
+    while True:
+        pos = body.find(marker, pos)
+        if pos < 0:
+            break
+        offsets.append(pos)
+        pos += len(marker)
+    return offsets
 
 
 def _common_prefix_len(a: bytes, b: bytes) -> int:
