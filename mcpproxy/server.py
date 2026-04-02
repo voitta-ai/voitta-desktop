@@ -75,14 +75,15 @@ class ToolGateMiddleware(FastMCPMiddleware):
         self._app_ref = app_ref
 
     async def on_list_tools(self, context, call_next):
-        # Only gate external client requests, not internal server calls
-        has_session = False
+        # Only gate external client requests, not internal calls
         try:
             ctx = context.fastmcp_context
-            has_session = ctx is not None and ctx.session is not None
+            if ctx is None or ctx.session is None:
+                return await call_next(context)
+            params = ctx.session.client_params
+            if params and params.clientInfo and params.clientInfo.name == "settings":
+                return await call_next(context)
         except Exception:
-            pass
-        if not has_session:
             return await call_next(context)
 
         logger.info("ToolGateMiddleware: tools/list from client")
