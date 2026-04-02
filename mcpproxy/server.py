@@ -173,6 +173,10 @@ def run_mcp_proxy(app_ref, port: int, jira_mcp_port: int):
         instructions=build_instructions(),
         middleware=[gate],
     )
+    # Disable tools/list_changed notifications — they cause Claude Code
+    # to re-fetch tools on every backend mount and settings poll,
+    # triggering unwanted tool gate popups.
+    main_server._mcp_server.notification_options.tools_changed = False
 
     # ── Core backends (custom auth) ─────────────────────────────────
 
