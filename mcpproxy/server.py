@@ -1,5 +1,6 @@
 """FastMCP proxy server setup — mounts all MCP backends."""
 
+import asyncio
 import json
 import logging
 
@@ -83,6 +84,13 @@ class ToolGateMiddleware(FastMCPMiddleware):
         self._app_ref = app_ref
         self._last_disabled: set[str] | None = None
         self._last_time: float = 0
+        self._lock: asyncio.Lock | None = None
+
+    def _get_lock(self) -> asyncio.Lock:
+        if self._lock is None:
+            import asyncio
+            self._lock = asyncio.Lock()
+        return self._lock
 
     async def on_list_tools(self, context, call_next):
         import time
@@ -94,14 +102,16 @@ class ToolGateMiddleware(FastMCPMiddleware):
             logger.warning("tool_gate: pass-through (%s)", client_name or "no session")
             return await call_next(context)
 
-        # Reuse recent result within the window
-        if self._last_disabled is not None and (time.time() - self._last_time) < self.REUSE_WINDOW_S:
-            logger.warning("tool_gate: reusing recent result (client=%s, %.1fs ago)",
-                           client_name, time.time() - self._last_time)
-            tools = await call_next(context)
-            return [t for t in tools if t.name not in self._last_disabled]
+        # Serialize popup access — second request waits for first popup to finish
+        async with self._get_lock():
+            # Reuse recent result within the window
+            if self._last_disabled is not None and (time.time() - self._last_time) < self.REUSE_WINDOW_S:
+                logger.warning("tool_gate: reusing recent result (client=%s, %.1fs ago)",
+                               client_name, time.time() - self._last_time)
+                tools = await call_next(context)
+                return [t for t in tools if t.name not in self._last_disabled]
 
-        return await self._show_gate(context, call_next, client_name, session_id)
+            return await self._show_gate(context, call_next, client_name, session_id)
 
     def _get_client_info(self, context) -> tuple[str | None, str | None]:
         """Extract client name and session ID from context."""
