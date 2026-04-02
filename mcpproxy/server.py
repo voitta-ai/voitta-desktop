@@ -68,19 +68,13 @@ from fastmcp.server.middleware import Middleware as FastMCPMiddleware
 
 
 class ToolGateMiddleware(FastMCPMiddleware):
-    """Shows a tool gate popup on the first external tools/list request after startup.
-
-    Subsequent requests auto-approve using the current disabled_tools set.
-    The gate can be re-triggered via the 'MCP tool gate' menu toggle.
-    """
+    """Shows a tool gate popup on every external tools/list request."""
 
     def __init__(self, app_ref):
         super().__init__()
         self._app_ref = app_ref
-        self._shown = False  # True after first popup shown
 
     async def on_list_tools(self, context, call_next):
-        # Identify caller
         client_name, session_id = self._get_client_info(context)
 
         # Skip internal calls
@@ -88,12 +82,6 @@ class ToolGateMiddleware(FastMCPMiddleware):
             logger.warning("tool_gate: pass-through (%s)", client_name or "no session")
             return await call_next(context)
 
-        # Show popup once on first external request, then auto-approve
-        if self._shown:
-            logger.warning("tool_gate: auto-approved (client=%s)", client_name)
-            return await call_next(context)
-
-        self._shown = True
         return await self._show_gate(context, call_next, client_name, session_id)
 
     def _get_client_info(self, context) -> tuple[str | None, str | None]:
