@@ -77,7 +77,7 @@ class ToolGateMiddleware(FastMCPMiddleware):
     - Menu "MCP tool gate" re-arms for immediate popup
     """
 
-    REUSE_WINDOW_S = 5.0
+    REUSE_WINDOW_S = 1.0
 
     def __init__(self, app_ref):
         super().__init__()
