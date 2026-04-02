@@ -109,6 +109,13 @@ class ToolGateMiddleware(FastMCPMiddleware):
 
             meta = {}
             try:
+                from fastmcp.server.dependencies import get_http_request
+                http_req = get_http_request()
+                if http_req.client:
+                    meta["remote"] = f"{http_req.client.host}:{http_req.client.port}"
+            except Exception:
+                pass
+            try:
                 ctx = context.fastmcp_context
                 if ctx:
                     meta["session_id"] = ctx.session_id
