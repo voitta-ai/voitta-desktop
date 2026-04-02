@@ -68,19 +68,38 @@ from fastmcp.server.middleware import Middleware as FastMCPMiddleware
 
 
 class ToolGateMiddleware(FastMCPMiddleware):
-    """Shows a tool gate popup on every external tools/list request."""
+    """Shows a tool gate popup on external tools/list requests.
+
+    - First external request: show popup, remember result
+    - Requests within REUSE_WINDOW_S: reuse last result (no popup)
+    - After window expires: show popup again
+    - Menu "MCP tool gate" re-arms for immediate popup
+    """
+
+    REUSE_WINDOW_S = 5.0
 
     def __init__(self, app_ref):
         super().__init__()
         self._app_ref = app_ref
+        self._last_disabled: set[str] | None = None
+        self._last_time: float = 0
 
     async def on_list_tools(self, context, call_next):
+        import time
+
         client_name, session_id = self._get_client_info(context)
 
         # Skip internal calls
         if client_name is None or client_name == "settings":
             logger.warning("tool_gate: pass-through (%s)", client_name or "no session")
             return await call_next(context)
+
+        # Reuse recent result within the window
+        if self._last_disabled is not None and (time.time() - self._last_time) < self.REUSE_WINDOW_S:
+            logger.warning("tool_gate: reusing recent result (client=%s, %.1fs ago)",
+                           client_name, time.time() - self._last_time)
+            tools = await call_next(context)
+            return [t for t in tools if t.name not in self._last_disabled]
 
         return await self._show_gate(context, call_next, client_name, session_id)
 
@@ -154,10 +173,15 @@ class ToolGateMiddleware(FastMCPMiddleware):
             from ui.tool_gate import show_tool_gate
             gate_result = await show_tool_gate(tool_groups, disabled, meta)
 
+            import time
             if gate_result is None:
+                self._last_disabled = set()  # cancel = no tools
+                self._last_time = time.time()
                 return []
 
-            return [t for t in tools if t.name not in set(gate_result)]
+            self._last_disabled = set(gate_result)
+            self._last_time = time.time()
+            return [t for t in tools if t.name not in self._last_disabled]
         except Exception as e:
             logger.error("tool_gate: popup error: %s", e, exc_info=True)
             raise

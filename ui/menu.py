@@ -320,6 +320,8 @@ class VoittaDesktopApp(rumps.App):
         self._haiku_only_toggle.state = self._optimizer_pipeline.haiku_only
         menu_list.append(self._haiku_only_toggle)
 
+        self._tool_gate_rearm = rumps.MenuItem("  Re-arm MCP tool gate", callback=self._rearm_tool_gate)
+        menu_list.append(self._tool_gate_rearm)
 
         self._no_conversations = rumps.MenuItem("  (none yet)")
         self._no_conversations.set_callback(self._noop)
@@ -1249,6 +1251,14 @@ class VoittaDesktopApp(rumps.App):
     def _toggle_haiku_only(self, sender):
         self._optimizer_pipeline.haiku_only = not self._optimizer_pipeline.haiku_only
         sender.state = self._optimizer_pipeline.haiku_only
+
+    def _rearm_tool_gate(self, _):
+        """Reset the tool gate so the next tools/list shows the popup."""
+        gate = getattr(self, "_tool_gate", None)
+        if gate:
+            gate._last_disabled = None
+            gate._last_time = 0
+            logger.info("Tool gate re-armed")
 
     def _quit(self, _):
         rumps.quit_application()
