@@ -85,8 +85,21 @@ class ToolGateMiddleware(FastMCPMiddleware):
             tool_groups = self._app_ref._build_tool_tree()
             disabled = set(getattr(self._app_ref, "disabled_tools", set()))
 
+            # Extract client metadata
+            meta = {}
+            try:
+                ctx = context.fastmcp_context
+                if ctx:
+                    meta["session_id"] = ctx.session_id
+                    params = ctx.session.client_params
+                    if params and params.clientInfo:
+                        meta["client_name"] = params.clientInfo.name
+                        meta["client_version"] = params.clientInfo.version
+            except Exception:
+                pass
+
             from ui.tool_gate import show_tool_gate
-            gate_result = await show_tool_gate(tool_groups, disabled)
+            gate_result = await show_tool_gate(tool_groups, disabled, meta)
 
             if gate_result is None:
                 return []

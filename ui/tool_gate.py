@@ -15,10 +15,11 @@ from WebKit import WKWebView, WKWebViewConfiguration, WKWebsiteDataStore
 logger = logging.getLogger("voitta-desktop.tool_gate")
 
 
-def _build_html(tool_groups: list[dict], disabled_tools: set[str]) -> str:
+def _build_html(tool_groups: list[dict], disabled_tools: set[str], meta: dict | None = None) -> str:
     """Build the tool gate popup HTML."""
     groups_json = json.dumps(tool_groups)
     disabled_json = json.dumps(sorted(disabled_tools))
+    meta = meta or {}
 
     return f"""<!DOCTYPE html>
 <html>
@@ -48,6 +49,13 @@ def _build_html(tool_groups: list[dict], disabled_tools: set[str]) -> str:
     font-size: 11px; font-weight: 600; text-transform: uppercase;
     letter-spacing: 0.5px; color: var(--text-secondary); margin-bottom: 8px;
   }}
+  .meta {{
+    display: grid; grid-template-columns: auto 1fr; gap: 2px 10px;
+    font-size: 11px; margin-bottom: 10px; padding: 8px 10px;
+    background: var(--section-bg); border-radius: 6px;
+  }}
+  .meta-label {{ color: var(--text-secondary); }}
+  .meta-value {{ color: var(--text); font-family: ui-monospace, "SF Mono", monospace; font-size: 10px; }}
   .scroll {{ flex: 1; overflow-y: auto; margin-bottom: 12px; }}
   .tool-tree {{ list-style: none; padding: 0; margin: 0; }}
   .tool-group {{ margin-bottom: 2px; }}
@@ -112,6 +120,10 @@ def _build_html(tool_groups: list[dict], disabled_tools: set[str]) -> str:
 </head>
 <body>
 <h2>MCP Tools — Select tools to expose</h2>
+<div class="meta">
+  <span class="meta-label">Client</span><span class="meta-value">{meta.get('client_name', '?')} {meta.get('client_version', '')}</span>
+  <span class="meta-label">Session</span><span class="meta-value">{meta.get('session_id', '?')[:20]}</span>
+</div>
 <input class="tool-filter" placeholder="Filter tools\u2026" oninput="filterTools(this.value)">
 <div class="scroll">
   <ul class="tool-tree" id="tool-tree"></ul>
@@ -334,7 +346,7 @@ class _GateTitleObserver(NSObject):
                 _gate_loop.call_soon_threadsafe(_gate_event.set)
 
 
-async def show_tool_gate(tool_groups: list[dict], disabled_tools: set[str]) -> list[str] | None:
+async def show_tool_gate(tool_groups: list[dict], disabled_tools: set[str], meta: dict | None = None) -> list[str] | None:
     """Show the tool gate popup and await user response.
 
     Returns the list of disabled tool names (OK), or None (Cancel).
@@ -348,7 +360,7 @@ async def show_tool_gate(tool_groups: list[dict], disabled_tools: set[str]) -> l
     _gate_result_holder[0] = None
 
     def _show():
-        html = _build_html(tool_groups, disabled_tools)
+        html = _build_html(tool_groups, disabled_tools, meta)
 
         screen = NSScreen.mainScreen().frame()
         width, height = 480, 520
