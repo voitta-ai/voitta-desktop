@@ -112,26 +112,35 @@ class ToolGateMiddleware(FastMCPMiddleware):
                 ctx = context.fastmcp_context
                 if ctx:
                     meta["session_id"] = ctx.session_id
+                    if ctx.client_id:
+                        meta["client_id"] = ctx.client_id
+                    meta["transport"] = ctx.transport or "?"
                     params = ctx.session.client_params
                     if params:
-                        if params.clientInfo:
-                            meta["client_name"] = params.clientInfo.name
-                            meta["client_version"] = params.clientInfo.version
-                        meta["protocol_version"] = str(params.protocolVersion)
-                        # Dump all capabilities
+                        ci = params.clientInfo
+                        if ci:
+                            meta["client"] = f"{ci.name} {ci.version}"
+                            if ci.title:
+                                meta["client_title"] = ci.title
+                            if ci.websiteUrl:
+                                meta["website"] = ci.websiteUrl
+                            if hasattr(ci, "model_extra") and ci.model_extra:
+                                for k, v in ci.model_extra.items():
+                                    meta[f"client.{k}"] = str(v)
+                        meta["protocol"] = str(params.protocolVersion)
                         caps = params.capabilities
                         if caps:
                             cap_list = []
-                            for field in ("roots", "sampling", "elicitation", "experimental"):
-                                val = getattr(caps, field, None)
-                                if val:
+                            for field in ("roots", "sampling", "elicitation", "tasks"):
+                                if getattr(caps, field, None):
                                     cap_list.append(field)
                             if cap_list:
                                 meta["capabilities"] = ", ".join(cap_list)
-                    # Extra fields from params (some clients send extra)
-                    if hasattr(params, "model_extra") and params.model_extra:
-                        for k, v in params.model_extra.items():
-                            meta[k] = str(v) if not isinstance(v, str) else v
+                            if caps.experimental:
+                                meta["experimental"] = ", ".join(caps.experimental.keys())
+                        if hasattr(params, "model_extra") and params.model_extra:
+                            for k, v in params.model_extra.items():
+                                meta[k] = str(v) if not isinstance(v, str) else v
             except Exception:
                 pass
 
