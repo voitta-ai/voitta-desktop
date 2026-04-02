@@ -55,7 +55,7 @@ def _build_html(tool_groups: list[dict], disabled_tools: set[str], meta: dict | 
     background: var(--section-bg); border-radius: 6px;
   }}
   .meta-label {{ color: var(--text-secondary); }}
-  .meta-value {{ color: var(--text); font-family: ui-monospace, "SF Mono", monospace; font-size: 10px; }}
+  .meta-value {{ color: var(--text); font-family: ui-monospace, "SF Mono", monospace; font-size: 10px; -webkit-user-select: text; user-select: text; cursor: text; }}
   .scroll {{ flex: 1; overflow-y: auto; margin-bottom: 12px; }}
   .tool-tree {{ list-style: none; padding: 0; margin: 0; }}
   .tool-group {{ margin-bottom: 2px; }}
