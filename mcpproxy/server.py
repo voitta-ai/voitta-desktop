@@ -76,17 +76,25 @@ class ToolGateMiddleware(FastMCPMiddleware):
 
     async def on_list_tools(self, context, call_next):
         # Only gate external client requests, not internal calls
+        client_name = None
+        session_id = None
         try:
             ctx = context.fastmcp_context
             if ctx is None or ctx.session is None:
+                logger.warning("tool_gate: skipped (no session)")
                 return await call_next(context)
+            session_id = ctx.session_id
             params = ctx.session.client_params
-            if params and params.clientInfo and params.clientInfo.name == "settings":
+            if params and params.clientInfo:
+                client_name = params.clientInfo.name
+            if client_name == "settings":
+                logger.warning("tool_gate: skipped (internal settings client, session=%s)", session_id)
                 return await call_next(context)
-        except Exception:
+        except Exception as e:
+            logger.warning("tool_gate: skipped (error checking session: %s)", e)
             return await call_next(context)
 
-        logger.info("ToolGateMiddleware: tools/list from client")
+        logger.warning("tool_gate: showing popup (client=%s, session=%s)", client_name, session_id)
         try:
             tools = await call_next(context)
 
