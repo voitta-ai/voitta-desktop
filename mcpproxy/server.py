@@ -75,7 +75,11 @@ class ToolGateMiddleware(FastMCPMiddleware):
         self._app_ref = app_ref
 
     async def on_list_tools(self, context, call_next):
-        logger.info("ToolGateMiddleware: tools/list intercepted")
+        # Only gate external client requests, not internal server calls
+        if context.source != "client":
+            return await call_next(context)
+
+        logger.info("ToolGateMiddleware: tools/list from client")
         try:
             tools = await call_next(context)
 
