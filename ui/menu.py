@@ -1254,10 +1254,11 @@ class VoittaDesktopApp(rumps.App):
         sender.state = self._optimizer_pipeline.haiku_only
 
     def _toggle_tool_gate(self, sender):
+        """Re-arm the tool gate — next tools/list request will show the popup."""
         gate = getattr(self, "_tool_gate", None)
         if gate:
-            gate._gate_enabled = not gate._gate_enabled
-            sender.state = gate._gate_enabled
+            gate._shown = False
+            sender.state = True  # visual feedback: armed
 
     def _quit(self, _):
         rumps.quit_application()

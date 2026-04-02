@@ -68,61 +68,62 @@ from fastmcp.server.middleware import Middleware as FastMCPMiddleware
 
 
 class ToolGateMiddleware(FastMCPMiddleware):
-    """FastMCP middleware that shows a tool gate popup on every tools/list request."""
+    """Shows a tool gate popup on the first external tools/list request after startup.
+
+    Subsequent requests auto-approve using the current disabled_tools set.
+    The gate can be re-triggered via the 'MCP tool gate' menu toggle.
+    """
 
     def __init__(self, app_ref):
         super().__init__()
         self._app_ref = app_ref
-        self._gate_enabled = False  # toggled via menu
+        self._shown = False  # True after first popup shown
 
     async def on_list_tools(self, context, call_next):
-        # Only gate external client requests, not internal calls
-        client_name = None
-        session_id = None
+        # Identify caller
+        client_name, session_id = self._get_client_info(context)
+
+        # Skip internal calls
+        if client_name is None or client_name == "settings":
+            logger.warning("tool_gate: pass-through (%s)", client_name or "no session")
+            return await call_next(context)
+
+        # Show popup once on first external request, then auto-approve
+        if self._shown:
+            logger.warning("tool_gate: auto-approved (client=%s)", client_name)
+            return await call_next(context)
+
+        self._shown = True
+        return await self._show_gate(context, call_next, client_name, session_id)
+
+    def _get_client_info(self, context) -> tuple[str | None, str | None]:
+        """Extract client name and session ID from context."""
         try:
             ctx = context.fastmcp_context
             if ctx is None or ctx.session is None:
-                logger.warning("tool_gate: skipped (no session)")
-                return await call_next(context)
-            session_id = ctx.session_id
+                return None, None
             params = ctx.session.client_params
-            if params and params.clientInfo:
-                client_name = params.clientInfo.name
-            if client_name == "settings":
-                logger.warning("tool_gate: skipped (internal settings client, session=%s)", session_id)
-                return await call_next(context)
-        except Exception as e:
-            logger.warning("tool_gate: skipped (error checking session: %s)", e)
-            return await call_next(context)
+            name = params.clientInfo.name if params and params.clientInfo else "unknown"
+            return name, ctx.session_id
+        except Exception:
+            return None, None
 
-        if not self._gate_enabled:
-            logger.warning("tool_gate: auto-approved (gate disabled, client=%s, session=%s)", client_name, session_id)
-            return await call_next(context)
-
+    async def _show_gate(self, context, call_next, client_name, session_id):
+        """Show the tool gate popup and filter tools based on user selection."""
         logger.warning("tool_gate: showing popup (client=%s, session=%s)", client_name, session_id)
         try:
             tools = await call_next(context)
-
             if not tools:
                 return tools
 
             tool_groups = self._app_ref._build_tool_tree()
             disabled = set(getattr(self._app_ref, "disabled_tools", set()))
 
-            # Extract client metadata
-            meta = {}
+            meta = {"client_name": client_name, "session_id": session_id or "?"}
             try:
                 ctx = context.fastmcp_context
-                if ctx:
-                    meta["session_id"] = ctx.session_id
-                    params = ctx.session.client_params
-                    if params and params.clientInfo:
-                        meta["client_name"] = params.clientInfo.name
-                        meta["client_version"] = params.clientInfo.version
-            except Exception:
-                pass
-            # Get model from most recent conversation
-            try:
+                if ctx and ctx.session.client_params and ctx.session.client_params.clientInfo:
+                    meta["client_version"] = ctx.session.client_params.clientInfo.version
                 tracker = getattr(self._app_ref, "_tracker", None)
                 if tracker:
                     convs = tracker.get_conversations_sorted()
@@ -137,10 +138,9 @@ class ToolGateMiddleware(FastMCPMiddleware):
             if gate_result is None:
                 return []
 
-            disabled_set = set(gate_result)
-            return [t for t in tools if t.name not in disabled_set]
+            return [t for t in tools if t.name not in set(gate_result)]
         except Exception as e:
-            logger.error("ToolGateMiddleware error: %s", e, exc_info=True)
+            logger.error("tool_gate: popup error: %s", e, exc_info=True)
             raise
 
 
