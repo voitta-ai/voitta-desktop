@@ -121,9 +121,7 @@ def _build_html(tool_groups: list[dict], disabled_tools: set[str], meta: dict | 
 <body>
 <h2>MCP Tools — Select tools to expose</h2>
 <div class="meta">
-  <span class="meta-label">Client</span><span class="meta-value">{meta.get('client_name', '?')} {meta.get('client_version', '')}</span>
-  <span class="meta-label">Session</span><span class="meta-value">{meta.get('session_id', '?')[:20]}</span>
-  {"".join(f'<span class="meta-label">Model</span><span class="meta-value">{meta["model"]}</span>' if "model" in meta else "")}
+  {"".join(f'<span class="meta-label">{k}</span><span class="meta-value">{v}</span>' for k, v in meta.items())}
 </div>
 <input class="tool-filter" placeholder="Filter tools\u2026" oninput="filterTools(this.value)">
 <div class="scroll">

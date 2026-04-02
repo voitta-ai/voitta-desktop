@@ -107,16 +107,31 @@ class ToolGateMiddleware(FastMCPMiddleware):
             tool_groups = self._app_ref._build_tool_tree()
             disabled = set(getattr(self._app_ref, "disabled_tools", set()))
 
-            meta = {"client_name": client_name, "session_id": session_id or "?"}
+            meta = {}
             try:
                 ctx = context.fastmcp_context
-                if ctx and ctx.session.client_params and ctx.session.client_params.clientInfo:
-                    meta["client_version"] = ctx.session.client_params.clientInfo.version
-                tracker = getattr(self._app_ref, "_tracker", None)
-                if tracker:
-                    convs = tracker.get_conversations_sorted()
-                    if convs and convs[0].model:
-                        meta["model"] = convs[0].model
+                if ctx:
+                    meta["session_id"] = ctx.session_id
+                    params = ctx.session.client_params
+                    if params:
+                        if params.clientInfo:
+                            meta["client_name"] = params.clientInfo.name
+                            meta["client_version"] = params.clientInfo.version
+                        meta["protocol_version"] = str(params.protocolVersion)
+                        # Dump all capabilities
+                        caps = params.capabilities
+                        if caps:
+                            cap_list = []
+                            for field in ("roots", "sampling", "elicitation", "experimental"):
+                                val = getattr(caps, field, None)
+                                if val:
+                                    cap_list.append(field)
+                            if cap_list:
+                                meta["capabilities"] = ", ".join(cap_list)
+                    # Extra fields from params (some clients send extra)
+                    if hasattr(params, "model_extra") and params.model_extra:
+                        for k, v in params.model_extra.items():
+                            meta[k] = str(v) if not isinstance(v, str) else v
             except Exception:
                 pass
 
