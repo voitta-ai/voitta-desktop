@@ -95,7 +95,7 @@ class ResilientProxyProvider(ProxyProvider):
             if self._cache_listings and tools:
                 _save_cache(self._backend_name, "tools", tools)
             self._stash_tool_names(tools)
-            return self._filter_disabled(tools)
+            return tools
         except Exception as e:
             logger.warning("[%s] Upstream unavailable for tool listing: %s", self._backend_name, e)
             if self._cache_listings:
@@ -103,7 +103,7 @@ class ResilientProxyProvider(ProxyProvider):
                 if cached is not None:
                     logger.info("[%s] Returning %d cached tools", self._backend_name, len(cached))
                     self._stash_tool_names(cached)
-                    return self._filter_disabled(cached)
+                    return cached
             return []
 
     async def _list_resources(self):
