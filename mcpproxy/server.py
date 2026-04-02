@@ -101,6 +101,15 @@ class ToolGateMiddleware(FastMCPMiddleware):
                         meta["client_version"] = params.clientInfo.version
             except Exception:
                 pass
+            # Get model from most recent conversation
+            try:
+                tracker = getattr(self._app_ref, "_tracker", None)
+                if tracker:
+                    convs = tracker.get_conversations_sorted()
+                    if convs and convs[0].model:
+                        meta["model"] = convs[0].model
+            except Exception:
+                pass
 
             from ui.tool_gate import show_tool_gate
             gate_result = await show_tool_gate(tool_groups, disabled, meta)
