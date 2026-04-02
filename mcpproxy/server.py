@@ -73,6 +73,7 @@ class ToolGateMiddleware(FastMCPMiddleware):
     def __init__(self, app_ref):
         super().__init__()
         self._app_ref = app_ref
+        self._gate_enabled = False  # toggled via menu
 
     async def on_list_tools(self, context, call_next):
         # Only gate external client requests, not internal calls
@@ -92,6 +93,10 @@ class ToolGateMiddleware(FastMCPMiddleware):
                 return await call_next(context)
         except Exception as e:
             logger.warning("tool_gate: skipped (error checking session: %s)", e)
+            return await call_next(context)
+
+        if not self._gate_enabled:
+            logger.warning("tool_gate: auto-approved (gate disabled, client=%s, session=%s)", client_name, session_id)
             return await call_next(context)
 
         logger.warning("tool_gate: showing popup (client=%s, session=%s)", client_name, session_id)
@@ -142,10 +147,12 @@ class ToolGateMiddleware(FastMCPMiddleware):
 def run_mcp_proxy(app_ref, port: int, jira_mcp_port: int):
     """Run unified FastMCP proxy server mounting all backends. Blocks forever."""
     logger.info("run_mcp_proxy starting (port=%d)", port)
+    gate = ToolGateMiddleware(app_ref)
+    app_ref._tool_gate = gate
     main_server = FastMCPServer(
         "voitta-desktop",
         instructions=build_instructions(),
-        middleware=[ToolGateMiddleware(app_ref)],
+        middleware=[gate],
     )
 
     # ── Core backends (custom auth) ─────────────────────────────────
