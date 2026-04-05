@@ -53,7 +53,8 @@ def generate_chart_html(
         .title {{ font-size: 14px; font-weight: 600; margin-bottom: 10px; color: #f5f5f7; }}
         .chart-container {{ position: relative; width: 100%; height: calc(50vh - 50px); }}
         .cache-container {{ position: relative; width: 100%; height: calc(20vh - 20px); margin-top: 4px; }}
-        .file-container {{ position: relative; width: 100%; height: calc(30vh - 30px); margin-top: 4px; }}
+        .file-container {{ position: relative; width: 100%; height: calc(30vh - 30px); margin-top: 4px; display: flex; flex-direction: column; }}
+        .file-container canvas {{ flex: 1; width: 100% !important; height: auto !important; min-height: 0; }}
         .file-tabs {{
             display: flex; gap: 2px; overflow-x: auto; padding: 2px 60px; font-size: 10px;
             scrollbar-width: none;
@@ -1062,13 +1063,11 @@ def generate_chart_html(
                 if (!selectedFile || !fileIndex[selectedFile]) return;
 
                 const dpr = window.devicePixelRatio || 1;
-                const rect = fileCanvas.parentElement.getBoundingClientRect();
-                const tabsH = fileTabsEl.getBoundingClientRect().height || 20;
-                const W = rect.width;
-                const H = rect.height - tabsH;
+                const canvasRect = fileCanvas.getBoundingClientRect();
+                const W = canvasRect.width;
+                const H = canvasRect.height;
                 fileCanvas.width = W * dpr;
                 fileCanvas.height = H * dpr;
-                fileCanvas.style.height = H + 'px';
                 fileCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
                 const nCols = 1 + turns.length;
