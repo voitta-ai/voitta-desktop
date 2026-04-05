@@ -175,6 +175,43 @@ class ConversationTracker(Middleware):
                 if start <= mi < end:
                     turn.bash_chars += chars
 
+        # Extract file operations (Read/Write/Edit) per turn
+        from .models import FileOp
+        _FILE_TOOLS = {"Read", "Write", "Edit"}
+        for turn in turns:
+            start, end = turn._msg_range
+            for mi in range(start, end):
+                m = messages[mi]
+                content = m.get("content", [])
+                if not isinstance(content, list):
+                    continue
+                for item in content:
+                    if not isinstance(item, dict) or item.get("type") != "tool_use":
+                        continue
+                    name = item.get("name", "")
+                    if name not in _FILE_TOOLS:
+                        continue
+                    inp = item.get("input", {})
+                    if not isinstance(inp, dict):
+                        continue
+                    fp = inp.get("file_path", "")
+                    if not fp:
+                        continue
+                    op = FileOp(tool_name=name, file_path=fp)
+                    if name == "Read":
+                        offset = inp.get("offset")
+                        limit = inp.get("limit")
+                        if offset is not None or limit is not None:
+                            op.start_line = int(offset) if offset is not None else 0
+                            op.end_line = op.start_line + (int(limit) if limit is not None else 2000)
+                        # else: full read — start/end stay None
+                    elif name == "Edit":
+                        op.old_str_len = len(inp.get("old_string", ""))
+                        op.new_str_len = len(inp.get("new_string", ""))
+                    elif name == "Write":
+                        op.content_len = len(inp.get("content", ""))
+                    turn.file_ops.append(op)
+
         # Extract cache_control directives per turn
         # Check system, tools, and messages for cache_control blocks
         system_cache_types = set()
@@ -331,6 +368,11 @@ class ConversationTracker(Middleware):
                 "blocks": [
                     {"type": b.block_type.value, "summary": b.summary[:80]}
                     for b in t.blocks
+                ],
+                "file_ops": [
+                    {"tool": op.tool_name, "file": op.file_path,
+                     "start": op.start_line, "end": op.end_line}
+                    for op in t.file_ops
                 ],
             }
             data["turns"].append(turn_data)

@@ -51,8 +51,22 @@ def generate_chart_html(
             -webkit-font-smoothing: antialiased;
         }}
         .title {{ font-size: 14px; font-weight: 600; margin-bottom: 10px; color: #f5f5f7; }}
-        .chart-container {{ position: relative; width: 100%; height: calc(70vh - 60px); }}
-        .cache-container {{ position: relative; width: 100%; height: calc(30vh - 40px); margin-top: 4px; }}
+        .chart-container {{ position: relative; width: 100%; height: calc(50vh - 50px); }}
+        .cache-container {{ position: relative; width: 100%; height: calc(20vh - 20px); margin-top: 4px; }}
+        .file-container {{ position: relative; width: 100%; height: calc(30vh - 30px); margin-top: 4px; }}
+        .file-tabs {{
+            display: flex; gap: 2px; overflow-x: auto; padding: 2px 60px; font-size: 10px;
+            scrollbar-width: none;
+        }}
+        .file-tabs::-webkit-scrollbar {{ display: none; }}
+        .file-tab {{
+            background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.1);
+            color: #86868b; border-radius: 4px; padding: 2px 8px; cursor: pointer;
+            white-space: nowrap; font-family: ui-monospace, 'SF Mono', monospace;
+            font-size: 10px;
+        }}
+        .file-tab:hover {{ background: rgba(255,255,255,0.15); }}
+        .file-tab.active {{ background: rgba(41,151,255,0.2); border-color: #2997ff; color: #2997ff; }}
         canvas {{ width: 100% !important; height: 100% !important; }}
         .legend {{
             display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 14px; font-size: 12px;
@@ -118,6 +132,10 @@ def generate_chart_html(
         </div>
         <div class="cache-container">
             <canvas id="cache-chart"></canvas>
+        </div>
+        <div class="file-container" id="file-section" style="display:none;">
+            <div class="file-tabs" id="file-tabs"></div>
+            <canvas id="file-chart"></canvas>
         </div>
         <div id="tooltip" style="
             display:none; position:fixed; pointer-events:none; z-index:100;
@@ -1000,6 +1018,195 @@ def generate_chart_html(
             drawCache();
         }});
         cacheCanvas.style.cursor = 'pointer';
+
+        // ── File Access Chart ──────────────────────────────────────────
+        const fileCanvas = document.getElementById('file-chart');
+        const fileCtx = fileCanvas.getContext('2d');
+        const fileSection = document.getElementById('file-section');
+        const fileTabsEl = document.getElementById('file-tabs');
+
+        // Build file index: {{ filepath: [[ops_turn_0], [ops_turn_1], ...] }}
+        const fileIndex = {{}};
+        for (let ti = 0; ti < turns.length; ti++) {{
+            for (const op of (turns[ti].file_ops || [])) {{
+                if (!fileIndex[op.file]) fileIndex[op.file] = [];
+                while (fileIndex[op.file].length <= ti) fileIndex[op.file].push([]);
+                fileIndex[op.file][ti].push(op);
+            }}
+        }}
+        // Pad all file arrays to turns.length
+        for (const fp in fileIndex) {{
+            while (fileIndex[fp].length < turns.length) fileIndex[fp].push([]);
+        }}
+        const fileList = Object.keys(fileIndex).sort();
+        let selectedFile = fileList[0] || null;
+
+        if (fileList.length > 0) {{
+            fileSection.style.display = '';
+
+            function basename(fp) {{ return fp.split('/').pop(); }}
+
+            function renderFileTabs() {{
+                fileTabsEl.innerHTML = '';
+                for (const fp of fileList) {{
+                    const btn = document.createElement('button');
+                    btn.textContent = basename(fp);
+                    btn.title = fp;
+                    btn.className = fp === selectedFile ? 'file-tab active' : 'file-tab';
+                    btn.onclick = () => {{ selectedFile = fp; renderFileTabs(); drawFileChart(); }};
+                    fileTabsEl.appendChild(btn);
+                }}
+            }}
+
+            function drawFileChart() {{
+                if (!selectedFile || !fileIndex[selectedFile]) return;
+
+                const dpr = window.devicePixelRatio || 1;
+                const rect = fileCanvas.parentElement.getBoundingClientRect();
+                const tabsH = fileTabsEl.getBoundingClientRect().height || 20;
+                const W = rect.width;
+                const H = rect.height - tabsH;
+                fileCanvas.width = W * dpr;
+                fileCanvas.height = H * dpr;
+                fileCanvas.style.height = H + 'px';
+                fileCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+                const nCols = 1 + turns.length;
+                const pad = {{ top: 8, right: 60, bottom: 4, left: 60 }};
+                const cW = W - pad.left - pad.right;
+                const cH = H - pad.top - pad.bottom;
+                const gap = cW / nCols;
+                const barW = Math.max(4, Math.min(40, gap * 0.7));
+
+                const ops = fileIndex[selectedFile];
+
+                // Find max line range for Y-axis scale
+                let maxLine = 100;
+                for (const turnOps of ops) {{
+                    for (const op of turnOps) {{
+                        if (op.end !== null && op.end !== undefined) maxLine = Math.max(maxLine, op.end);
+                        if (op.start !== null && op.start !== undefined) maxLine = Math.max(maxLine, op.start);
+                    }}
+                }}
+                // Round up to nice number
+                maxLine = Math.ceil(maxLine / 50) * 50;
+
+                fileCtx.clearRect(0, 0, W, H);
+
+                // Y-axis label
+                fileCtx.save();
+                fileCtx.fillStyle = '#86868b';
+                fileCtx.font = '9px -apple-system, sans-serif';
+                fileCtx.textAlign = 'center';
+                fileCtx.translate(10, pad.top + cH / 2);
+                fileCtx.rotate(-Math.PI / 2);
+                fileCtx.fillText(basename(selectedFile), 0, 0);
+                fileCtx.restore();
+
+                // Right Y-axis label
+                fileCtx.save();
+                fileCtx.fillStyle = '#86868b';
+                fileCtx.font = '9px -apple-system, sans-serif';
+                fileCtx.textAlign = 'center';
+                fileCtx.translate(W - 8, pad.top + cH / 2);
+                fileCtx.rotate(Math.PI / 2);
+                fileCtx.fillText('lines', 0, 0);
+                fileCtx.restore();
+
+                // Grid lines
+                fileCtx.strokeStyle = 'rgba(255,255,255,0.06)';
+                fileCtx.lineWidth = 0.5;
+                for (let i = 0; i <= 4; i++) {{
+                    const y = pad.top + (cH / 4) * i;
+                    fileCtx.beginPath();
+                    fileCtx.moveTo(pad.left, y);
+                    fileCtx.lineTo(pad.left + cW, y);
+                    fileCtx.stroke();
+                }}
+
+                // Left Y ticks (line numbers — inverted: 0 at top)
+                fileCtx.fillStyle = '#86868b';
+                fileCtx.font = '9px -apple-system, sans-serif';
+                fileCtx.textAlign = 'right';
+                for (let i = 0; i <= 4; i++) {{
+                    const y = pad.top + (cH / 4) * i;
+                    const val = Math.round(maxLine * (i / 4));
+                    fileCtx.fillText(val.toString(), pad.left - 6, y + 3);
+                }}
+
+                // Colors
+                const C_READ = '#30d158';
+                const C_WRITE = '#2997ff';
+                const C_EDIT = '#ff9f0a';
+
+                // Draw operations per turn
+                for (let ti = 0; ti < turns.length; ti++) {{
+                    const c = ti + 1;
+                    const turnOps = ops[ti];
+                    if (!turnOps || turnOps.length === 0) continue;
+
+                    const x = pad.left + c * gap + (gap - barW) / 2;
+                    const subW = turnOps.length > 1 ? barW / turnOps.length : barW;
+
+                    for (let oi = 0; oi < turnOps.length; oi++) {{
+                        const op = turnOps[oi];
+                        const sx = x + oi * subW;
+
+                        if (op.tool === 'Read') {{
+                            fileCtx.fillStyle = C_READ;
+                            fileCtx.globalAlpha = 0.7;
+                            if (op.start !== null && op.start !== undefined) {{
+                                // Partial read
+                                const y1 = pad.top + (op.start / maxLine) * cH;
+                                const y2 = pad.top + (Math.min(op.end || maxLine, maxLine) / maxLine) * cH;
+                                fileCtx.fillRect(sx, y1, subW, Math.max(2, y2 - y1));
+                            }} else {{
+                                // Full read
+                                fileCtx.fillRect(sx, pad.top, subW, cH);
+                            }}
+                            fileCtx.globalAlpha = 1;
+                        }} else if (op.tool === 'Write') {{
+                            // Full file overwrite
+                            fileCtx.fillStyle = C_WRITE;
+                            fileCtx.globalAlpha = 0.6;
+                            fileCtx.fillRect(sx, pad.top, subW, cH);
+                            fileCtx.globalAlpha = 1;
+                        }} else if (op.tool === 'Edit') {{
+                            // Edit — orange marker, no line position known
+                            fileCtx.fillStyle = C_EDIT;
+                            fileCtx.globalAlpha = 0.8;
+                            // Draw a diamond marker at center
+                            const cy = pad.top + cH / 2;
+                            const size = Math.min(subW, 8);
+                            fileCtx.beginPath();
+                            fileCtx.moveTo(sx + subW / 2, cy - size);
+                            fileCtx.lineTo(sx + subW / 2 + size, cy);
+                            fileCtx.lineTo(sx + subW / 2, cy + size);
+                            fileCtx.lineTo(sx + subW / 2 - size, cy);
+                            fileCtx.closePath();
+                            fileCtx.fill();
+                            fileCtx.globalAlpha = 1;
+                        }}
+                    }}
+                }}
+
+                // Legend
+                fileCtx.font = '9px -apple-system, sans-serif';
+                fileCtx.textAlign = 'left';
+                const lx = pad.left + 4;
+                const ly = pad.top + cH - 4;
+                fileCtx.fillStyle = C_READ; fileCtx.fillRect(lx, ly - 7, 8, 8);
+                fileCtx.fillStyle = '#ccc'; fileCtx.fillText('Read', lx + 11, ly);
+                fileCtx.fillStyle = C_WRITE; fileCtx.fillRect(lx + 40, ly - 7, 8, 8);
+                fileCtx.fillStyle = '#ccc'; fileCtx.fillText('Write', lx + 51, ly);
+                fileCtx.fillStyle = C_EDIT; fileCtx.fillRect(lx + 85, ly - 7, 8, 8);
+                fileCtx.fillStyle = '#ccc'; fileCtx.fillText('Edit', lx + 96, ly);
+            }}
+
+            renderFileTabs();
+            drawFileChart();
+            window.addEventListener('resize', () => {{ renderFileTabs(); drawFileChart(); }});
+        }}
         </script>
     </body>
     </html>

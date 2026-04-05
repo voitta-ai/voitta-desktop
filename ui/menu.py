@@ -921,6 +921,18 @@ class VoittaDesktopApp(rumps.App):
                         "cache_creation_input_tokens": t.cache_creation_input_tokens,
                         "cache_control_types": t.cache_control_types,
                         "msg_count": t._msg_range[1] - t._msg_range[0],
+                        "file_ops": [
+                            {
+                                "tool": op.tool_name,
+                                "file": op.file_path,
+                                "start": op.start_line,
+                                "end": op.end_line,
+                                "old_len": op.old_str_len,
+                                "new_len": op.new_str_len,
+                                "content_len": op.content_len,
+                            }
+                            for op in t.file_ops
+                        ],
                     })
 
         active = self._optimizer_pipeline.active_optimizers
@@ -939,7 +951,8 @@ class VoittaDesktopApp(rumps.App):
         screen = NSScreen.mainScreen().frame()
         num_turns = len(turns_data)
         width = max(720, min(int(screen.size.width * 0.9), 40 * (num_turns + 1) + 140))
-        height = 520
+        has_file_ops = any(td.get("file_ops") for td in turns_data)
+        height = 700 if has_file_ops else 520
         frame = NSMakeRect(0, 0, width, height)
         style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
         window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(

@@ -50,6 +50,18 @@ class ContentBlock:
 
 
 @dataclass
+class FileOp:
+    """A single file operation within a turn."""
+    tool_name: str        # "Read", "Write", or "Edit"
+    file_path: str
+    start_line: int | None = None   # Read: offset (0 if full read)
+    end_line: int | None = None     # Read: offset+limit (None if full read)
+    old_str_len: int = 0            # Edit: len(old_string)
+    new_str_len: int = 0            # Edit: len(new_string)
+    content_len: int = 0            # Write: len(content)
+
+
+@dataclass
 class Turn:
     """A single request/response turn in a conversation."""
     index: int
@@ -72,6 +84,7 @@ class Turn:
     images: list[ImageInfo] = field(default_factory=list)
     cache_control_types: list[str] = field(default_factory=list)
     tool_use_ids: list[str] = field(default_factory=list)
+    file_ops: list[FileOp] = field(default_factory=list)
 
     @property
     def total_tokens(self) -> int:
