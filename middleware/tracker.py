@@ -175,9 +175,45 @@ class ConversationTracker(Middleware):
                 if start <= mi < end:
                     turn.bash_chars += chars
 
-        # Extract file operations (Read/Write/Edit) per turn
+        # Extract file operations (Read/Write/Edit) per turn.
+        # Attribute to the turn containing the tool_result (not the tool_use),
+        # so file ops align with the main chart's green "tool result" bars.
         from .models import FileOp
         _FILE_TOOLS = {"Read", "Write", "Edit"}
+        # Phase 1: scan all tool_use blocks to build id→FileOp map
+        file_op_by_id: dict[str, FileOp] = {}
+        for mi, m in enumerate(messages):
+            content = m.get("content", [])
+            if not isinstance(content, list):
+                continue
+            for item in content:
+                if not isinstance(item, dict) or item.get("type") != "tool_use":
+                    continue
+                name = item.get("name", "")
+                if name not in _FILE_TOOLS:
+                    continue
+                inp = item.get("input", {})
+                if not isinstance(inp, dict):
+                    continue
+                fp = inp.get("file_path", "")
+                if not fp:
+                    continue
+                op = FileOp(tool_name=name, file_path=fp)
+                if name == "Read":
+                    offset = inp.get("offset")
+                    limit = inp.get("limit")
+                    if offset is not None or limit is not None:
+                        op.start_line = int(offset) if offset is not None else 0
+                        op.end_line = op.start_line + (int(limit) if limit is not None else 2000)
+                elif name == "Edit":
+                    op.old_str_len = len(inp.get("old_string", ""))
+                    op.new_str_len = len(inp.get("new_string", ""))
+                elif name == "Write":
+                    op.content_len = len(inp.get("content", ""))
+                tool_id = item.get("id", "")
+                if tool_id:
+                    file_op_by_id[tool_id] = op
+        # Phase 2: for each turn, find tool_result blocks and attach the FileOp
         for turn in turns:
             start, end = turn._msg_range
             for mi in range(start, end):
@@ -186,31 +222,12 @@ class ConversationTracker(Middleware):
                 if not isinstance(content, list):
                     continue
                 for item in content:
-                    if not isinstance(item, dict) or item.get("type") != "tool_use":
+                    if not isinstance(item, dict) or item.get("type") != "tool_result":
                         continue
-                    name = item.get("name", "")
-                    if name not in _FILE_TOOLS:
-                        continue
-                    inp = item.get("input", {})
-                    if not isinstance(inp, dict):
-                        continue
-                    fp = inp.get("file_path", "")
-                    if not fp:
-                        continue
-                    op = FileOp(tool_name=name, file_path=fp)
-                    if name == "Read":
-                        offset = inp.get("offset")
-                        limit = inp.get("limit")
-                        if offset is not None or limit is not None:
-                            op.start_line = int(offset) if offset is not None else 0
-                            op.end_line = op.start_line + (int(limit) if limit is not None else 2000)
-                        # else: full read — start/end stay None
-                    elif name == "Edit":
-                        op.old_str_len = len(inp.get("old_string", ""))
-                        op.new_str_len = len(inp.get("new_string", ""))
-                    elif name == "Write":
-                        op.content_len = len(inp.get("content", ""))
-                    turn.file_ops.append(op)
+                    tid = item.get("tool_use_id", "")
+                    op = file_op_by_id.get(tid)
+                    if op:
+                        turn.file_ops.append(op)
 
         # Extract cache_control directives per turn
         # Check system, tools, and messages for cache_control blocks
