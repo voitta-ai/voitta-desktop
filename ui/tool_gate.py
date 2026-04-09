@@ -9,7 +9,7 @@ from AppKit import (
     NSWindow, NSWindowStyleMaskTitled, NSWindowStyleMaskClosable,
     NSBackingStoreBuffered, NSApp, NSScreen, NSFloatingWindowLevel,
 )
-from Foundation import NSMakeRect, NSObject
+from Foundation import NSMakeRect, NSObject, NSTimer, NSRunLoop
 from WebKit import WKWebView, WKWebViewConfiguration, WKWebsiteDataStore
 
 logger = logging.getLogger("voitta-desktop.tool_gate")
@@ -329,6 +329,7 @@ class _GateTitleObserver(NSObject):
                         logger.warning("Gate JSON parse failed: %s", e)
                         _gate_result_holder[0] = []
                 self._window.close()
+                NSApp.setActivationPolicy_(1)
                 if _gate_loop and _gate_event:
                     _gate_loop.call_soon_threadsafe(_gate_event.set)
 
@@ -341,6 +342,7 @@ class _GateTitleObserver(NSObject):
             except Exception:
                 pass
             self._window.close()
+            NSApp.setActivationPolicy_(1)
             if _gate_loop and _gate_event:
                 _gate_loop.call_soon_threadsafe(_gate_event.set)
 
@@ -372,6 +374,7 @@ async def show_tool_gate(tool_groups: list[dict], disabled_tools: set[str], meta
             frame, mask, NSBackingStoreBuffered, False
         )
         window.setTitle_("MCP Tools Gate")
+        window.setReleasedWhenClosed_(False)
         window.setLevel_(NSFloatingWindowLevel)
 
         config = WKWebViewConfiguration.alloc().init()
@@ -387,8 +390,18 @@ async def show_tool_gate(tool_groups: list[dict], disabled_tools: set[str], meta
 
         webview.loadHTMLString_baseURL_(html, None)
 
-        window.makeKeyAndOrderFront_(None)
+        NSApp.setActivationPolicy_(0)
         NSApp.activateIgnoringOtherApps_(True)
+        window.makeKeyAndOrderFront_(None)
+
+        # Ensure webview gets first responder so first click passes through to JS
+        from ui.menu import _FocusTrigger
+        trigger = _FocusTrigger.alloc().init()
+        trigger.setWindow_field_(window, webview)
+        timer = NSTimer.timerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.1, trigger, "focus:", None, False
+        )
+        NSRunLoop.mainRunLoop().addTimer_forMode_(timer, "NSDefaultRunLoopMode")
 
         # Handle window close (red X) — remove KVO and signal cancel
         def _on_close(notification):
@@ -399,6 +412,7 @@ async def show_tool_gate(tool_groups: list[dict], disabled_tools: set[str], meta
                 except Exception:
                     pass
                 _gate_result_holder[0] = None
+                NSApp.setActivationPolicy_(1)
                 if _gate_loop and _gate_event:
                     _gate_loop.call_soon_threadsafe(_gate_event.set)
 

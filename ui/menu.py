@@ -1119,6 +1119,10 @@ class VoittaDesktopApp(rumps.App):
                     return
             except Exception:
                 pass
+            # Window exists but isn't visible (closed via red X) — clean up old observer
+            old_observer = self._settings_refs[2]
+            old_observer._removeKVO()
+            self._settings_refs = None
 
         from WebKit import WKWebView
 
@@ -1134,6 +1138,7 @@ class VoittaDesktopApp(rumps.App):
             frame, mask, NSBackingStoreBuffered, False
         )
         window.setTitle_("Voitta Desktop \u2014 Settings")
+        window.setReleasedWhenClosed_(False)
         window.center()
 
         webview = WKWebView.alloc().initWithFrame_(window.contentView().bounds())
@@ -1150,8 +1155,15 @@ class VoittaDesktopApp(rumps.App):
         )
         webview.loadHTMLString_baseURL_(html_content, None)
 
-        observer = _SettingsTitleObserver.alloc().initWithApp_window_(self, window)
+        observer = _SettingsTitleObserver.alloc().initWithApp_window_gen_(self, window, gen)
         webview.addObserver_forKeyPath_options_context_(observer, "title", 1, None)
+        observer._webview = webview
+
+        # Handle the red X close button — clean up KVO before deallocation
+        from AppKit import NSNotificationCenter
+        NSNotificationCenter.defaultCenter().addObserver_selector_name_object_(
+            observer, "windowWillClose:", "NSWindowWillCloseNotification", window
+        )
 
         self._settings_refs = (window, webview, observer)
 
@@ -1161,7 +1173,7 @@ class VoittaDesktopApp(rumps.App):
         window.makeKeyAndOrderFront_(None)
 
         trigger = _FocusTrigger.alloc().init()
-        trigger.setWindow_field_(window, None)
+        trigger.setWindow_field_(window, webview)
         timer = NSTimer.timerWithTimeInterval_target_selector_userInfo_repeats_(
             0.1, trigger, "focus:", None, False
         )
@@ -1186,6 +1198,10 @@ class VoittaDesktopApp(rumps.App):
         threading.Thread(target=_poll_and_inject, daemon=True).start()
 
     def _apply_settings(self, new_config):
+        """Apply new settings. Safe to call from any thread — UI updates
+        are dispatched to the main thread via AppHelper.callAfter."""
+        from PyObjCTools import AppHelper
+
         old_keys = set(self._auth.keys())
         self._config = new_config
         save_config(new_config)
@@ -1203,7 +1219,7 @@ class VoittaDesktopApp(rumps.App):
                         "profile": None, "refresh_timer": None, "msal_app": None,
                     }
             if app["type"] == "microsoft":
-                self._rebuild_msal_for_app(app)
+                self._rebuild_msal_for_app(app)  # may block (OIDC discovery)
 
         for key in old_keys - new_keys:
             app_id, backend = key
@@ -1218,8 +1234,12 @@ class VoittaDesktopApp(rumps.App):
         self._init_active_defaults()
         self._sync_edit_mcp_env()
         self._sync_jira_mcp_env()
-        self._rebuild_menu()
-        self._update_auth_state()
+
+        # UI mutations must happen on the main thread
+        def _update_ui():
+            self._rebuild_menu()
+            self._update_auth_state()
+        AppHelper.callAfter(_update_ui)
 
     # ── Help ─────────────────────────────────────────────────────────────────
 
@@ -1280,13 +1300,40 @@ class VoittaDesktopApp(rumps.App):
 # ── Settings WKWebView bridge ────────────────────────────────────────────────
 
 class _SettingsTitleObserver(NSObject):
-    def initWithApp_window_(self, app_ref, window):
+    def initWithApp_window_gen_(self, app_ref, window, gen):
         self = objc.super(_SettingsTitleObserver, self).init()
         if self is not None:
             self._app = app_ref
             self._window = window
+            self._gen = gen
             self._handled = False
+            self._kvo_removed = False
+            self._webview = None  # set after addObserver
         return self
+
+    def _removeKVO(self):
+        """Safely remove KVO observer exactly once."""
+        if self._kvo_removed or self._webview is None:
+            return
+        self._kvo_removed = True
+        try:
+            self._webview.removeObserver_forKeyPath_(self, "title")
+        except Exception:
+            pass
+
+    def windowWillClose_(self, notification):
+        """Handle the red X close button — clean up before window is gone."""
+        self._handled = True
+        self._removeKVO()
+        self._cleanupRefs()
+
+    def _cleanupRefs(self):
+        """Clear _settings_refs only if they still belong to our generation."""
+        from AppKit import NSNotificationCenter
+        NSNotificationCenter.defaultCenter().removeObserver_(self)
+        if getattr(self._app, "_settings_gen", 0) == self._gen:
+            self._app._settings_refs = None
+            NSApp.setActivationPolicy_(1)
 
     def observeValueForKeyPath_ofObject_change_context_(
         self, keyPath, obj, change, context
@@ -1310,7 +1357,7 @@ class _SettingsTitleObserver(NSObject):
                 "document.title = 'Voitta Desktop \u2014 Settings'", None
             )
             app_ref = self._app
-            gen = getattr(app_ref, "_settings_gen", 0)
+            gen = self._gen
 
             def _do_fetch():
                 try:
@@ -1335,10 +1382,7 @@ class _SettingsTitleObserver(NSObject):
 
         if title == "VOITTA_SAVE":
             self._handled = True
-            try:
-                obj.removeObserver_forKeyPath_(self, "title")
-            except Exception:
-                pass
+            self._removeKVO()
             obj.evaluateJavaScript_completionHandler_(
                 "JSON.stringify(collectAll())", self.onSaveData_error_
             )
@@ -1346,22 +1390,29 @@ class _SettingsTitleObserver(NSObject):
 
         elif title == "VOITTA_CANCEL":
             self._handled = True
-            try:
-                obj.removeObserver_forKeyPath_(self, "title")
-            except Exception:
-                pass
+            self._removeKVO()
             self._deferClose()
 
     def onSaveData_error_(self, result, error):
+        # Close the window immediately so the user isn't blocked
+        self._deferClose()
         if error:
             logger.error("Settings JS error: %s", error)
         elif result:
             try:
                 data = json.loads(result)
-                self._app._apply_settings(data)
             except Exception as e:
                 logger.error("Settings save error: %s", e)
-        self._deferClose()
+                return
+            # Run _apply_settings in a thread: _rebuild_msal_for_app does a
+            # blocking HTTP fetch (OIDC discovery) that can stall for 30s.
+            app_ref = self._app
+            def _apply():
+                try:
+                    app_ref._apply_settings(data)
+                except Exception as e:
+                    logger.error("Settings apply error: %s", e)
+            threading.Thread(target=_apply, daemon=True).start()
 
     def _deferClose(self):
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
@@ -1371,5 +1422,4 @@ class _SettingsTitleObserver(NSObject):
     def doClose_(self, timer):
         if self._window:
             self._window.orderOut_(None)
-        self._app._settings_refs = None
-        NSApp.setActivationPolicy_(1)
+        self._cleanupRefs()
