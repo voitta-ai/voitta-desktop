@@ -105,7 +105,6 @@ def _show_modal(alert, first_field=None):
     alert.layout()
     if first_field:
         alert_window.setInitialFirstResponder_(first_field)
-    NSApp.setActivationPolicy_(0)
     NSApp.activateIgnoringOtherApps_(True)
     trigger = _FocusTrigger.alloc().init()
     trigger.setWindow_field_(alert_window, first_field)
@@ -115,7 +114,6 @@ def _show_modal(alert, first_field=None):
     NSRunLoop.mainRunLoop().addTimer_forMode_(timer, "NSDefaultRunLoopMode")
     NSRunLoop.mainRunLoop().addTimer_forMode_(timer, "NSModalPanelRunLoopMode")
     result = alert.runModal()
-    NSApp.setActivationPolicy_(1)
     return result
 
 
@@ -1113,7 +1111,6 @@ class VoittaDesktopApp(rumps.App):
             win = self._settings_refs[0]
             try:
                 if win.isVisible():
-                    NSApp.setActivationPolicy_(0)
                     NSApp.activateIgnoringOtherApps_(True)
                     win.makeKeyAndOrderFront_(None)
                     return
@@ -1168,7 +1165,6 @@ class VoittaDesktopApp(rumps.App):
         self._settings_refs = (window, webview, observer)
 
         window.setLevel_(NSFloatingWindowLevel)
-        NSApp.setActivationPolicy_(0)
         NSApp.activateIgnoringOtherApps_(True)
         window.makeKeyAndOrderFront_(None)
 
@@ -1333,7 +1329,6 @@ class _SettingsTitleObserver(NSObject):
         NSNotificationCenter.defaultCenter().removeObserver_(self)
         if getattr(self._app, "_settings_gen", 0) == self._gen:
             self._app._settings_refs = None
-            NSApp.setActivationPolicy_(1)
 
     def observeValueForKeyPath_ofObject_change_context_(
         self, keyPath, obj, change, context

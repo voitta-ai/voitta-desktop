@@ -285,6 +285,7 @@ renderToolTree();
 _gate_result_holder: list[list[str] | None] = [None]
 _gate_loop = None
 _gate_event = None
+_gate_window = None  # reference to keep window alive for cleanup
 
 
 class _GateTitleObserver(NSObject):
@@ -318,6 +319,7 @@ class _GateTitleObserver(NSObject):
                 pass
 
             def _on_js_result(result, error):
+                global _gate_window
                 if error or not result:
                     logger.warning("Gate JS eval failed: %s", error)
                     _gate_result_holder[0] = []
@@ -329,12 +331,13 @@ class _GateTitleObserver(NSObject):
                         logger.warning("Gate JSON parse failed: %s", e)
                         _gate_result_holder[0] = []
                 self._window.close()
-                NSApp.setActivationPolicy_(1)
+                _gate_window = None
                 if _gate_loop and _gate_event:
                     _gate_loop.call_soon_threadsafe(_gate_event.set)
 
             obj.evaluateJavaScript_completionHandler_("getDisabledTools()", _on_js_result)
         elif title == "GATE_CANCEL":
+            global _gate_window
             self._handled = True
             _gate_result_holder[0] = None
             try:
@@ -342,7 +345,7 @@ class _GateTitleObserver(NSObject):
             except Exception:
                 pass
             self._window.close()
-            NSApp.setActivationPolicy_(1)
+            _gate_window = None
             if _gate_loop and _gate_event:
                 _gate_loop.call_soon_threadsafe(_gate_event.set)
 
@@ -361,6 +364,7 @@ async def show_tool_gate(tool_groups: list[dict], disabled_tools: set[str], meta
     _gate_result_holder[0] = None
 
     def _show():
+        global _gate_window
         html = _build_html(tool_groups, disabled_tools, meta)
 
         screen = NSScreen.mainScreen().frame()
@@ -390,7 +394,6 @@ async def show_tool_gate(tool_groups: list[dict], disabled_tools: set[str], meta
 
         webview.loadHTMLString_baseURL_(html, None)
 
-        NSApp.setActivationPolicy_(0)
         NSApp.activateIgnoringOtherApps_(True)
         window.makeKeyAndOrderFront_(None)
 
@@ -405,6 +408,7 @@ async def show_tool_gate(tool_groups: list[dict], disabled_tools: set[str], meta
 
         # Handle window close (red X) — remove KVO and signal cancel
         def _on_close(notification):
+            global _gate_window
             if not observer._handled:
                 observer._handled = True
                 try:
@@ -412,7 +416,7 @@ async def show_tool_gate(tool_groups: list[dict], disabled_tools: set[str], meta
                 except Exception:
                     pass
                 _gate_result_holder[0] = None
-                NSApp.setActivationPolicy_(1)
+                _gate_window = None
                 if _gate_loop and _gate_event:
                     _gate_loop.call_soon_threadsafe(_gate_event.set)
 
@@ -423,9 +427,30 @@ async def show_tool_gate(tool_groups: list[dict], disabled_tools: set[str], meta
 
         # Store refs to prevent GC
         window._gate_refs = (webview, observer)
+        _gate_window = window
 
     from PyObjCTools import AppHelper
     AppHelper.callAfter(_show)
 
-    await _gate_event.wait()
+    try:
+        await asyncio.shield(_gate_event.wait())
+    except (asyncio.CancelledError, Exception):
+        # Client disconnected — close the gate window from the main thread
+        def _force_close():
+            global _gate_window
+            if _gate_window is not None:
+                refs = getattr(_gate_window, "_gate_refs", None)
+                if refs:
+                    webview, observer = refs
+                    if not observer._handled:
+                        observer._handled = True
+                        try:
+                            webview.removeObserver_forKeyPath_(observer, "title")
+                        except Exception:
+                            pass
+                _gate_window.close()
+                _gate_window = None
+            _gate_result_holder[0] = None
+        AppHelper.callAfter(_force_close)
+        return None
     return _gate_result_holder[0]
