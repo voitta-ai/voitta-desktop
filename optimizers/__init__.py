@@ -51,6 +51,66 @@ def image_tokens(item: dict) -> int:
     return max(1, pixels // 750)
 
 
+def _pick_ttl(body: dict, messages: list, bp_msg_idx: int) -> str:
+    """Pick a cache_control ttl that respects Anthropic's ordering constraint.
+
+    Rule: a `ttl='1h'` block must not come after a `ttl='5m'` block in
+    processing order (tools → system → messages, in document order).
+
+    Strategy:
+      - If any 5m block already appears before our injection point, we must
+        use 5m (a 1h here would sit after a 5m → API error).
+      - Otherwise, match the TTL Claude Code uses on nearby in-message
+        breakpoints; if no in-message breakpoint exists, fall back to the
+        system/tools TTL; if none at all, default to 5m.
+    """
+    def _ttl(block):
+        if not isinstance(block, dict):
+            return None
+        cc = block.get("cache_control")
+        if isinstance(cc, dict):
+            return cc.get("ttl", "5m")  # Anthropic defaults ephemeral to 5m
+        return None
+
+    def _iter_ttls_before():
+        """Yield TTLs of cache_control blocks strictly before bp_msg_idx,
+        in processing order (tools → system → messages[0..bp_msg_idx-1])."""
+        for tool in body.get("tools") or []:
+            t = _ttl(tool)
+            if t:
+                yield t
+        for block in body.get("system") or []:
+            t = _ttl(block)
+            if t:
+                yield t
+        for i in range(bp_msg_idx):
+            m = messages[i]
+            content = m.get("content") if isinstance(m, dict) else None
+            if isinstance(content, list):
+                for block in content:
+                    t = _ttl(block)
+                    if t:
+                        yield t
+
+    seen_before = list(_iter_ttls_before())
+    if "5m" in seen_before:
+        return "5m"
+
+    # No 5m before us — safe to use either. Match Claude Code's in-message
+    # breakpoint style if we can see one; otherwise fall back to tools/system.
+    for i in range(bp_msg_idx, len(messages)):
+        m = messages[i]
+        content = m.get("content") if isinstance(m, dict) else None
+        if isinstance(content, list):
+            for block in content:
+                t = _ttl(block)
+                if t:
+                    return t
+    if seen_before:
+        return seen_before[-1]
+    return "5m"
+
+
 class BaseOptimizer(Middleware):
     """Base class for context optimizers.
 
@@ -80,15 +140,29 @@ class BaseOptimizer(Middleware):
             total += tokens / 1_000_000 * price
         return total
 
+    @staticmethod
+    def _is_human_input(msg: dict) -> bool:
+        """True if this user message contains human-typed text (not just tool_result)."""
+        content = msg.get("content")
+        if isinstance(content, str):
+            return True
+        if isinstance(content, list):
+            return any(
+                isinstance(b, dict) and b.get("type") not in ("tool_result",)
+                for b in content
+            )
+        return False
+
     def _find_user_turn_starts(self, messages: list) -> list[int]:
-        """Return message indices where each user turn begins."""
+        """Return message indices where each human input turn begins.
+
+        Only counts user messages with actual text — tool_result-only
+        messages (tool round-trips) are not separate turns.
+        """
         starts: list[int] = []
-        prev_role = None
         for i, msg in enumerate(messages):
-            role = msg.get("role", "")
-            if role == "user" and prev_role != "user":
+            if msg.get("role") == "user" and self._is_human_input(msg):
                 starts.append(i)
-            prev_role = role
         return starts
 
     def _threshold_msg_index(self, messages: list) -> int | None:
@@ -172,6 +246,80 @@ class OptimizerPipeline(Middleware):
             merged.update(o.last_stripped_msg_indices)
         return merged
 
+    # Minimum turns before we inject a cache breakpoint
+    CACHE_BP_MIN_TURNS = 4
+
+    def _inject_cache_breakpoint(self, request: ProxyRequest) -> ProxyRequest:
+        """Add a cache_control breakpoint one turn before the optimizer threshold.
+
+        Places it on the last content block of the message just before the
+        "about to be stripped" turn — the fully-stable zone where all content
+        was stripped in a previous request and won't change again.
+        """
+        body = request.json
+        if not body:
+            return request
+        messages = body.get("messages")
+        if not messages:
+            return request
+
+        starts = [
+            i for i, m in enumerate(messages)
+            if m.get("role") == "user" and BaseOptimizer._is_human_input(m)
+        ]
+        if len(starts) < self.CACHE_BP_MIN_TURNS:
+            return request
+
+        # Use the first optimizer's keep_turns (they're all the same)
+        keep = self.optimizers[0].keep_turns if self.optimizers else 5
+
+        # We want one turn BEFORE the threshold turn — the fully-stable zone
+        # threshold_turn_idx = len(starts) - keep
+        # stable_turn_idx = threshold_turn_idx - 1
+        stable_idx = len(starts) - keep - 1
+        if stable_idx < 0:
+            return request
+
+        # Breakpoint goes on the last message before the stable turn's start
+        # (i.e., the last message of the turn before the stable turn)
+        # Actually: on the last message of the stable turn itself
+        # stable turn starts at starts[stable_idx], next turn at starts[stable_idx+1]
+        if stable_idx + 1 < len(starts):
+            bp_msg_idx = starts[stable_idx + 1] - 1
+        else:
+            bp_msg_idx = len(messages) - 1
+
+        if bp_msg_idx < 0:
+            return request
+
+        # Pick TTL that respects Anthropic's ordering constraint:
+        # a ttl='1h' block must not come after any ttl='5m' block in
+        # processing order (tools → system → messages). We inspect the
+        # cache_control blocks Claude Code has already placed and adapt.
+        ttl = _pick_ttl(body, messages, bp_msg_idx)
+        bp = {"type": "ephemeral", "ttl": ttl}
+        messages = list(messages)
+        msg = dict(messages[bp_msg_idx])
+        content = msg.get("content")
+        if isinstance(content, list) and content:
+            content = list(content)
+            last_block = dict(content[-1])
+            if "cache_control" not in last_block:
+                last_block["cache_control"] = bp
+                content[-1] = last_block
+                msg["content"] = content
+        elif isinstance(content, str):
+            # Wrap string content in a block so we can add cache_control
+            msg["content"] = [{"type": "text", "text": content, "cache_control": bp}]
+        else:
+            return request
+
+        messages[bp_msg_idx] = msg
+        request.json = dict(body, messages=messages)
+        logger.info("Cache breakpoint injected at msg[%d] ttl=%s (stable turn %d/%d)",
+                     bp_msg_idx, ttl, stable_idx, len(starts))
+        return request
+
     async def on_request(self, request: ProxyRequest) -> ProxyRequest:
         if not self.enabled:
             return request
@@ -186,4 +334,7 @@ class OptimizerPipeline(Middleware):
 
         for o in self.optimizers:
             request = await o.on_request(request)
+
+        # Inject cache breakpoint only when optimization is active
+        request = self._inject_cache_breakpoint(request)
         return request
