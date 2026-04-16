@@ -68,14 +68,33 @@ class Middleware:
 
 
 def decompress(data: bytes, encoding: str) -> str:
-    """Decompress response body based on Content-Encoding header."""
+    """Decompress response body based on Content-Encoding header.
+
+    Tolerates truncated streams (e.g. upstream timeout mid-gzip) by falling
+    back to a incremental decompressor that returns whatever was decoded.
+    """
     encoding = encoding.lower().strip()
     if not encoding or encoding == "identity":
         return data.decode("utf-8", errors="replace")
     if encoding == "gzip":
-        return gzip.decompress(data).decode("utf-8", errors="replace")
+        try:
+            return gzip.decompress(data).decode("utf-8", errors="replace")
+        except EOFError:
+            # Truncated gzip stream — decode what we can
+            d = zlib.decompressobj(zlib.MAX_WBITS | 16)
+            try:
+                return d.decompress(data).decode("utf-8", errors="replace")
+            except Exception:
+                return data.decode("utf-8", errors="replace")
     if encoding == "deflate":
-        return zlib.decompress(data).decode("utf-8", errors="replace")
+        try:
+            return zlib.decompress(data).decode("utf-8", errors="replace")
+        except zlib.error:
+            d = zlib.decompressobj(-zlib.MAX_WBITS)
+            try:
+                return d.decompress(data).decode("utf-8", errors="replace")
+            except Exception:
+                return data.decode("utf-8", errors="replace")
     if encoding == "br":
         try:
             import brotli

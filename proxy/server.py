@@ -1,11 +1,16 @@
 """Reverse proxy for Anthropic API with middleware pipeline and SSE streaming."""
 
+import asyncio
 import json
 import logging
+import re
 import time
-from aiohttp import web, ClientSession, TCPConnector
+from aiohttp import web, ClientSession, ClientTimeout, TCPConnector
 
 from middleware import Middleware, ProxyRequest, ProxyResponse
+
+# Regex to normalize volatile cch= hash in billing header so caching works
+_CCH_RE = re.compile(r'cch=[0-9a-f]+')
 
 logger = logging.getLogger("voitta-desktop.proxy")
 
@@ -33,6 +38,11 @@ class AnthropicProxy:
         """Start the proxy server."""
         self._session = ClientSession(
             connector=TCPConnector(limit=20),
+            timeout=ClientTimeout(
+                total=None,       # no overall deadline — streams can run for minutes
+                sock_read=600,    # 10 min between chunks — thinking can go silent for a while
+                sock_connect=30,  # 30s to establish connection
+            ),
             auto_decompress=False,
         )
         self._app = web.Application(client_max_size=0)
@@ -154,9 +164,11 @@ class AnthropicProxy:
                 await response.write(chunk)
         except ConnectionResetError:
             logger.debug("Client disconnected during streaming")
+        except (TimeoutError, asyncio.TimeoutError) as e:
+            logger.warning("Upstream timeout during streaming for %s after %d chunks (%.1f KB): %s",
+                           proxy_req.path, chunk_count, byte_count / 1024, e)
         except Exception as e:
             logger.error("Streaming failed for %s: %s", proxy_req.path, e, exc_info=True)
-            raise
         finally:
             for mw in self.middlewares:
                 await mw.on_response_done(proxy_req, proxy_resp)

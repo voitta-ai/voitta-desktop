@@ -176,7 +176,7 @@ class BaseOptimizer(Middleware):
         return starts[len(starts) - self.keep_turns]
 
     async def on_request(self, request: ProxyRequest) -> ProxyRequest:
-        body = request.require_json()
+        body = request.json
         if not body or not body.get("messages"):
             return request
 

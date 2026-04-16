@@ -34,8 +34,14 @@ def _read_range(inp: dict) -> tuple[int, int]:
     if offset is None and limit is None:
         return (0, MAX)
 
-    start = int(offset) if offset is not None else 0
-    if limit is not None:
+    # offset/limit may be ints, strings, or lists (e.g. [255, 360] from some clients)
+    if isinstance(offset, list):
+        start = int(offset[0]) if offset else 0
+    else:
+        start = int(offset) if offset is not None else 0
+    if isinstance(limit, list):
+        end = start + int(limit[0]) if limit else MAX
+    elif limit is not None:
         end = start + int(limit)
     else:
         end = MAX
