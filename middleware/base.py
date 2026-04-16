@@ -67,6 +67,25 @@ class Middleware:
         pass
 
 
+def parse_int_param(val, default: int = 0) -> int:
+    """Coerce a tool input parameter to int.
+
+    Handles plain ints, numeric strings, and list-valued params
+    (e.g. offset='[255, 360]' or offset=[255, 360]) by taking the
+    first element.
+    """
+    if val is None:
+        return default
+    if isinstance(val, list):
+        return int(val[0]) if val else default
+    s = str(val).strip()
+    if s.startswith('['):
+        import ast
+        parsed = ast.literal_eval(s)
+        return int(parsed[0]) if parsed else default
+    return int(s)
+
+
 def decompress(data: bytes, encoding: str) -> str:
     """Decompress response body based on Content-Encoding header.
 

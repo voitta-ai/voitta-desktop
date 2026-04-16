@@ -13,6 +13,7 @@ Reference: AgentDiet (2509.23586) identifies these as "redundant information"
 in LLM agent trajectories.
 """
 
+from middleware.base import parse_int_param
 from . import BaseOptimizer
 
 FILE_READ_KEEP_TURNS = 5
@@ -34,17 +35,8 @@ def _read_range(inp: dict) -> tuple[int, int]:
     if offset is None and limit is None:
         return (0, MAX)
 
-    # offset/limit may be ints, strings, or lists (e.g. [255, 360] from some clients)
-    if isinstance(offset, list):
-        start = int(offset[0]) if offset else 0
-    else:
-        start = int(offset) if offset is not None else 0
-    if isinstance(limit, list):
-        end = start + int(limit[0]) if limit else MAX
-    elif limit is not None:
-        end = start + int(limit)
-    else:
-        end = MAX
+    start = parse_int_param(offset, 0)
+    end = start + parse_int_param(limit, MAX) if limit is not None else MAX
 
     return (start, end)
 

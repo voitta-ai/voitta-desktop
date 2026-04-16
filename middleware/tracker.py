@@ -7,7 +7,7 @@ import re
 import time
 from pathlib import Path
 
-from .base import Middleware, ProxyRequest, ProxyResponse, decompress
+from .base import Middleware, ProxyRequest, ProxyResponse, decompress, parse_int_param
 from .models import Conversation, Turn
 from .parsing import (
     parse_turns, compute_breakdown, extract_label, parse_sse_blocks,
@@ -30,9 +30,11 @@ class ConversationTracker(Middleware):
         raise ValueError("Missing X-Claude-Code-Session-Id on /v1/messages request")
 
     async def on_request(self, request: ProxyRequest) -> ProxyRequest:
-        body = request.require_json()
         path = request.path.split("?")[0]
-        if not body or path != "/v1/messages":
+        if path != "/v1/messages":
+            return request
+        body = request.require_json()
+        if not body:
             return request
 
         if body.get("max_tokens") == 1:
@@ -203,8 +205,8 @@ class ConversationTracker(Middleware):
                     offset = inp.get("offset")
                     limit = inp.get("limit")
                     if offset is not None or limit is not None:
-                        op.start_line = int(offset) if offset is not None else 0
-                        op.end_line = op.start_line + (int(limit) if limit is not None else 2000)
+                        op.start_line = parse_int_param(offset, 0)
+                        op.end_line = op.start_line + parse_int_param(limit, 2000)
                 elif name == "Edit":
                     op.old_str_len = len(inp.get("old_string", ""))
                     op.new_str_len = len(inp.get("new_string", ""))
