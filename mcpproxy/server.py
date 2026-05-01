@@ -44,6 +44,20 @@ def make_rag_client_factory(app_ref):
     return factory
 
 
+def make_image_rag_client_factory(app_ref):
+    """Return a factory that creates a ProxyClient for Voitta Image RAG with Bearer auth."""
+    def factory():
+        headers = {}
+        key = (app_ref.voitta_image_rag_key or "").strip()
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        url = app_ref.voitta_image_rag_url
+        logger.debug("Image RAG factory: url=%s, has_key=%s", url, bool(key))
+        transport = StreamableHttpTransport(url=url, headers=headers)
+        return ProxyClient(transport)
+    return factory
+
+
 def make_google_client_factory(app_ref):
     """Return a factory that creates a ProxyClient with current Google Workspace Bearer token."""
     def factory():
@@ -192,6 +206,9 @@ class ToolGateMiddleware(FastMCPMiddleware):
             self._last_disabled = set(gate_result)
             self._last_time = time.time()
             return [t for t in tools if t.name not in self._last_disabled]
+        except asyncio.CancelledError:
+            logger.warning("tool_gate: client disconnected, returning empty tools")
+            return []
         except Exception as e:
             logger.error("tool_gate: popup error: %s", e, exc_info=True)
             raise
@@ -241,6 +258,14 @@ def run_mcp_proxy(app_ref, port: int, jira_mcp_port: int):
     )
     main_server.mount(jira_proxy, prefix="jira")
 
+    image_rag_proxy = ResilientFastMCPProxy(
+        client_factory=make_image_rag_client_factory(app_ref),
+        name="voitta-image-rag",
+        backend_name="Voitta Image RAG",
+        app_ref=app_ref, prefix="vim",
+    )
+    main_server.mount(image_rag_proxy, prefix="vim")
+
     # ── Simple backends (driven from backends.py) ───────────────────
 
     for b in simple_backends():
@@ -282,6 +307,8 @@ def run_mcp_proxy(app_ref, port: int, jira_mcp_port: int):
     logger.info("  RAG -> %s", app_ref.voitta_rag_url)
     logger.info("  Google -> %s", app_ref.edit_proxy_url)
     logger.info("  Jira -> http://localhost:%d/mcp", jira_mcp_port)
+    logger.info("  Image RAG -> %s (key=%s)", app_ref.voitta_image_rag_url,
+                "set" if (app_ref.voitta_image_rag_key or "").strip() else "blank")
     for b in simple_backends():
         logger.info("  %s -> %s", b["label"], b["url"])
     main_server.run(transport="streamable-http", host="127.0.0.1", port=port)

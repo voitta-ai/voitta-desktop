@@ -20,8 +20,12 @@ from urllib.parse import urlparse
 import objc
 import rumps
 from AppKit import (
-    NSApp, NSAttributedString, NSBackingStoreBuffered, NSBezierPath,
-    NSColor, NSFloatingWindowLevel, NSFont, NSFontAttributeName,
+    NSApp, NSApplicationActivationPolicyAccessory,
+    NSApplicationActivationPolicyRegular,
+    NSAttributedString, NSBackingStoreBuffered, NSBezierPath,
+    NSColor, NSEvent, NSEventMaskKeyDown, NSEventModifierFlagCommand,
+    NSEventModifierFlagShift,
+    NSFloatingWindowLevel, NSFont, NSFontAttributeName,
     NSBaselineOffsetAttributeName,
     NSForegroundColorAttributeName, NSImage, NSMutableAttributedString,
     NSSize, NSTextAttachment, NSTextAttachmentCell,
@@ -133,6 +137,8 @@ class VoittaDesktopApp(rumps.App):
         llm_proxy_cfg = self._config.get("llm_proxy", {})
 
         self.voitta_rag_url = mcp_proxy_cfg.get("rag_url", "https://rag.voitta.ai")
+        self.voitta_image_rag_url = mcp_proxy_cfg.get("image_rag_url", "https://rag-img.voitta.ai/mcp")
+        self.voitta_image_rag_key = mcp_proxy_cfg.get("image_rag_key", "")
         self.edit_proxy_url = mcp_proxy_cfg.get("edit_proxy_url", f"http://localhost:{GOOGLE_MCP_PORT}")
         self.mcp_proxy_port = mcp_proxy_cfg.get("port", 18765)
         self.llm_proxy_port = llm_proxy_cfg.get("port", 18900)
@@ -179,10 +185,75 @@ class VoittaDesktopApp(rumps.App):
         self._conv_block_counts: dict[str, int] = {}
         self._build_menu()
         self._update_auth_state()
+        self._install_edit_shortcuts()
 
         # Start background servers
         threading.Thread(target=self._run_llm_proxy, daemon=True).start()
         threading.Thread(target=self._run_mcp_proxy, daemon=True).start()
+
+    def _promote_for_keyboard(self):
+        """Promote app to a Regular activation policy so popup windows can
+        actually take keyboard focus.
+
+        LSUIElement / Accessory apps cannot reliably steal key-window status
+        from another foreground app — clicks register on our windows but
+        keystrokes stay with whatever app is "active". Promoting to Regular
+        for the lifetime of an interactive popup fixes this. Refcounted so
+        nested popups don't demote prematurely.
+        """
+        if not hasattr(self, "_kbd_promotions"):
+            self._kbd_promotions = 0
+        self._kbd_promotions += 1
+        if self._kbd_promotions == 1:
+            NSApp.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+
+    def _demote_after_keyboard(self):
+        """Counterpart to _promote_for_keyboard — restore Accessory on last close."""
+        if not hasattr(self, "_kbd_promotions") or self._kbd_promotions <= 0:
+            return
+        self._kbd_promotions -= 1
+        if self._kbd_promotions == 0:
+            NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+
+    def _install_edit_shortcuts(self):
+        """Wire Cmd+C/V/X/A/Z to the focused control via a local event monitor.
+
+        Why: this is an LSUIElement (menu-bar) app with no application menu,
+        so the standard editing shortcuts have no menu items to route through
+        and silently fail in WKWebView text fields. Installing a main menu
+        works for shortcuts but disturbs window activation/key-window behavior
+        in a rumps app. A local event monitor avoids touching the main menu —
+        it dispatches the relevant selectors through the responder chain via
+        NSApp.sendAction_to_from_(sel, None, None) (target=None means "first
+        responder"), which WKWebView text fields handle natively.
+        """
+        SHORTCUTS = {
+            "c": "copy:",
+            "v": "paste:",
+            "x": "cut:",
+            "a": "selectAll:",
+            "z": "undo:",
+        }
+
+        def handler(event):
+            flags = event.modifierFlags()
+            if not (flags & NSEventModifierFlagCommand):
+                return event
+            chars = event.charactersIgnoringModifiers() or ""
+            chars = chars.lower()
+            if chars == "z" and (flags & NSEventModifierFlagShift):
+                sel = "redo:"
+            else:
+                sel = SHORTCUTS.get(chars)
+            if sel is None:
+                return event
+            if NSApp.sendAction_to_from_(sel, None, None):
+                return None  # consumed
+            return event
+
+        self._edit_event_monitor = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+            NSEventMaskKeyDown, handler
+        )
 
     # ── Config ───────────────────────────────────────────────────────────────
 
@@ -1164,7 +1235,7 @@ class VoittaDesktopApp(rumps.App):
 
         self._settings_refs = (window, webview, observer)
 
-        window.setLevel_(NSFloatingWindowLevel)
+        self._promote_for_keyboard()
         NSApp.activateIgnoringOtherApps_(True)
         window.makeKeyAndOrderFront_(None)
 
@@ -1224,6 +1295,8 @@ class VoittaDesktopApp(rumps.App):
 
         mcp_proxy_cfg = new_config.get("mcp_proxy", {})
         self.voitta_rag_url = mcp_proxy_cfg.get("rag_url", "https://rag.voitta.ai")
+        self.voitta_image_rag_url = mcp_proxy_cfg.get("image_rag_url", "https://rag-img.voitta.ai/mcp")
+        self.voitta_image_rag_key = mcp_proxy_cfg.get("image_rag_key", "")
         self.edit_proxy_url = mcp_proxy_cfg.get("edit_proxy_url", f"http://localhost:{GOOGLE_MCP_PORT}")
         self.disabled_tools = set(new_config.get("disabled_tools", []))
 
@@ -1329,6 +1402,10 @@ class _SettingsTitleObserver(NSObject):
         NSNotificationCenter.defaultCenter().removeObserver_(self)
         if getattr(self._app, "_settings_gen", 0) == self._gen:
             self._app._settings_refs = None
+        try:
+            self._app._demote_after_keyboard()
+        except Exception:
+            pass
 
     def observeValueForKeyPath_ofObject_change_context_(
         self, keyPath, obj, change, context

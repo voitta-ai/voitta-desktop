@@ -24,6 +24,10 @@
   label: Jira
   description: Jira issues, sprints, boards
 
+- prefix: vim
+  label: Voitta Image RAG
+  description: improved voitta rag
+
 # ── simple (auto-mounted from url) ─────────────────────────────────
 
 - prefix: voitta_pptx
@@ -42,10 +46,3 @@
   label: FreeCAD
   description: FreeCAD CAD manipulation
   url: http://127.0.0.1:50005/mcp
-
-- prefix: vim
-  label: Voitta Image RAG
-  description: improved voitta rag
-  url: http://192.168.88.210:59000/mcp
-  headers:
-    X-User-Name: roman

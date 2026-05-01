@@ -22,6 +22,8 @@ def _default_config() -> dict:
             "port": int(os.environ.get("MCP_PROXY_PORT", "18765")),
             "edit_proxy_url": os.environ.get("EDIT_PROXY_URL", f"http://localhost:{os.environ.get('GOOGLE_MCP_PORT', '18766')}"),
             "rag_url": os.environ.get("VOITTA_RAG_URL", "https://rag.voitta.ai"),
+            "image_rag_url": os.environ.get("VOITTA_IMAGE_RAG_URL", "https://rag-img.voitta.ai/mcp"),
+            "image_rag_key": "",
         },
         "llm_proxy": {
             "port": int(os.environ.get("LLM_PROXY_PORT", "18900")),
@@ -145,6 +147,8 @@ def migrate_from_legacy(settings: dict, env_defaults: dict | None = None) -> dic
         "port": int(settings.get("proxy_port", os.environ.get("MCP_PROXY_PORT", "18765"))),
         "edit_proxy_url": settings.get("edit_proxy_url", os.environ.get("EDIT_PROXY_URL", "http://localhost:18766")),
         "rag_url": settings.get("voitta_rag_url", os.environ.get("VOITTA_RAG_URL", "https://rag.voitta.ai")),
+        "image_rag_url": settings.get("voitta_image_rag_url", os.environ.get("VOITTA_IMAGE_RAG_URL", "https://rag-img.voitta.ai/mcp")),
+        "image_rag_key": settings.get("voitta_image_rag_key", ""),
     }
 
     # LLM Proxy

@@ -298,9 +298,25 @@
     <label>Edit Proxy URL</label>
     <input type="text" id="edit_proxy_url" placeholder="http://localhost:18766">
   </div>
+</div>
+
+<h2>Voitta RAG</h2>
+<div class="card" id="rag-card">
   <div class="field">
-    <label>RAG URL</label>
+    <label>URL</label>
     <input type="text" id="rag_url" placeholder="https://rag.voitta.ai">
+  </div>
+</div>
+
+<h2>Voitta Image RAG</h2>
+<div class="card" id="image-rag-card">
+  <div class="field">
+    <label>URL</label>
+    <input type="text" id="image_rag_url" placeholder="https://rag-img.voitta.ai/mcp">
+  </div>
+  <div class="field">
+    <label>API Key</label>
+    <input type="password" id="image_rag_key" placeholder="vk_...">
   </div>
 </div>
 
@@ -477,6 +493,8 @@ function loadProxy() {
   document.getElementById('proxy_port').value = mcp.port || '18765';
   document.getElementById('edit_proxy_url').value = mcp.edit_proxy_url || '';
   document.getElementById('rag_url').value = mcp.rag_url || '';
+  document.getElementById('image_rag_url').value = mcp.image_rag_url || 'https://rag-img.voitta.ai/mcp';
+  document.getElementById('image_rag_key').value = mcp.image_rag_key || '';
   document.getElementById('llm_proxy_port').value = llm.port || '18900';
 }
 
@@ -494,6 +512,8 @@ function collectAll() {
     port: parseInt(document.getElementById('proxy_port').value) || 18765,
     edit_proxy_url: document.getElementById('edit_proxy_url').value,
     rag_url: document.getElementById('rag_url').value,
+    image_rag_url: document.getElementById('image_rag_url').value,
+    image_rag_key: document.getElementById('image_rag_key').value,
   };
   config.llm_proxy = {
     port: parseInt(document.getElementById('llm_proxy_port').value) || 18900,

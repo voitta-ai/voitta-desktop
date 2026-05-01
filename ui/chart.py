@@ -629,17 +629,17 @@ def generate_chart_html(
             ctx.stroke();
             ctx.setLineDash([]);
 
-            // Vertical threshold line — show at first turn that has stripping
+            // Vertical threshold line — show after the last stripped turn
+            // (the boundary between optimized and protected zones)
             if (hasAnyOpt) {{
-                let firstStripped = -1;
+                let lastStripped = -1;
                 for (let i = 0; i < turns.length; i++) {{
                     if ((turns[i].stripped_tool || 0) + (turns[i].stripped_thinking || 0) > 0) {{
-                        firstStripped = i;
-                        break;
+                        lastStripped = i;
                     }}
                 }}
-                if (firstStripped >= 0) {{
-                    const threshX = pad.left + firstStripped * gap + gap;
+                if (lastStripped >= 0) {{
+                    const threshX = pad.left + (lastStripped + 1) * gap + gap;
                     ctx.strokeStyle = '#5e5ce6';
                     ctx.lineWidth = 1;
                     ctx.globalAlpha = 0.5;

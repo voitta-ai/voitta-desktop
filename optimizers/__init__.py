@@ -8,11 +8,15 @@ from middleware.models import parse_image_dimensions
 
 logger = logging.getLogger("voitta-desktop.optimizers")
 
-# Per-million input token pricing by model family
-_INPUT_PRICE_PER_M = {
-    "opus": 15.0,
-    "sonnet": 3.0,
-    "haiku": 0.80,
+# Per-million token pricing by model family.
+# Stripped tokens would, in steady state, have been served as cache reads
+# (not fresh input) — Anthropic prices cache reads at 10% of input. We use
+# the cache-read rate so displayed savings reflect the realistic avoided
+# cost, not a 10x-inflated figure priced at full input rate.
+_CACHE_READ_PRICE_PER_M = {
+    "opus": 1.50,
+    "sonnet": 0.30,
+    "haiku": 0.08,
 }
 
 
@@ -136,7 +140,7 @@ class BaseOptimizer(Middleware):
     def total_savings_usd(self) -> float:
         total = 0.0
         for family, tokens in self.tokens_saved.items():
-            price = _INPUT_PRICE_PER_M.get(family, 3.0)
+            price = _CACHE_READ_PRICE_PER_M.get(family, 0.30)
             total += tokens / 1_000_000 * price
         return total
 

@@ -30,7 +30,11 @@ class CacheSimulator(Middleware):
         return self.history.get(session_id, [])
 
     async def on_request(self, request: ProxyRequest) -> ProxyRequest:
-        if not request.path.startswith("/v1/messages"):
+        # Exact match — /v1/messages/count_tokens has a different block shape
+        # (typically 1 message, 0 tools, 0 system). Letting it through would
+        # overwrite _prev_blocks with that tiny prefix and zero out the match
+        # on the next real /v1/messages request.
+        if request.path.split("?")[0] != "/v1/messages":
             return request
         if not request.body:
             return request
