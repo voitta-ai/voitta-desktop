@@ -70,19 +70,28 @@ class Middleware:
 def parse_int_param(val, default: int = 0) -> int:
     """Coerce a tool input parameter to int.
 
-    Handles plain ints, numeric strings, and list-valued params
-    (e.g. offset='[255, 360]' or offset=[255, 360]) by taking the
-    first element.
+    Handles plain ints, numeric strings, list-valued params
+    (e.g. offset='[255, 360]' or offset=[255, 360]), and bare
+    comma-separated strings ('170,' or '170, 180') by taking the
+    first element. The model occasionally emits these malformed
+    values; once they land in conversation history they get
+    re-parsed every turn, so we have to be tolerant.
     """
     if val is None:
         return default
     if isinstance(val, list):
         return int(val[0]) if val else default
     s = str(val).strip()
+    if not s:
+        return default
     if s.startswith('['):
         import ast
         parsed = ast.literal_eval(s)
         return int(parsed[0]) if parsed else default
+    if ',' in s:
+        s = s.split(',', 1)[0].strip()
+        if not s:
+            return default
     return int(s)
 
 

@@ -130,9 +130,17 @@ class ConversationTracker(Middleware):
                             turn.tool_use_ids.append(tid)
             msg_index = turn_end
 
-        # Compute stale read chars per turn
+        # Compute stale read chars per turn. Wrapped: a bug in any optimizer
+        # must not be allowed to kill the in-flight response stream — the
+        # caller (proxy._stream_response) calls us *after* upstream is done
+        # but before the client write finishes, so an exception here drops
+        # the connection mid-flush and surfaces as InvalidHTTPResponse.
         from optimizers.file_read import analyze_stale_reads
-        stale = analyze_stale_reads(messages)
+        try:
+            stale = analyze_stale_reads(messages)
+        except Exception as e:
+            logger.warning("analyze_stale_reads failed (history-poisoned chat?): %s", e)
+            stale = {}
         if stale:
             tool_result_msg: dict[str, int] = {}
             for mi, m in enumerate(messages):
