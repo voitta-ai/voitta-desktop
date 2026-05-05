@@ -178,8 +178,16 @@ class AnthropicProxy:
         except Exception as e:
             logger.error("Streaming failed for %s: %s", proxy_req.path, e, exc_info=True)
         finally:
+            # Isolate each middleware: a bug in on_response_done (e.g. an
+            # optimizer crashing on poisoned conversation history) must not
+            # propagate out of the finally block. If it does, it bypasses
+            # write_eof below and the client sees InvalidHTTPResponse.
             for mw in self.middlewares:
-                await mw.on_response_done(proxy_req, proxy_resp)
+                try:
+                    await mw.on_response_done(proxy_req, proxy_resp)
+                except Exception as e:
+                    logger.error("Middleware %s.on_response_done failed for %s: %s",
+                                 type(mw).__name__, proxy_req.path, e, exc_info=True)
             try:
                 await response.write_eof()
             except ConnectionResetError:
