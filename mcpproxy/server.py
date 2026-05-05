@@ -58,6 +58,20 @@ def make_image_rag_client_factory(app_ref):
     return factory
 
 
+def make_paperclip_client_factory(app_ref):
+    """Return a factory that creates a ProxyClient for Paperclip with X-API-Key auth."""
+    def factory():
+        headers = {}
+        key = (app_ref.paperclip_key or "").strip()
+        if key:
+            headers["X-API-Key"] = key
+        url = app_ref.paperclip_url
+        logger.debug("Paperclip factory: url=%s, has_key=%s", url, bool(key))
+        transport = StreamableHttpTransport(url=url, headers=headers)
+        return ProxyClient(transport)
+    return factory
+
+
 def make_google_client_factory(app_ref):
     """Return a factory that creates a ProxyClient with current Google Workspace Bearer token."""
     def factory():
@@ -235,6 +249,7 @@ def run_mcp_proxy(app_ref, port: int, jira_mcp_port: int):
         client_factory=make_rag_client_factory(app_ref),
         name="voitta-rag",
         backend_name="RAG",
+        cache_listings=True,
         app_ref=app_ref, prefix="voitta_rag",
     )
     main_server.mount(rag_proxy, prefix="voitta_rag")
@@ -262,9 +277,19 @@ def run_mcp_proxy(app_ref, port: int, jira_mcp_port: int):
         client_factory=make_image_rag_client_factory(app_ref),
         name="voitta-image-rag",
         backend_name="Voitta Image RAG",
+        cache_listings=True,
         app_ref=app_ref, prefix="vim",
     )
     main_server.mount(image_rag_proxy, prefix="vim")
+
+    paperclip_proxy = ResilientFastMCPProxy(
+        client_factory=make_paperclip_client_factory(app_ref),
+        name="paperclip",
+        backend_name="Paperclip",
+        cache_listings=True,
+        app_ref=app_ref, prefix="paperclip",
+    )
+    main_server.mount(paperclip_proxy, prefix="paperclip")
 
     # ── Simple backends (driven from backends.py) ───────────────────
 
@@ -275,6 +300,7 @@ def run_mcp_proxy(app_ref, port: int, jira_mcp_port: int):
             ),
             name=b["prefix"].replace("_", "-"),
             backend_name=b["label"],
+            cache_listings=True,
             app_ref=app_ref, prefix=b["prefix"],
         )
         main_server.mount(proxy, prefix=b["prefix"])
@@ -309,6 +335,8 @@ def run_mcp_proxy(app_ref, port: int, jira_mcp_port: int):
     logger.info("  Jira -> http://localhost:%d/mcp", jira_mcp_port)
     logger.info("  Image RAG -> %s (key=%s)", app_ref.voitta_image_rag_url,
                 "set" if (app_ref.voitta_image_rag_key or "").strip() else "blank")
+    logger.info("  Paperclip -> %s (key=%s)", app_ref.paperclip_url,
+                "set" if (app_ref.paperclip_key or "").strip() else "blank")
     for b in simple_backends():
         logger.info("  %s -> %s", b["label"], b["url"])
     main_server.run(transport="streamable-http", host="127.0.0.1", port=port)

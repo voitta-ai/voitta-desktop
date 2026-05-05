@@ -24,6 +24,12 @@ logging.getLogger("fastmcp.server.providers.aggregate").setLevel(logging.DEBUG)
 logging.getLogger("voitta-desktop.tracker").setLevel(logging.DEBUG)
 logging.getLogger("voitta-desktop.proxy").setLevel(logging.DEBUG)
 
+# Silence the MCP SDK's post-cancellation SSE spam. When we cancel a slow
+# listing via asyncio.wait_for, the SSE reader is mid-flight and tries to
+# write into a stream that's already closed -> ClosedResourceError stacks.
+# Cosmetic only; the timeout fallback handles the actual outcome.
+logging.getLogger("mcp.client.streamable_http").setLevel(logging.CRITICAL)
+
 from ui.menu import VoittaDesktopApp
 
 if __name__ == "__main__":

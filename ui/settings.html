@@ -262,6 +262,18 @@
 </head>
 <body>
 
+<h2>LLM Proxy</h2>
+<div class="card" id="llm-proxy-card">
+  <div class="field">
+    <label>Upstream URL</label>
+    <input type="text" id="llm_upstream_url" placeholder="https://api.anthropic.com">
+  </div>
+  <div class="field">
+    <label>Port</label>
+    <input type="text" id="llm_proxy_port" placeholder="18900">
+  </div>
+</div>
+
 <h2>OAuth Applications</h2>
 <div id="apps-container"></div>
 <button class="btn-add" onclick="addApp()">+ Add Application</button>
@@ -320,11 +332,15 @@
   </div>
 </div>
 
-<h2>LLM Proxy</h2>
-<div class="card" id="llm-proxy-card">
+<h2>Paperclip</h2>
+<div class="card" id="paperclip-card">
   <div class="field">
-    <label>Port</label>
-    <input type="text" id="llm_proxy_port" placeholder="18900">
+    <label>URL</label>
+    <input type="text" id="paperclip_url" placeholder="https://paperclip.gxl.ai/mcp">
+  </div>
+  <div class="field">
+    <label>API Key</label>
+    <input type="password" id="paperclip_key" placeholder="gxl_...">
   </div>
 </div>
 
@@ -495,7 +511,10 @@ function loadProxy() {
   document.getElementById('rag_url').value = mcp.rag_url || '';
   document.getElementById('image_rag_url').value = mcp.image_rag_url || 'https://rag-img.voitta.ai/mcp';
   document.getElementById('image_rag_key').value = mcp.image_rag_key || '';
+  document.getElementById('paperclip_url').value = mcp.paperclip_url || 'https://paperclip.gxl.ai/mcp';
+  document.getElementById('paperclip_key').value = mcp.paperclip_key || '';
   document.getElementById('llm_proxy_port').value = llm.port || '18900';
+  document.getElementById('llm_upstream_url').value = llm.upstream_url || 'https://api.anthropic.com';
 }
 
 function collectAll() {
@@ -514,9 +533,12 @@ function collectAll() {
     rag_url: document.getElementById('rag_url').value,
     image_rag_url: document.getElementById('image_rag_url').value,
     image_rag_key: document.getElementById('image_rag_key').value,
+    paperclip_url: document.getElementById('paperclip_url').value,
+    paperclip_key: document.getElementById('paperclip_key').value,
   };
   config.llm_proxy = {
     port: parseInt(document.getElementById('llm_proxy_port').value) || 18900,
+    upstream_url: document.getElementById('llm_upstream_url').value.trim() || 'https://api.anthropic.com',
   };
   config.disabled_tools = collectDisabledTools();
   return config;

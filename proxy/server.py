@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import time
+from urllib.parse import urlparse
 from aiohttp import web, ClientSession, ClientTimeout, TCPConnector
 
 from middleware import Middleware, ProxyRequest, ProxyResponse
@@ -21,15 +22,22 @@ HOP_BY_HOP = frozenset({
     "trailers", "upgrade", "host", "content-length",
 })
 
-UPSTREAM_URL = "https://api.anthropic.com"
+DEFAULT_UPSTREAM_URL = "https://api.anthropic.com"
 
 
 class AnthropicProxy:
-    """Reverse proxy that forwards requests to api.anthropic.com with middleware."""
+    """Reverse proxy that forwards requests to an Anthropic-compatible upstream."""
 
-    def __init__(self, middlewares: list[Middleware] | None = None, port: int = 18900):
+    def __init__(
+        self,
+        middlewares: list[Middleware] | None = None,
+        port: int = 18900,
+        upstream_url: str = DEFAULT_UPSTREAM_URL,
+    ):
         self.middlewares = middlewares or []
         self.port = port
+        self.upstream_url = (upstream_url or DEFAULT_UPSTREAM_URL).rstrip("/")
+        self._upstream_host = urlparse(self.upstream_url).netloc
         self._session: ClientSession | None = None
         self._app: web.Application | None = None
         self._runner: web.AppRunner | None = None
@@ -97,9 +105,9 @@ class AnthropicProxy:
                             type(mw).__name__, mw_duration_ms, proxy_req.path)
 
         # Forward to upstream
-        upstream_url = f"{UPSTREAM_URL}{proxy_req.path}"
+        upstream_url = f"{self.upstream_url}{proxy_req.path}"
         upstream_headers = dict(proxy_req.headers)
-        upstream_headers["Host"] = "api.anthropic.com"
+        upstream_headers["Host"] = self._upstream_host
         if proxy_req.body:
             upstream_headers["Content-Length"] = str(len(proxy_req.body))
 

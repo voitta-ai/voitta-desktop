@@ -28,6 +28,10 @@
   label: Voitta Image RAG
   description: improved voitta rag
 
+- prefix: paperclip
+  label: Paperclip
+  description: Paperclip biomedical paper search (8M+ papers)
+
 # ── simple (auto-mounted from url) ─────────────────────────────────
 
 - prefix: voitta_pptx

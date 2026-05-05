@@ -24,9 +24,12 @@ def _default_config() -> dict:
             "rag_url": os.environ.get("VOITTA_RAG_URL", "https://rag.voitta.ai"),
             "image_rag_url": os.environ.get("VOITTA_IMAGE_RAG_URL", "https://rag-img.voitta.ai/mcp"),
             "image_rag_key": "",
+            "paperclip_url": os.environ.get("PAPERCLIP_URL", "https://paperclip.gxl.ai/mcp"),
+            "paperclip_key": "",
         },
         "llm_proxy": {
             "port": int(os.environ.get("LLM_PROXY_PORT", "18900")),
+            "upstream_url": os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
         },
         "disabled_tools": [],
     }
@@ -48,6 +51,8 @@ def load_config() -> dict:
         # Env vars override saved ports (so .env is always authoritative)
         data.setdefault("mcp_proxy", {})["port"] = defaults["mcp_proxy"]["port"]
         data.setdefault("llm_proxy", {})["port"] = defaults["llm_proxy"]["port"]
+        # Backfill new fields onto pre-existing configs without clobbering saved values
+        data["llm_proxy"].setdefault("upstream_url", defaults["llm_proxy"]["upstream_url"])
         return data
     except Exception:
         return defaults
@@ -149,11 +154,14 @@ def migrate_from_legacy(settings: dict, env_defaults: dict | None = None) -> dic
         "rag_url": settings.get("voitta_rag_url", os.environ.get("VOITTA_RAG_URL", "https://rag.voitta.ai")),
         "image_rag_url": settings.get("voitta_image_rag_url", os.environ.get("VOITTA_IMAGE_RAG_URL", "https://rag-img.voitta.ai/mcp")),
         "image_rag_key": settings.get("voitta_image_rag_key", ""),
+        "paperclip_url": settings.get("paperclip_url", os.environ.get("PAPERCLIP_URL", "https://paperclip.gxl.ai/mcp")),
+        "paperclip_key": settings.get("paperclip_key", ""),
     }
 
     # LLM Proxy
     config["llm_proxy"] = {
         "port": int(settings.get("llm_proxy_port", os.environ.get("LLM_PROXY_PORT", "18900"))),
+        "upstream_url": settings.get("llm_upstream_url", os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")),
     }
 
     return config

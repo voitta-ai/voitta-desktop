@@ -139,9 +139,12 @@ class VoittaDesktopApp(rumps.App):
         self.voitta_rag_url = mcp_proxy_cfg.get("rag_url", "https://rag.voitta.ai")
         self.voitta_image_rag_url = mcp_proxy_cfg.get("image_rag_url", "https://rag-img.voitta.ai/mcp")
         self.voitta_image_rag_key = mcp_proxy_cfg.get("image_rag_key", "")
+        self.paperclip_url = mcp_proxy_cfg.get("paperclip_url", "https://paperclip.gxl.ai/mcp")
+        self.paperclip_key = mcp_proxy_cfg.get("paperclip_key", "")
         self.edit_proxy_url = mcp_proxy_cfg.get("edit_proxy_url", f"http://localhost:{GOOGLE_MCP_PORT}")
         self.mcp_proxy_port = mcp_proxy_cfg.get("port", 18765)
         self.llm_proxy_port = llm_proxy_cfg.get("port", 18900)
+        self.llm_upstream_url = llm_proxy_cfg.get("upstream_url", "https://api.anthropic.com")
 
         # Init auth state per (app, backend)
         for app in self._config.get("apps", []):
@@ -176,6 +179,7 @@ class VoittaDesktopApp(rumps.App):
         self._proxy = AnthropicProxy(
             middlewares=[self._request_logger, self._tracker, self._optimizer_pipeline, self._cache_sim],
             port=self.llm_proxy_port,
+            upstream_url=self.llm_upstream_url,
         )
         self._proxy_running = False
 
@@ -276,7 +280,9 @@ class VoittaDesktopApp(rumps.App):
                 if "proxy" in data and "mcp_proxy" not in data:
                     data["mcp_proxy"] = data.pop("proxy")
                 if "llm_proxy" not in data:
-                    data["llm_proxy"] = {"port": 18900}
+                    data["llm_proxy"] = {"port": 18900, "upstream_url": "https://api.anthropic.com"}
+                else:
+                    data["llm_proxy"].setdefault("upstream_url", "https://api.anthropic.com")
                 save_config(data)
                 return data
             except Exception:
@@ -1297,6 +1303,8 @@ class VoittaDesktopApp(rumps.App):
         self.voitta_rag_url = mcp_proxy_cfg.get("rag_url", "https://rag.voitta.ai")
         self.voitta_image_rag_url = mcp_proxy_cfg.get("image_rag_url", "https://rag-img.voitta.ai/mcp")
         self.voitta_image_rag_key = mcp_proxy_cfg.get("image_rag_key", "")
+        self.paperclip_url = mcp_proxy_cfg.get("paperclip_url", "https://paperclip.gxl.ai/mcp")
+        self.paperclip_key = mcp_proxy_cfg.get("paperclip_key", "")
         self.edit_proxy_url = mcp_proxy_cfg.get("edit_proxy_url", f"http://localhost:{GOOGLE_MCP_PORT}")
         self.disabled_tools = set(new_config.get("disabled_tools", []))
 
