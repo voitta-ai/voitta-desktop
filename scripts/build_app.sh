@@ -1,88 +1,182 @@
 #!/usr/bin/env bash
-# Build, optionally sign, optionally notarize Voitta Desktop.app (arm64).
+# Build the Voitta Desktop .app via briefcase.
 #
-# Usage:
-#   scripts/build_app.sh                  # unsigned build
-#   DEVELOPER_ID="Developer ID Application: NAME (TEAMID)" scripts/build_app.sh
-#   DEVELOPER_ID=... NOTARY_PROFILE=voitta-notary scripts/build_app.sh
+# Lives at scripts/ but cd's to repo root because briefcase reads
+# pyproject.toml from CWD and writes build/ + dist/ next to it.
 #
-# Notary credentials — pick one of:
-#   1. NOTARY_PROFILE  — keychain profile created via:
-#        xcrun notarytool store-credentials voitta-notary \
-#            --apple-id you@example.com --team-id ABC123 --password app-specific-pw
-#   2. APPLE_ID + APP_PASSWORD + TEAM_ID  — passed inline (avoid in CI logs)
+#   ./scripts/build_app.sh                 # standalone build (~2-4 min)
+#   ./scripts/build_app.sh --clean         # nuke build/ dist/ wheels/ first
+#   ./scripts/build_app.sh --package       # also produce a .dmg in dist/ (ad-hoc)
+#
+# Code-sign + notarise (one-command frictionless distribution):
+#
+#   ./scripts/build_app.sh --package \
+#       --sign "Developer ID Application: roman semeine (KU3WTX9RXB)" \
+#       --notarize
+#
+# Output:
+#   build/voitta_desktop/macos/app/Voitta Desktop.app   # the bundle
+#   dist/Voitta Desktop-0.1.0.dmg                       # only with --package
+#
+# Distribution friction by mode:
+#
+#   --package                 — ad-hoc signed. Recipient sees Gatekeeper
+#                               warning, must right-click → Open the
+#                               first time. Free.
+#   --package --sign …        — Developer ID signed. Removes "unidentified
+#                               developer" wording, but on macOS 10.15+
+#                               Gatekeeper still wants notarisation.
+#   --package --sign … --notarize
+#                             — fully Gatekeeper-clean. Recipient
+#                               double-clicks, no warning, no friction.
+#
+# Notarisation prerequisite (one-time, already done on this machine for
+# voitta-bookmarklet — same keychain profile is reused):
+#
+#   xcrun notarytool store-credentials voitta-notary \
+#     --apple-id you@example.com --team-id KU3WTX9RXB
+#   # (paste the app-specific password from
+#   #  https://appleid.apple.com → Sign-In and Security)
+#
+#   The keychain profile name "voitta-notary" is what --notarize looks
+#   up; override via $VOITTA_NOTARY_PROFILE env var.
+
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Resolve repo root from this script's location.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT"
 
-PY="${PY:-$ROOT/.venv/bin/python}"
-APP="dist/Voitta Desktop.app"
-ZIP="dist/VoittaDesktop.zip"
+VENV="$ROOT/.venv"
 
-echo "==> Cleaning build/ dist/"
-rm -rf build dist
+CLEAN=0
+PACKAGE=0
+SIGN_IDENTITY=""
+NOTARIZE=0
+NOTARY_PROFILE="${VOITTA_NOTARY_PROFILE:-voitta-notary}"
 
-echo "==> Ensuring icon (images/AppIcon.icns)"
-[ -f images/AppIcon.icns ] || "$ROOT/scripts/make_icns.sh"
+# Manual arg loop because --sign takes a value containing spaces and
+# parens, e.g. "Developer ID Application: roman semeine (KU3WTX9RXB)".
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --clean)    CLEAN=1; shift ;;
+    --package)  PACKAGE=1; shift ;;
+    --sign)
+      if [ $# -lt 2 ] || [ -z "$2" ]; then
+        echo "[build_app] --sign needs an identity string" >&2
+        exit 2
+      fi
+      SIGN_IDENTITY="$2"; shift 2 ;;
+    --notarize) NOTARIZE=1; shift ;;
+    -h|--help)
+      sed -n '2,55p' "$0"; exit 0 ;;
+    *)
+      echo "[build_app] unknown arg: $1" >&2
+      exit 2 ;;
+  esac
+done
 
-echo "==> py2app build (arm64)"
-ARCHFLAGS="-arch arm64" "$PY" setup.py py2app
-
-if [ ! -d "$APP" ]; then
-    echo "ERROR: $APP not produced." >&2
-    exit 1
+if [ "$NOTARIZE" -eq 1 ] && [ -z "$SIGN_IDENTITY" ]; then
+  echo "[build_app] --notarize requires --sign \"<Developer ID identity>\" — Apple won't notarise an ad-hoc bundle." >&2
+  exit 2
+fi
+if [ -n "$SIGN_IDENTITY" ] && [ "$PACKAGE" -eq 0 ]; then
+  echo "[build_app] --sign without --package has no effect (briefcase only signs at package time). Add --package." >&2
+  exit 2
 fi
 
-SIZE=$(du -sh "$APP" | cut -f1)
-echo "==> Built: $APP ($SIZE)"
-
-# ── Codesign ────────────────────────────────────────────────────────────
-if [ -n "${DEVELOPER_ID:-}" ]; then
-    echo "==> Codesigning with: $DEVELOPER_ID"
-    # --deep for nested frameworks; --options runtime for hardened runtime (notary req)
-    codesign --deep --force --timestamp --options runtime \
-        --entitlements scripts/entitlements.plist \
-        --sign "$DEVELOPER_ID" \
-        "$APP"
-    codesign --verify --deep --strict --verbose=2 "$APP"
-    echo "==> Signed."
-else
-    echo "==> DEVELOPER_ID not set — skipping codesign."
-    echo "    Set to e.g. 'Developer ID Application: Your Name (TEAMID)' to enable."
+if [ ! -d "$VENV" ]; then
+  echo "[build_app] no .venv found — run:  python -m venv .venv && .venv/bin/pip install -r requirements.txt briefcase" >&2
+  exit 1
 fi
 
-# ── Notarize ────────────────────────────────────────────────────────────
-notarize() {
-    echo "==> Zipping for notarization"
-    ditto -c -k --keepParent "$APP" "$ZIP"
+# Make sure briefcase is installed in the venv. We don't add briefcase to
+# requirements.txt because terminal dev doesn't need it — only this script.
+echo "[build_app] ensuring briefcase is installed..."
+"$VENV/bin/pip" install -q briefcase
 
-    if [ -n "${NOTARY_PROFILE:-}" ]; then
-        echo "==> notarytool submit (profile: $NOTARY_PROFILE)"
-        xcrun notarytool submit "$ZIP" \
-            --keychain-profile "$NOTARY_PROFILE" \
-            --wait
-    else
-        echo "==> notarytool submit (apple-id: $APPLE_ID, team: $TEAM_ID)"
-        xcrun notarytool submit "$ZIP" \
-            --apple-id "$APPLE_ID" \
-            --password "$APP_PASSWORD" \
-            --team-id "$TEAM_ID" \
-            --wait
+if [ "$CLEAN" -eq 1 ]; then
+  echo "[build_app] cleaning build/, dist/, wheels/..."
+  rm -rf "$ROOT/build" "$ROOT/dist" "$ROOT/wheels"
+fi
+
+# Generate the .app icon if it isn't already there.
+if [ ! -f "$ROOT/images/AppIcon.icns" ]; then
+  echo "[build_app] generating images/AppIcon.icns..."
+  "$ROOT/scripts/make_icns.sh"
+fi
+
+# rumps is sdist-only on PyPI; briefcase passes --only-binary :all: to pip
+# so we pre-build a wheel locally and reference it via relative path in
+# pyproject.toml's `requires` list.
+mkdir -p "$ROOT/wheels"
+if ! ls "$ROOT/wheels"/rumps-*.whl >/dev/null 2>&1; then
+  echo "[build_app] pre-building rumps wheel..."
+  "$VENV/bin/pip" wheel --no-deps --quiet -w "$ROOT/wheels" rumps
+fi
+
+# briefcase create — downloads CPython support package, installs deps into
+# the bundle's standalone Python. Idempotent if no spec changes.
+APP_DIR="$ROOT/build/voitta_desktop/macos/app/Voitta Desktop.app"
+if [ ! -d "$APP_DIR" ] || [ "$CLEAN" -eq 1 ]; then
+  echo "[build_app] briefcase create..."
+  "$VENV/bin/briefcase" create macOS app --no-input
+fi
+
+# briefcase update — re-stages source + resources without re-installing
+# wheels. Cheap; keeps the bundle in sync with local edits.
+echo "[build_app] briefcase update (sync source + resources)..."
+"$VENV/bin/briefcase" update macOS app --no-input
+
+# briefcase build — strips, signs (ad-hoc by default).
+echo "[build_app] briefcase build (ad-hoc sign)..."
+"$VENV/bin/briefcase" build macOS app --no-input
+
+if [ ! -d "$APP_DIR" ]; then
+  echo "[build_app] briefcase reported success but $APP_DIR is missing." >&2
+  exit 1
+fi
+
+if [ "$PACKAGE" -eq 1 ]; then
+  if [ -z "$SIGN_IDENTITY" ]; then
+    echo "[build_app] briefcase package (DMG, ad-hoc sign)..."
+    "$VENV/bin/briefcase" package macOS app --adhoc-sign --no-input
+  else
+    echo "[build_app] briefcase package — signing as: $SIGN_IDENTITY"
+    "$VENV/bin/briefcase" package macOS app \
+      --identity "$SIGN_IDENTITY" \
+      --no-input
+
+    if [ "$NOTARIZE" -eq 1 ]; then
+      DMG=$(ls -1 "$ROOT/dist/"*.dmg 2>/dev/null | head -1)
+      if [ -z "$DMG" ]; then
+        echo "[build_app] expected a .dmg under dist/ but none found." >&2
+        exit 1
+      fi
+      echo "[build_app] notarising $DMG (profile: $NOTARY_PROFILE)..."
+      if ! xcrun notarytool submit "$DMG" \
+           --keychain-profile "$NOTARY_PROFILE" \
+           --wait; then
+        echo "[build_app] notarytool reported failure." >&2
+        echo "[build_app]   (run: xcrun notarytool log <submission-id> --keychain-profile $NOTARY_PROFILE)" >&2
+        exit 1
+      fi
+      echo "[build_app] stapling notarisation ticket..."
+      xcrun stapler staple "$DMG"
+      echo "[build_app] verifying with spctl..."
+      spctl -a -vv --type install "$DMG" || true
     fi
-
-    echo "==> Stapling"
-    xcrun stapler staple "$APP"
-    xcrun stapler validate "$APP"
-}
-
-if [ -z "${DEVELOPER_ID:-}" ]; then
-    echo "==> Notarization skipped (build is unsigned)."
-elif [ -n "${NOTARY_PROFILE:-}" ] || { [ -n "${APPLE_ID:-}" ] && [ -n "${APP_PASSWORD:-}" ] && [ -n "${TEAM_ID:-}" ]; }; then
-    notarize
-else
-    echo "==> Notarization skipped — set NOTARY_PROFILE or APPLE_ID/APP_PASSWORD/TEAM_ID."
+  fi
 fi
 
 echo
-echo "Done: $APP ($SIZE)"
+echo "[build_app] done."
+echo "    $APP_DIR"
+du -sh "$APP_DIR" 2>/dev/null | sed 's/^/    size  /'
+if [ "$PACKAGE" -eq 1 ]; then
+  ls -1 dist/*.dmg 2>/dev/null | sed 's/^/    dmg   /'
+fi
+echo
+echo "    open \"$APP_DIR\""
+echo "    .venv/bin/briefcase run macOS app   # alt: streams stdout/stderr"

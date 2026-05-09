@@ -91,63 +91,81 @@ class AnthropicProxy:
         recv_kb = len(body) / 1024
         logger.debug("VOL recv %s %.1f KB", request.path.split("?")[0], recv_kb)
 
-        # Run request middleware
-        for mw in self.middlewares:
-            mw_started_at = time.monotonic()
-            try:
-                proxy_req = await mw.on_request(proxy_req)
-            except Exception as e:
-                logger.error("Middleware %s.on_request failed: %s", type(mw).__name__, e, exc_info=True)
-                return web.Response(status=502, text=f"Middleware error: {e}")
-            mw_duration_ms = int((time.monotonic() - mw_started_at) * 1000)
-            if mw_duration_ms >= 250:
-                logger.info("Middleware %s.on_request took %d ms for %s",
-                            type(mw).__name__, mw_duration_ms, proxy_req.path)
-
-        # Forward to upstream
-        upstream_url = f"{self.upstream_url}{proxy_req.path}"
-        upstream_headers = dict(proxy_req.headers)
-        upstream_headers["Host"] = self._upstream_host
-        if proxy_req.body:
-            upstream_headers["Content-Length"] = str(len(proxy_req.body))
-
-        sent_kb = len(proxy_req.body or b"") / 1024
-        logger.debug("VOL send %s %.1f KB (delta %+.1f KB)",
-                     proxy_req.path.split("?")[0], sent_kb, sent_kb - recv_kb)
-
+        # Every middleware that completes on_request MUST get a matching
+        # on_response_done — otherwise the request leaks into RequestLogger's
+        # _pending dict and the watchdog reports it forever (we've seen a 49h
+        # leak from upstream-failure and middleware-failure exit paths).
+        started_mws: list[Middleware] = []
+        proxy_resp: ProxyResponse | None = None
         try:
-            upstream_resp = await self._session.request(
-                method=proxy_req.method,
-                url=upstream_url,
-                headers=upstream_headers,
-                data=proxy_req.body,
-            )
-            logger.debug("VOL resp %s -> %d (%s)",
-                         proxy_req.path.split("?")[0], upstream_resp.status,
-                         upstream_resp.headers.get("Content-Type", "unknown"))
-        except Exception as e:
-            logger.error("Upstream request failed: %s", e)
-            return web.Response(status=502, text=f"Upstream error: {e}")
+            # Run request middleware
+            for mw in self.middlewares:
+                mw_started_at = time.monotonic()
+                try:
+                    proxy_req = await mw.on_request(proxy_req)
+                except Exception as e:
+                    logger.error("Middleware %s.on_request failed: %s", type(mw).__name__, e, exc_info=True)
+                    return web.Response(status=502, text=f"Middleware error: {e}")
+                started_mws.append(mw)
+                mw_duration_ms = int((time.monotonic() - mw_started_at) * 1000)
+                if mw_duration_ms >= 250:
+                    logger.info("Middleware %s.on_request took %d ms for %s",
+                                type(mw).__name__, mw_duration_ms, proxy_req.path)
 
-        resp_headers = {k: v for k, v in upstream_resp.headers.items() if k.lower() not in HOP_BY_HOP}
-        proxy_resp = ProxyResponse(status=upstream_resp.status, headers=resp_headers)
+            # Forward to upstream
+            upstream_url = f"{self.upstream_url}{proxy_req.path}"
+            upstream_headers = dict(proxy_req.headers)
+            upstream_headers["Host"] = self._upstream_host
+            if proxy_req.body:
+                upstream_headers["Content-Length"] = str(len(proxy_req.body))
 
-        # Run response-started middleware
-        for mw in self.middlewares:
-            mw_started_at = time.monotonic()
-            proxy_resp = await mw.on_response_started(proxy_req, proxy_resp)
-            mw_duration_ms = int((time.monotonic() - mw_started_at) * 1000)
-            if mw_duration_ms >= 250:
-                logger.info("Middleware %s.on_response_started took %d ms for %s",
-                            type(mw).__name__, mw_duration_ms, proxy_req.path)
+            sent_kb = len(proxy_req.body or b"") / 1024
+            logger.debug("VOL send %s %.1f KB (delta %+.1f KB)",
+                         proxy_req.path.split("?")[0], sent_kb, sent_kb - recv_kb)
 
-        content_type = upstream_resp.headers.get("Content-Type", "")
-        is_streaming = "text/event-stream" in content_type
+            try:
+                upstream_resp = await self._session.request(
+                    method=proxy_req.method,
+                    url=upstream_url,
+                    headers=upstream_headers,
+                    data=proxy_req.body,
+                )
+                logger.debug("VOL resp %s -> %d (%s)",
+                             proxy_req.path.split("?")[0], upstream_resp.status,
+                             upstream_resp.headers.get("Content-Type", "unknown"))
+            except Exception as e:
+                logger.error("Upstream request failed: %s", e)
+                return web.Response(status=502, text=f"Upstream error: {e}")
 
-        if is_streaming:
-            return await self._stream_response(request, proxy_req, proxy_resp, upstream_resp, started_at)
-        else:
-            return await self._buffered_response(proxy_req, proxy_resp, upstream_resp, started_at)
+            resp_headers = {k: v for k, v in upstream_resp.headers.items() if k.lower() not in HOP_BY_HOP}
+            proxy_resp = ProxyResponse(status=upstream_resp.status, headers=resp_headers)
+
+            # Run response-started middleware
+            for mw in self.middlewares:
+                mw_started_at = time.monotonic()
+                proxy_resp = await mw.on_response_started(proxy_req, proxy_resp)
+                mw_duration_ms = int((time.monotonic() - mw_started_at) * 1000)
+                if mw_duration_ms >= 250:
+                    logger.info("Middleware %s.on_response_started took %d ms for %s",
+                                type(mw).__name__, mw_duration_ms, proxy_req.path)
+
+            content_type = upstream_resp.headers.get("Content-Type", "")
+            is_streaming = "text/event-stream" in content_type
+
+            if is_streaming:
+                return await self._stream_response(request, proxy_req, proxy_resp, upstream_resp, started_at)
+            else:
+                return await self._buffered_response(proxy_req, proxy_resp, upstream_resp, started_at)
+        finally:
+            # Synthetic 502 for paths that bailed before we built proxy_resp;
+            # keeps downstream middlewares' contract intact (always paired).
+            resp_for_done = proxy_resp if proxy_resp is not None else ProxyResponse(status=502, headers={})
+            for mw in started_mws:
+                try:
+                    await mw.on_response_done(proxy_req, resp_for_done)
+                except Exception as e:
+                    logger.error("Middleware %s.on_response_done failed for %s: %s",
+                                 type(mw).__name__, proxy_req.path, e, exc_info=True)
 
     async def _stream_response(
         self, request: web.Request, proxy_req: ProxyRequest,
@@ -178,16 +196,6 @@ class AnthropicProxy:
         except Exception as e:
             logger.error("Streaming failed for %s: %s", proxy_req.path, e, exc_info=True)
         finally:
-            # Isolate each middleware: a bug in on_response_done (e.g. an
-            # optimizer crashing on poisoned conversation history) must not
-            # propagate out of the finally block. If it does, it bypasses
-            # write_eof below and the client sees InvalidHTTPResponse.
-            for mw in self.middlewares:
-                try:
-                    await mw.on_response_done(proxy_req, proxy_resp)
-                except Exception as e:
-                    logger.error("Middleware %s.on_response_done failed for %s: %s",
-                                 type(mw).__name__, proxy_req.path, e, exc_info=True)
             try:
                 await response.write_eof()
             except ConnectionResetError:
@@ -211,9 +219,6 @@ class AnthropicProxy:
             if mw_duration_ms >= 250:
                 logger.info("Middleware %s.on_response_chunk took %d ms for %s",
                             type(mw).__name__, mw_duration_ms, proxy_req.path)
-
-        for mw in self.middlewares:
-            await mw.on_response_done(proxy_req, proxy_resp)
 
         duration_ms = int((time.monotonic() - started_at) * 1000)
         logger.debug("VOL done %s %.1f KB in %d ms (buffered)",

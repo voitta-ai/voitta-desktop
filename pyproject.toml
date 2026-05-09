@@ -1,0 +1,106 @@
+# Briefcase manifest for Voitta Desktop.
+#
+# This file is briefcase-only; runtime deps for terminal dev still come from
+# requirements.txt. `scripts/build_app.sh` cd's here before invoking briefcase,
+# which writes build/ and dist/ next to this manifest (the repo root).
+
+[tool.briefcase]
+project_name = "Voitta Desktop"
+bundle = "ai.voitta"
+version = "0.1.0"
+url = "https://voitta.ai"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
+author = "Voitta"
+author_email = "info@voitta.ai"
+
+[tool.briefcase.app.voitta_desktop]
+# `formal_name` is the .app filename ("Voitta Desktop.app").
+# `app_name` (table key, "voitta_desktop") is the Python package slug under
+# src/voitta_desktop/ and the build dir slug under build/voitta_desktop/.
+formal_name = "Voitta Desktop"
+description = "Menu-bar LLM proxy + MCP aggregator. Tracks conversations, optimizes context, unifies RAG/Google/Jira behind one MCP endpoint."
+icon = "images/AppIcon"
+long_description = """
+Voitta Desktop is a macOS menu-bar app that runs two local proxies:
+
+  • LLM Proxy — intercepts Claude API calls, optimizes context (image
+    stripping, stale file-read removal, bash output compression),
+    visualizes per-conversation token usage and savings.
+
+  • MCP Auth Proxy — single FastMCP endpoint that aggregates RAG, Google
+    Workspace, Jira, and other backends with automatic OAuth2 injection.
+"""
+
+# Paths are relative to this pyproject.toml. The shim package
+# src/voitta_desktop/ provides the entry point; everything else is the
+# existing root-level layout — no restructure required for briefcase.
+sources = [
+    "src/voitta_desktop",
+    "app.py",
+    "config.py",
+    "auth",
+    "mcpproxy",
+    "middleware",
+    "optimizers",
+    "proxy",
+    "ui",
+    "images",
+]
+
+# Run-time Python deps shipped INSIDE the .app bundle.
+requires = [
+    # Menu bar UI — rumps is sdist-only on PyPI; briefcase passes
+    # --only-binary :all: to pip so we point at a locally pre-built
+    # wheel under wheels/. build_app.sh rebuilds it on first run.
+    "./wheels/rumps-0.4.0-py3-none-any.whl",
+
+    # macOS native UI bindings
+    "pyobjc-framework-Cocoa>=10.0",
+    "pyobjc-framework-WebKit>=10.0",
+
+    # LLM reverse proxy
+    "aiohttp>=3.9.0",
+
+    # MCP unified proxy
+    "fastmcp>=2.10.0",
+
+    # OAuth2
+    "msal>=1.28.0",
+    "requests>=2.31.0",
+
+    # Config + image processing
+    "python-dotenv>=1.0.0",
+    "PyYAML>=6.0",
+    "Pillow>=10.0",
+]
+
+[tool.briefcase.app.voitta_desktop.macOS]
+# arm64 only — universal2 doubles bundle size for no value here.
+universal_build = false
+# Sonoma is Apple's current security floor and matches our pyobjc/rumps tests.
+min_os_version = "14.0"
+# Menu-bar app — no Dock icon.
+info."LSUIElement" = true
+info."NSHumanReadableCopyright" = "Copyright (c) 2026 Voitta. AGPLv3."
+
+# ── Hardened runtime entitlements ────────────────────────────────────────
+# Required for Apple notarisation. No effect on ad-hoc builds; macOS only
+# enforces them when signed with a Developer ID and launched from Gatekeeper.
+#
+# Why each is needed for a Python app:
+#   • allow-jit, allow-unsigned-executable-memory — Python's interpreter and
+#     several C extensions mprotect RWX pages or mmap executable mappings.
+#   • disable-library-validation — we vendor C extensions (pyobjc, Pillow)
+#     signed by their wheel builders, not us. Default library validation
+#     would refuse to load them.
+#   • allow-dyld-environment-variables — briefcase's launcher uses
+#     DYLD_FRAMEWORK_PATH so the bundled Python.framework wins over system.
+entitlement."com.apple.security.cs.allow-jit" = true
+entitlement."com.apple.security.cs.allow-unsigned-executable-memory" = true
+entitlement."com.apple.security.cs.disable-library-validation" = true
+entitlement."com.apple.security.cs.allow-dyld-environment-variables" = true
+
+# Voitta Desktop is a network app — these aren't strictly entitlements
+# under hardened runtime (no sandbox), but they're harmless to advertise.
+# Keeping the network keys here as a marker for future App-Sandbox attempts.

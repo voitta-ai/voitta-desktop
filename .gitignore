@@ -8,4 +8,5 @@ logs/
 .claude/
 build/
 dist/
+wheels/
 images/AppIcon.icns

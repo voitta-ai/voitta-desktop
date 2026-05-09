@@ -62,6 +62,22 @@ def find_tool_name(messages: list, tool_use_id: str) -> str:
     return "tool"
 
 
+def find_tool_input(messages: list, tool_use_id: str) -> dict:
+    """Find the tool_use input dict for a given tool_use_id, or {}."""
+    for msg in reversed(messages):
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if (isinstance(block, dict) and block.get("type") == "tool_use"
+                    and block.get("id") == tool_use_id):
+                inp = block.get("input")
+                return inp if isinstance(inp, dict) else {}
+    return {}
+
+
 def parse_message_blocks(msg: dict, messages: list) -> list[ContentBlock]:
     """Parse a single message into content blocks."""
     blocks = []

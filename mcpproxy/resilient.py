@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from pathlib import Path
 
 import mcp.types
@@ -77,6 +78,12 @@ def _load_cache(backend_name: str, kind: str, model_cls, client_factory=None):
 class ResilientProxyProvider(ProxyProvider):
     """ProxyProvider that catches all upstream errors and falls back to cache."""
 
+    # Suppress repeat "Upstream unavailable" warnings for the same backend +
+    # error class within this window. Without this, an expired Google
+    # Workspace token produces a 401-flavoured WARNING on every popup the
+    # user opens — easily 50+ identical lines per hour.
+    _WARN_WINDOW_S = 3600.0
+
     def __init__(self, client_factory, *, backend_name: str = "upstream", cache_listings: bool = False,
                  app_ref=None, prefix: str = ""):
         super().__init__(client_factory)
@@ -84,6 +91,32 @@ class ResilientProxyProvider(ProxyProvider):
         self._cache_listings = cache_listings
         self._app_ref = app_ref
         self._prefix = prefix
+        self._warn_state: dict[tuple[str, str], dict] = {}
+
+    def _warn_upstream(self, kind: str, exc: Exception):
+        """Throttled WARNING for repeated upstream failures.
+
+        First failure of a given (kind, exc-class) for this backend logs at
+        WARNING. Repeats within _WARN_WINDOW_S log at DEBUG and increment a
+        suppression counter. The next WARNING after the window includes
+        "(suppressed N similar)" so nothing is silently lost.
+        """
+        now = time.monotonic()
+        key = (kind, type(exc).__name__)
+        state = self._warn_state.setdefault(key, {"last_warn_at": 0.0, "suppressed": 0})
+        if now - state["last_warn_at"] < self._WARN_WINDOW_S:
+            state["suppressed"] += 1
+            logger.debug("[%s] Upstream unavailable for %s (suppressed): %s",
+                         self._backend_name, kind, exc)
+            return
+        suffix = ""
+        if state["suppressed"]:
+            mins = int((now - state["last_warn_at"]) / 60)
+            suffix = f" (suppressed {state['suppressed']} similar in last {mins} min)"
+        state["last_warn_at"] = now
+        state["suppressed"] = 0
+        logger.warning("[%s] Upstream unavailable for %s: %s%s",
+                       self._backend_name, kind, exc, suffix)
 
     def _stash_tool_names(self, tools):
         """Mirror the upstream tool list into app_ref._mcp_tools for the gate
@@ -137,7 +170,7 @@ class ResilientProxyProvider(ProxyProvider):
             logger.warning("[%s] Tool listing timed out after %.1fs", self._backend_name, LISTING_FIRST_FILL_TIMEOUT_S)
             return []
         except Exception as e:
-            logger.warning("[%s] Upstream unavailable for tool listing: %s", self._backend_name, e)
+            self._warn_upstream("tool listing", e)
             return []
 
     async def _refresh_tools(self):
@@ -196,7 +229,7 @@ class ResilientProxyProvider(ProxyProvider):
             logger.warning("[%s] Resource listing timed out after %.1fs", self._backend_name, LISTING_FIRST_FILL_TIMEOUT_S)
             return []
         except Exception as e:
-            logger.warning("[%s] Upstream unavailable for resource listing: %s", self._backend_name, e)
+            self._warn_upstream("resource listing", e)
             return []
 
     async def _refresh_resources(self):
@@ -219,7 +252,7 @@ class ResilientProxyProvider(ProxyProvider):
             logger.warning("[%s] Template listing timed out after %.1fs", self._backend_name, LISTING_FIRST_FILL_TIMEOUT_S)
             return []
         except Exception as e:
-            logger.warning("[%s] Upstream unavailable for template listing: %s", self._backend_name, e)
+            self._warn_upstream("template listing", e)
             return []
 
     async def _refresh_templates(self):
@@ -242,7 +275,7 @@ class ResilientProxyProvider(ProxyProvider):
             logger.warning("[%s] Prompt listing timed out after %.1fs", self._backend_name, LISTING_FIRST_FILL_TIMEOUT_S)
             return []
         except Exception as e:
-            logger.warning("[%s] Upstream unavailable for prompt listing: %s", self._backend_name, e)
+            self._warn_upstream("prompt listing", e)
             return []
 
     async def _refresh_prompts(self):
@@ -264,10 +297,16 @@ class ResilientFastMCPProxy(FastMCPProxy):
         )
         self.add_provider(self._resilient_provider)
         self._backend_name = backend_name
+        # Last force_refresh outcome — None if successful or never attempted,
+        # error string otherwise. Read by the Info-tab diagram to show ⚠ when
+        # cache is empty AND last refresh failed.
+        self._last_refresh_error: str | None = None
 
     async def force_refresh(self) -> tuple[bool, int, str | None]:
         """Delegate to provider — fetch fresh, return summary."""
-        return await self._resilient_provider.force_refresh()
+        ok, count, err = await self._resilient_provider.force_refresh()
+        self._last_refresh_error = None if ok else err
+        return ok, count, err
 
     def peek_cached(self) -> int:
         """Synchronously read the on-disk tool count for this backend.

@@ -287,6 +287,143 @@
   }
   .tab-pane { display: none; }
   .tab-pane.active { display: block; }
+
+  /* ── Info tab — Prius-style energy monitor (single SVG, orthogonal) ─── */
+  .info-stage {
+    background: radial-gradient(ellipse at 50% 0%, #0e3a5c 0%, #051a2b 80%);
+    border-radius: 12px;
+    padding: 8px;
+    height: 480px;
+    box-shadow:
+      inset 0 0 60px rgba(0, 80, 140, 0.35),
+      0 4px 20px rgba(0, 0, 0, 0.4);
+    overflow: hidden;
+  }
+  .info-svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  .info-svg .arrow {
+    fill: none;
+    stroke: #ffd83d;
+    stroke-width: 2.5;
+    stroke-dasharray: 7 5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .info-svg .arrow.live {
+    animation: infoMarch 1.0s linear infinite;
+    filter: drop-shadow(0 0 3px rgba(255, 216, 61, 0.55));
+  }
+  .info-svg .arrow.dim {
+    stroke: rgba(140, 180, 220, 0.16);
+    animation: none;
+    filter: none;
+  }
+  .info-svg .comp-rect {
+    fill: rgba(180, 220, 255, 0.10);
+    stroke: rgba(180, 220, 255, 0.55);
+    stroke-width: 1.4;
+  }
+  .info-svg .comp-rect.dim {
+    fill: rgba(180, 220, 255, 0.04);
+    stroke: rgba(140, 180, 220, 0.25);
+    stroke-dasharray: 4 3;
+  }
+  .info-svg .comp-label {
+    font-family: -apple-system, "Helvetica Neue", sans-serif;
+    font-weight: 700;
+    font-size: 10px;
+    letter-spacing: 1.5px;
+    fill: #d8ecff;
+    text-anchor: middle;
+  }
+  .info-svg .comp-sub {
+    font-family: ui-monospace, "SF Mono", monospace;
+    font-size: 9px;
+    fill: rgba(216, 236, 255, 0.55);
+    text-anchor: middle;
+  }
+  .info-svg .comp-rect.dim ~ .comp-label,
+  .info-svg .dim-text {
+    opacity: 0.40;
+  }
+  .info-svg .icon-stroke {
+    stroke: #b8d8ff;
+    stroke-width: 1.5;
+    fill: none;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+  }
+  .info-svg .icon-stroke.live {
+    stroke: #ffd83d;
+    filter: drop-shadow(0 0 4px rgba(255, 216, 61, 0.5));
+  }
+  .info-svg .icon-stroke.dim {
+    stroke: rgba(140, 180, 220, 0.30);
+    filter: none;
+  }
+  .info-svg .pill-bg {
+    fill: rgba(0, 0, 0, 0.45);
+    stroke: rgba(180, 220, 255, 0.20);
+    stroke-width: 1;
+  }
+  .info-svg .pill-key {
+    font-family: -apple-system, sans-serif;
+    font-size: 9px;
+    letter-spacing: 1.5px;
+    fill: rgba(216, 236, 255, 0.55);
+  }
+  .info-svg .pill-val {
+    font-family: -apple-system, sans-serif;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    text-anchor: end;
+  }
+  .info-svg .pill-val.ok  { fill: #30d158; }
+  .info-svg .pill-val.off { fill: #ff453a; }
+  .info-svg .pill-val.neutral { fill: #d8ecff; }
+
+  .info-svg .saved-bg {
+    fill: rgba(0, 0, 0, 0.55);
+    stroke: rgba(48, 209, 88, 0.45);
+    stroke-width: 1.5;
+  }
+  .info-svg .saved-label {
+    font-family: -apple-system, sans-serif;
+    font-size: 10px;
+    letter-spacing: 4px;
+    fill: rgba(216, 236, 255, 0.50);
+  }
+  .info-svg .saved-value {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 24px;
+    font-weight: 800;
+    fill: #30d158;
+    text-anchor: end;
+    filter: drop-shadow(0 0 6px rgba(48, 209, 88, 0.6));
+  }
+
+  .info-svg .backend-dot.ok    { fill: #30d158; filter: drop-shadow(0 0 3px #30d158); }
+  .info-svg .backend-dot.empty { fill: rgba(180, 220, 255, 0.12); stroke: rgba(180,220,255,0.4); stroke-width: 1; }
+  .info-svg .backend-dot.error { fill: #ff9500; filter: drop-shadow(0 0 3px #ff9500); }
+
+  .info-svg .x-circle { fill: #0e3a5c; stroke: #ff453a; stroke-width: 2; }
+  .info-svg .x-stroke { stroke: #ff453a; stroke-width: 2.5; stroke-linecap: round; }
+
+  .info-svg .hint-text {
+    font-family: -apple-system, sans-serif;
+    font-size: 10px;
+    fill: rgba(255, 200, 120, 0.85);
+    text-anchor: middle;
+    letter-spacing: 0.5px;
+  }
+
+  @keyframes infoMarch {
+    to { stroke-dashoffset: -12; }
+  }
 </style>
 </head>
 <body>
@@ -296,6 +433,9 @@
   <button class="tab" data-tab="tools" onclick="switchTab('tools')">Tools</button>
   <button class="tab" data-tab="accounts" onclick="switchTab('accounts')">Accounts</button>
   <button class="tab" data-tab="backends" onclick="switchTab('backends')">Backends</button>
+  <button class="tab" data-tab="bash" onclick="switchTab('bash')">Bash</button>
+  <button class="tab" data-tab="time" onclick="switchTab('time')">Time</button>
+  <button class="tab" data-tab="info" onclick="switchTab('info')">Info</button>
 </nav>
 
 <!-- ── Accounts ───────────────────────────────────────────────────────────── -->
@@ -457,7 +597,203 @@
 
 </div>
 
+<!-- ── Bash ───────────────────────────────────────────────────────────────── -->
+<div class="tab-pane" id="tab-bash">
+
+  <h2>Bash Output Compression</h2>
+  <div class="card" id="bash-card">
+    <div style="font-size:12px; color:var(--text-secondary); margin-bottom:12px; line-height:1.5;">
+      Compresses Bash tool outputs before they reach the LLM. Each filter
+      is applied to every Bash output across all turns; transformations are
+      semantically lossless (formatting only).
+    </div>
+    <div class="field">
+      <label></label>
+      <div class="checkboxes" style="flex-direction:column; align-items:flex-start; gap:8px;">
+        <label><input type="checkbox" id="bash_strip_ansi"> <strong>Strip ANSI</strong> &nbsp;<span style="color:var(--text-secondary);">— remove color codes &amp; cursor escapes (always safe)</span></label>
+        <label><input type="checkbox" id="bash_trim_whitespace"> <strong>Trim whitespace</strong> &nbsp;<span style="color:var(--text-secondary);">— collapse blank lines &amp; trailing spaces (always safe)</span></label>
+        <label><input type="checkbox" id="bash_strip_progress"> <strong>Strip progress noise</strong> &nbsp;<span style="color:var(--text-secondary);">— drop progress bars, spinners, "Downloading…" lines</span></label>
+        <label><input type="checkbox" id="bash_smart_commands"> <strong>Smart command filters</strong> &nbsp;<span style="color:var(--text-secondary);">— per-command rules for git, npm, pip, pytest, docker</span></label>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Time ───────────────────────────────────────────────────────────────── -->
+<div class="tab-pane" id="tab-time">
+
+  <h2>Optimization Time Horizon</h2>
+  <div class="card" id="time-card">
+    <div style="font-size:12px; color:var(--text-secondary); margin-bottom:12px; line-height:1.5;">
+      How many recent turns each optimizer leaves untouched. Optimization
+      applies only to messages older than the threshold. Lower values save
+      more tokens but may strip context the model still needs.
+    </div>
+    <div class="field">
+      <label>Tool Results</label>
+      <input type="number" id="tool_result_keep_turns" min="1" max="50" placeholder="5" style="flex:0 0 80px;">
+      <span style="font-size:11px; color:var(--text-secondary);">turns</span>
+    </div>
+    <div class="field">
+      <label>Images</label>
+      <input type="number" id="image_keep_turns" min="1" max="50" placeholder="5" style="flex:0 0 80px;">
+      <span style="font-size:11px; color:var(--text-secondary);">turns</span>
+    </div>
+    <div class="field">
+      <label>Thinking</label>
+      <input type="number" id="thinking_keep_turns" min="1" max="50" placeholder="5" style="flex:0 0 80px;">
+      <span style="font-size:11px; color:var(--text-secondary);">turns</span>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Info ───────────────────────────────────────────────────────────────── -->
+<div class="tab-pane" id="tab-info">
+  <div class="info-stage">
+    <!--
+      Single SVG, viewBox 480x500. All layout is grid-aligned: Claude at top
+      center; LLM proxy bottom-left, MCP proxy bottom-right; everything else
+      flows from those four anchors via H/V-only paths.
+
+      Coordinate map:
+        Claude:    (180, 70)   120 wide, 70 tall  → center x=240
+        LLM box:   (40, 220)   140 wide, 90 tall  → center x=110
+        MCP box:   (300, 220)  140 wide, 90 tall  → center x=370
+        Upstream:  (40, 360)   140 wide, 60 tall
+        Backends:  (240, 360)  220 wide, 60 tall
+    -->
+    <svg class="info-svg" viewBox="0 0 480 500" preserveAspectRatio="xMidYMid meet">
+
+      <!-- ── Status pills (top-right) ─────────────────────────────────── -->
+      <g transform="translate(310, 10)">
+        <rect class="pill-bg" width="160" height="76" rx="6"/>
+        <text class="pill-key" x="10" y="18">LLM</text>
+        <text class="pill-val ok" id="info-llm-pill" x="150" y="18">—</text>
+        <text class="pill-key" x="10" y="36">CLAUDE MCP</text>
+        <text class="pill-val ok" id="info-mcp-claude-pill" x="150" y="36">—</text>
+        <text class="pill-key" x="10" y="54">CODEX MCP</text>
+        <text class="pill-val ok" id="info-mcp-codex-pill" x="150" y="54">—</text>
+        <text class="pill-key" x="10" y="72">MODEL</text>
+        <text class="pill-val neutral" id="info-model-pill" x="150" y="72">—</text>
+      </g>
+
+      <!-- ── CLAUDE CODE (top center) ─────────────────────────────────── -->
+      <g id="info-comp-claude" transform="translate(180, 70)">
+        <rect class="comp-rect" id="info-claude-rect" width="120" height="70" rx="10"/>
+        <!-- Icon: terminal cursor (chevron + underscore) -->
+        <g transform="translate(46, 16)">
+          <path class="icon-stroke live" id="info-claude-icon"
+                d="M 4 6 L 12 14 L 4 22 M 16 24 L 28 24"/>
+        </g>
+        <text class="comp-label" x="60" y="60">CLAUDE CODE</text>
+      </g>
+      <!-- Conversations indicator (small text, just below Claude box) -->
+      <text class="comp-sub" id="info-claude-sub" x="240" y="155">—</text>
+
+      <!-- ── Trunk and arms: Claude → LLM, Claude → MCP ────────────────
+           Path 1 (LLM):  (240, 158)  ↓  (240, 192)  ←  (110, 192)  ↓  (110, 220) -->
+      <path id="info-arrow-llm" class="arrow live"
+            d="M 240 158 V 192 H 110 V 218" />
+      <polygon id="info-arrow-llm-tip" points="105,212 115,212 110,222" fill="#ffd83d"/>
+
+      <!-- Path 2 (MCP): mirror -->
+      <path id="info-arrow-mcp" class="arrow live"
+            d="M 240 158 V 192 H 370 V 218" />
+      <polygon id="info-arrow-mcp-tip" points="365,212 375,212 370,222" fill="#ffd83d"/>
+
+      <!-- ── LLM PROXY (bottom-left) ──────────────────────────────────── -->
+      <g id="info-comp-llm" transform="translate(40, 220)">
+        <rect class="comp-rect" id="info-llm-rect" width="140" height="90" rx="10"/>
+        <!-- Icon: lightning bolt -->
+        <path class="icon-stroke live" id="info-llm-icon"
+              d="M 76 18 L 64 44 L 74 44 L 68 60 L 80 36 L 70 36 L 76 18 Z"
+              fill="rgba(255,216,61,0.15)"/>
+        <text class="comp-label" x="70" y="80">LLM PROXY</text>
+      </g>
+
+      <!-- ── MCP PROXY (bottom-right) ─────────────────────────────────── -->
+      <g id="info-comp-mcp" transform="translate(300, 220)">
+        <rect class="comp-rect" id="info-mcp-rect" width="140" height="90" rx="10"/>
+        <!-- Icon: chip — square with pins -->
+        <g transform="translate(56, 18)" id="info-mcp-icon">
+          <rect class="icon-stroke live" x="0" y="0" width="28" height="28" rx="2" fill="rgba(48,209,88,0.10)"/>
+          <line class="icon-stroke live" x1="6"  y1="-4" x2="6"  y2="0"/>
+          <line class="icon-stroke live" x1="14" y1="-4" x2="14" y2="0"/>
+          <line class="icon-stroke live" x1="22" y1="-4" x2="22" y2="0"/>
+          <line class="icon-stroke live" x1="6"  y1="28" x2="6"  y2="32"/>
+          <line class="icon-stroke live" x1="14" y1="28" x2="14" y2="32"/>
+          <line class="icon-stroke live" x1="22" y1="28" x2="22" y2="32"/>
+        </g>
+        <text class="comp-label" x="70" y="80">MCP PROXY</text>
+      </g>
+
+      <!-- ── LLM Proxy → Upstream ─────────────────────────────────────── -->
+      <path id="info-arrow-upstream" class="arrow live"
+            d="M 110 310 V 358" />
+      <polygon id="info-arrow-upstream-tip" points="105,352 115,352 110,362" fill="#ffd83d"/>
+
+      <!-- ── MCP Proxy → Backends ─────────────────────────────────────── -->
+      <path id="info-arrow-backends" class="arrow live"
+            d="M 370 310 V 358" />
+      <polygon id="info-arrow-backends-tip" points="365,352 375,352 370,362" fill="#ffd83d"/>
+
+      <!-- ── UPSTREAM (bottom-bottom-left) ────────────────────────────── -->
+      <g id="info-comp-upstream" transform="translate(40, 360)">
+        <rect class="comp-rect" id="info-upstream-rect" width="140" height="60" rx="10"/>
+        <!-- Icon: cloud -->
+        <g transform="translate(48, 12)" id="info-upstream-icon">
+          <ellipse class="icon-stroke" cx="22" cy="20" rx="22" ry="9" fill="rgba(184,216,255,0.12)"/>
+          <circle  class="icon-stroke" cx="14" cy="14" r="7" fill="rgba(184,216,255,0.12)"/>
+          <circle  class="icon-stroke" cx="29" cy="12" r="9" fill="rgba(184,216,255,0.12)"/>
+        </g>
+        <text class="comp-sub" x="70" y="52" id="info-upstream-host">api.anthropic.com</text>
+      </g>
+
+      <!-- ── BACKENDS (bottom-bottom-right) ───────────────────────────── -->
+      <g id="info-comp-backends" transform="translate(240, 360)">
+        <rect class="comp-rect" id="info-backends-rect" width="220" height="60" rx="10"/>
+        <text class="comp-sub" x="110" y="14" style="letter-spacing:2px;">BACKENDS</text>
+        <!-- Up to 8 dots in a row, generated by JS -->
+        <g id="info-backend-dots" transform="translate(20, 32)"></g>
+        <text class="comp-sub" x="110" y="52" id="info-backends-summary">—</text>
+      </g>
+
+      <!-- ── X marks (broken-lane overlay) ────────────────────────────── -->
+      <g id="info-x-llm" style="display:none;" transform="translate(175, 192)">
+        <circle class="x-circle" r="13"/>
+        <line class="x-stroke" x1="-6" y1="-6" x2="6" y2="6"/>
+        <line class="x-stroke" x1="6"  y1="-6" x2="-6" y2="6"/>
+      </g>
+      <g id="info-x-mcp" style="display:none;" transform="translate(305, 192)">
+        <circle class="x-circle" r="13"/>
+        <line class="x-stroke" x1="-6" y1="-6" x2="6" y2="6"/>
+        <line class="x-stroke" x1="6"  y1="-6" x2="-6" y2="6"/>
+      </g>
+
+      <!-- ── Hint line (only when something is broken) ────────────────── -->
+      <text class="hint-text" id="info-hint" x="240" y="442" style="display:none;">—</text>
+
+      <!-- ── Headline metric: SAVED $X.XX ─────────────────────────────── -->
+      <g transform="translate(60, 450)">
+        <rect class="saved-bg" width="360" height="40" rx="8"/>
+        <text class="saved-label" x="20" y="26">SAVED</text>
+        <text class="saved-value" id="info-saved-value" x="346" y="29">$0.00</text>
+      </g>
+
+    </svg>
+  </div>
+</div>
+
 <div class="bottom-bar">
+  <!-- Bottom-left button: only visible on the Proxies tab. Label flips
+       between "Connect Claude" and "Disconnect Claude" based on the live
+       state of ~/.claude/settings.json (computed Python-side and injected
+       as window._claudeLinked at popup-open). -->
+  <button class="btn" id="claude-link-btn"
+          style="margin-right:auto; display:none;"
+          onclick="toggleClaudeLink()">Connect Claude</button>
   <button class="btn" onclick="cancel()">Cancel</button>
   <button class="btn btn-primary" onclick="save()">Save</button>
 </div>
@@ -635,6 +971,17 @@ function loadProxy() {
   var opt = config.optimizer || {};
   document.getElementById('optimizer_enabled').checked = opt.enabled !== false;  // default true
   document.getElementById('optimizer_haiku_only').checked = !!opt.haiku_only;
+
+  var bash = config.bash || {};
+  document.getElementById('bash_strip_ansi').checked = bash.strip_ansi !== false;       // default true
+  document.getElementById('bash_trim_whitespace').checked = bash.trim_whitespace !== false; // default true
+  document.getElementById('bash_strip_progress').checked = !!bash.strip_progress;
+  document.getElementById('bash_smart_commands').checked = !!bash.smart_commands;
+
+  var time = config.time || {};
+  document.getElementById('tool_result_keep_turns').value = time.tool_result_keep_turns || 5;
+  document.getElementById('image_keep_turns').value       = time.image_keep_turns       || 5;
+  document.getElementById('thinking_keep_turns').value    = time.thinking_keep_turns    || 5;
 }
 
 function collectAll() {
@@ -674,6 +1021,17 @@ function collectAll() {
   config.optimizer = {
     enabled: document.getElementById('optimizer_enabled').checked,
     haiku_only: document.getElementById('optimizer_haiku_only').checked,
+  };
+  config.bash = {
+    strip_ansi: document.getElementById('bash_strip_ansi').checked,
+    trim_whitespace: document.getElementById('bash_trim_whitespace').checked,
+    strip_progress: document.getElementById('bash_strip_progress').checked,
+    smart_commands: document.getElementById('bash_smart_commands').checked,
+  };
+  config.time = {
+    tool_result_keep_turns: Math.max(1, parseInt(document.getElementById('tool_result_keep_turns').value) || 5),
+    image_keep_turns:       Math.max(1, parseInt(document.getElementById('image_keep_turns').value)       || 5),
+    thinking_keep_turns:    Math.max(1, parseInt(document.getElementById('thinking_keep_turns').value)    || 5),
   };
   config.disabled_tools = collectDisabledTools();
   return config;
@@ -840,7 +1198,9 @@ function cancel() {
   document.title = 'VOITTA_CANCEL';
 }
 
-// Tab switching
+// Tab switching — also reveals the Connect/Disconnect button only when
+// the Proxies tab is active (it's bottom-left, intentionally tied to that
+// section since the LLM proxy port is what gets wired into Claude Code).
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(function(t) {
     t.classList.toggle('active', t.dataset.tab === name);
@@ -848,6 +1208,155 @@ function switchTab(name) {
   document.querySelectorAll('.tab-pane').forEach(function(p) {
     p.classList.toggle('active', p.id === 'tab-' + name);
   });
+  var linkBtn = document.getElementById('claude-link-btn');
+  if (linkBtn) linkBtn.style.display = (name === 'proxies') ? '' : 'none';
+}
+
+// Connect/Disconnect button — fires a salt-prefixed title so KVO observes
+// the change even when the button is clicked twice in succession.
+function toggleClaudeLink() {
+  var salt = Math.random().toString(36).slice(2);
+  document.title = 'VOITTA_CLAUDE_LINK_TOGGLE:' + salt;
+}
+
+// Called from Python after the link state changes (or at popup open).
+// `linked` is a boolean from is_voitta_connected().
+function _setClaudeLinkState(linked) {
+  var btn = document.getElementById('claude-link-btn');
+  if (!btn) return;
+  btn.textContent = linked ? 'Disconnect Claude' : 'Connect Claude';
+}
+
+// ── Info tab rendering ────────────────────────────────────────────────────
+// Called from Python with a state object every ~3s while the settings
+// window is open. Idempotent — safe to call repeatedly with the same data.
+function _setInfoState(s) {
+  if (!s) return;
+
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+
+  // ── Status pills (top right) ───────────────────────────────────────────
+  setPill('info-llm-pill', s.llm_wired ? '✓ WIRED' : '✗ OFF', s.llm_wired ? 'ok' : 'off');
+  setPill('info-mcp-claude-pill',
+          s.mcp_wired_claude ? '✓ WIRED' : '✗ OFF',
+          s.mcp_wired_claude ? 'ok' : 'off');
+  setPill('info-mcp-codex-pill',
+          s.mcp_wired_codex ? '✓ WIRED' : '✗ OFF',
+          s.mcp_wired_codex ? 'ok' : 'off');
+  var model = (s.current_model || '—').toUpperCase();
+  setPill('info-model-pill', model, 'neutral');
+
+  // ── Conversations subtext beneath Claude Code box ──────────────────────
+  var sub = document.getElementById('info-claude-sub');
+  if (sub) {
+    var n = s.active_conversations || 0;
+    sub.textContent = n === 0 ? '' : (n === 1 ? '1 conversation' : n + ' conversations');
+  }
+
+  // ── Component dimming (broken lane = dim its destination chain) ────────
+  setRectDim('info-llm-rect', !s.llm_wired);
+  setRectDim('info-upstream-rect', !s.llm_wired);
+  setRectDim('info-mcp-rect', !s.mcp_wired);
+  setRectDim('info-backends-rect', !s.mcp_wired);
+  setIconState('info-llm-icon', s.llm_wired);
+  setMcpIconState('info-mcp-icon', s.mcp_wired);
+
+  // ── Arrows: live (animated yellow) when lane is wired, dim otherwise ──
+  setArrowLive('info-arrow-llm', s.llm_wired);
+  setArrowLive('info-arrow-mcp', s.mcp_wired);
+  setArrowLive('info-arrow-upstream', s.llm_wired);
+  setArrowLive('info-arrow-backends', s.mcp_wired);
+  setArrowTipColor('info-arrow-llm-tip', s.llm_wired);
+  setArrowTipColor('info-arrow-mcp-tip', s.mcp_wired);
+  setArrowTipColor('info-arrow-upstream-tip', s.llm_wired);
+  setArrowTipColor('info-arrow-backends-tip', s.mcp_wired);
+
+  // ── Red-X overlays on broken arrows ────────────────────────────────────
+  document.getElementById('info-x-llm').style.display = s.llm_wired ? 'none' : '';
+  document.getElementById('info-x-mcp').style.display = s.mcp_wired ? 'none' : '';
+
+  // ── Upstream host text ─────────────────────────────────────────────────
+  var host = document.getElementById('info-upstream-host');
+  if (host) host.textContent = s.upstream_host || 'api.anthropic.com';
+
+  // ── Backends: row of dots + summary ────────────────────────────────────
+  var dotsEl = document.getElementById('info-backend-dots');
+  if (dotsEl) {
+    while (dotsEl.firstChild) dotsEl.removeChild(dotsEl.firstChild);
+    var backends = s.backends || [];
+    var max = Math.min(backends.length, 8);
+    var spacing = 22;
+    for (var i = 0; i < max; i++) {
+      var b = backends[i];
+      var dot = document.createElementNS(SVG_NS, 'circle');
+      dot.setAttribute('cx', String(i * spacing));
+      dot.setAttribute('cy', '0');
+      dot.setAttribute('r', '5');
+      var stateCls = (b.state === 'ok') ? 'ok' : (b.state === 'error' ? 'error' : 'empty');
+      dot.setAttribute('class', 'backend-dot ' + stateCls);
+      // Tooltip via SVG <title> for hover
+      var tip = document.createElementNS(SVG_NS, 'title');
+      tip.textContent = b.label + ' — ' + (b.state === 'ok' ? (b.tools_count + ' tools') : b.state);
+      dot.appendChild(tip);
+      dotsEl.appendChild(dot);
+    }
+  }
+  var summary = document.getElementById('info-backends-summary');
+  if (summary) {
+    var ok = (s.backends || []).filter(function(b) { return b.state === 'ok'; }).length;
+    var total = (s.backends || []).length;
+    summary.textContent = total === 0 ? 'no backends' : (ok + ' of ' + total + ' ready');
+  }
+
+  // ── Hint line (orange, only shown when something is broken) ────────────
+  var hint = document.getElementById('info-hint');
+  if (hint) {
+    var msg = '';
+    if (!s.llm_wired && !s.mcp_wired) msg = 'Settings → Proxies → Connect Claude';
+    else if (!s.llm_wired) msg = 'LLM lane off — click Connect Claude';
+    else if (!s.mcp_wired) msg = 'MCP lane off — wire voitta in Claude or Codex';
+    if (msg) { hint.textContent = msg; hint.setAttribute('style', ''); }
+    else hint.setAttribute('style', 'display:none;');
+  }
+
+  // ── Headline metric ────────────────────────────────────────────────────
+  var savedVal = document.getElementById('info-saved-value');
+  if (savedVal) savedVal.textContent = '$' + (s.savings_usd || 0).toFixed(2);
+}
+
+function setPill(id, text, kind) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text;
+  el.setAttribute('class', 'pill-val ' + kind);
+}
+function setRectDim(id, dim) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  var cls = 'comp-rect' + (dim ? ' dim' : '');
+  el.setAttribute('class', cls);
+}
+function setIconState(id, live) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  el.setAttribute('class', 'icon-stroke ' + (live ? 'live' : 'dim'));
+}
+function setMcpIconState(groupId, live) {
+  var g = document.getElementById(groupId);
+  if (!g) return;
+  Array.prototype.forEach.call(g.querySelectorAll('.icon-stroke, [class*=icon-stroke]'), function(node) {
+    node.setAttribute('class', 'icon-stroke ' + (live ? 'live' : 'dim'));
+  });
+}
+function setArrowLive(id, live) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  el.setAttribute('class', 'arrow ' + (live ? 'live' : 'dim'));
+}
+function setArrowTipColor(id, live) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  el.setAttribute('fill', live ? '#ffd83d' : 'rgba(140,180,220,0.16)');
 }
 
 // Init from embedded config
@@ -855,6 +1364,16 @@ renderApps();
 loadJira();
 loadProxy();
 renderToolTree();
+// Proxies tab is active by default; reveal the link button and apply
+// the live link state injected by Python at popup-open time.
+document.getElementById('claude-link-btn').style.display = '';
+if (typeof _initialClaudeLinked !== 'undefined') {
+  _setClaudeLinkState(_initialClaudeLinked);
+}
+// Info tab initial render — Python pushes updates every ~3s after this.
+if (typeof _initialInfo !== 'undefined') {
+  _setInfoState(_initialInfo);
+}
 </script>
 </body>
 </html>

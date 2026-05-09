@@ -10,7 +10,9 @@ import atexit
 import json
 import logging
 import os
+import socket
 import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -48,6 +50,7 @@ from config import (
 from middleware import ConversationTracker, RequestLogger, BlockType, Turn
 from middleware.cache_sim import CacheSimulator
 from optimizers import OptimizerPipeline
+from optimizers.bash_compress import BashCompressor
 from optimizers.image import ImageOptimizer
 from optimizers.file_read import FileReadOptimizer
 from optimizers.thinking import ThinkingOptimizer
@@ -107,6 +110,65 @@ class _FocusTrigger(NSObject):
             self._win.makeFirstResponder_(self._field)
 
 
+class _InfoTicker(NSObject):
+    """Pushes a fresh Info-tab state to the open settings webview every tick.
+
+    Holds a generation counter so it auto-invalidates when the user closes
+    and reopens the settings window (otherwise an old timer would race
+    against the new webview).
+    """
+
+    def initWithApp_gen_(self, app_ref, gen):
+        self = objc.super(_InfoTicker, self).init()
+        if self is not None:
+            self._app = app_ref
+            self._gen = gen
+        return self
+
+    def tick_(self, timer):
+        app = self._app
+        # Settings closed or reopened with a new generation? Stop ticking.
+        if getattr(app, "_settings_gen", -1) != self._gen:
+            timer.invalidate()
+            return
+        refs = getattr(app, "_settings_refs", None)
+        if refs is None:
+            timer.invalidate()
+            return
+        webview = refs[1]
+        try:
+            state = app._collect_info_state()
+            js = f"_setInfoState({json.dumps(state)})"
+            webview.evaluateJavaScript_completionHandler_(js, None)
+        except Exception as e:
+            logger.debug("info ticker failed: %s", e)
+            timer.invalidate()
+
+
+def _is_port_free(port: int) -> bool:
+    """True if 127.0.0.1:<port> is bindable right now."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", port))
+    except OSError:
+        return False
+    finally:
+        s.close()
+    return True
+
+
+def _grab_free_port() -> int:
+    """Ask the OS for an unused port. There's a TOCTOU window between this
+    returning and the actual proxy binding it — acceptable since we only call
+    this seconds before binding."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    try:
+        return s.getsockname()[1]
+    finally:
+        s.close()
+
+
 def _show_modal(alert, first_field=None):
     alert_window = alert.window()
     alert_window.setLevel_(NSFloatingWindowLevel)
@@ -146,8 +208,8 @@ class VoittaDesktopApp(rumps.App):
         self.paperclip_url = mcp_proxy_cfg.get("paperclip_url", "https://paperclip.gxl.ai/mcp")
         self.paperclip_key = mcp_proxy_cfg.get("paperclip_key", "")
         self.edit_proxy_url = mcp_proxy_cfg.get("edit_proxy_url", f"http://localhost:{GOOGLE_MCP_PORT}")
-        self.mcp_proxy_port = mcp_proxy_cfg.get("port", 18765)
-        self.llm_proxy_port = llm_proxy_cfg.get("port", 18900)
+        self.mcp_proxy_port = self._resolve_port("MCP proxy", mcp_proxy_cfg.get("port", 18765))
+        self.llm_proxy_port = self._resolve_port("LLM proxy", llm_proxy_cfg.get("port", 18900))
         self.llm_upstream_url = llm_proxy_cfg.get("upstream_url", "https://api.anthropic.com")
 
         # Init auth state per (app, backend)
@@ -174,13 +236,29 @@ class VoittaDesktopApp(rumps.App):
         # LLM proxy components
         self._tracker = ConversationTracker()
         self._request_logger = RequestLogger()
-        self._tool_result_optimizer = ToolResultOptimizer()
-        self._image_optimizer = ImageOptimizer()
+        time_cfg = self._config.get("time", {})
+        self._tool_result_optimizer = ToolResultOptimizer(
+            keep_turns=int(time_cfg.get("tool_result_keep_turns", 5))
+        )
+        self._image_optimizer = ImageOptimizer(
+            keep_turns=int(time_cfg.get("image_keep_turns", 5))
+        )
         self._file_read_optimizer = FileReadOptimizer()
-        self._thinking_optimizer = ThinkingOptimizer()
+        self._thinking_optimizer = ThinkingOptimizer(
+            keep_turns=int(time_cfg.get("thinking_keep_turns", 5))
+        )
+        bash_cfg = self._config.get("bash", {})
+        self._bash_compressor = BashCompressor(
+            strip_ansi=bool(bash_cfg.get("strip_ansi", True)),
+            trim_whitespace=bool(bash_cfg.get("trim_whitespace", True)),
+            strip_progress=bool(bash_cfg.get("strip_progress", False)),
+            smart_commands=bool(bash_cfg.get("smart_commands", False)),
+        )
         opt_cfg = self._config.get("optimizer", {})
+        # BashCompressor runs first so other Bash-handling optimizers see
+        # already-compressed output (no double accounting).
         self._optimizer_pipeline = OptimizerPipeline(
-            [self._tool_result_optimizer, self._image_optimizer, self._thinking_optimizer],
+            [self._bash_compressor, self._tool_result_optimizer, self._image_optimizer, self._thinking_optimizer],
             enabled=bool(opt_cfg.get("enabled", True)),
             haiku_only=bool(opt_cfg.get("haiku_only", False)),
         )
@@ -203,6 +281,42 @@ class VoittaDesktopApp(rumps.App):
         # Start background servers
         threading.Thread(target=self._run_llm_proxy, daemon=True).start()
         threading.Thread(target=self._run_mcp_proxy, daemon=True).start()
+
+    def _resolve_port(self, label: str, port: int) -> int:
+        """If `port` is taken, ask the user whether to switch to an
+        OS-assigned free port or quit. Quit means quit — no half-running app.
+
+        We only fall back to a runtime port; we don't persist it. That keeps
+        the issue visible (user gets prompted again next launch) and lets the
+        underlying conflict — usually a stale Voitta Desktop instance — get
+        cleaned up rather than papered over.
+        """
+        if _is_port_free(port):
+            return port
+
+        NSApp.activateIgnoringOtherApps_(True)
+        result = rumps.alert(
+            title=f"{label} port {port} in use",
+            message=(
+                f"Port {port} is already in use by another process — most "
+                f"likely a previous copy of Voitta Desktop that didn't shut "
+                f"down cleanly.\n\n"
+                f"Use a different port for this session?\n\n"
+                f"Note: existing Claude Code links still point at port "
+                f"{port}, so you'll need to re-run \"Link Claude\" from the "
+                f"menu for them to find the new port."
+            ),
+            ok="Use another port",
+            cancel="Quit",
+        )
+        if result != 1:
+            logger.info("%s port %d in use; user chose Quit", label, port)
+            sys.exit(0)
+
+        new_port = _grab_free_port()
+        logger.warning("%s port %d in use; using OS-assigned port %d for this session",
+                       label, port, new_port)
+        return new_port
 
     def _promote_for_keyboard(self):
         """Promote app to a Regular activation policy so popup windows can
@@ -1225,9 +1339,19 @@ class VoittaDesktopApp(rumps.App):
         html_path = Path(__file__).parent / "settings.html"
         html_content = html_path.read_text(encoding="utf-8")
         config_json = json.dumps(self._config)
+        # Inject the live Claude-link state so the bottom-left button shows
+        # the correct label the moment the window opens.
+        from claude_link import load_claude_settings, is_voitta_connected
+        linked = is_voitta_connected(load_claude_settings(), self.llm_proxy_port)
+        # Live Info-tab state at popup open. Subsequent updates pushed by
+        # the _InfoTicker every ~3s.
+        info_state = self._collect_info_state()
         html_content = html_content.replace(
             "/*INJECT_CONFIG*/",
-            f"var _initialConfig = {config_json};\nvar _toolTree = [];",
+            f"var _initialConfig = {config_json};\n"
+            f"var _initialClaudeLinked = {json.dumps(linked)};\n"
+            f"var _initialInfo = {json.dumps(info_state)};\n"
+            f"var _toolTree = [];",
         )
         webview.loadHTMLString_baseURL_(html_content, None)
 
@@ -1240,6 +1364,15 @@ class VoittaDesktopApp(rumps.App):
         NSNotificationCenter.defaultCenter().addObserver_selector_name_object_(
             observer, "windowWillClose:", "NSWindowWillCloseNotification", window
         )
+
+        # Info-tab live ticker — pushes a fresh state to the webview every
+        # 3 s while the settings window is open. Self-invalidates when the
+        # window closes (refs go None).
+        info_ticker = _InfoTicker.alloc().initWithApp_gen_(self, gen)
+        info_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            3.0, info_ticker, "tick:", None, True
+        )
+        NSRunLoop.mainRunLoop().addTimer_forMode_(info_timer, "NSDefaultRunLoopMode")
 
         self._settings_refs = (window, webview, observer)
 
@@ -1314,6 +1447,17 @@ class VoittaDesktopApp(rumps.App):
         self._optimizer_pipeline.enabled = bool(opt_cfg.get("enabled", True))
         self._optimizer_pipeline.haiku_only = bool(opt_cfg.get("haiku_only", False))
 
+        bash_cfg = new_config.get("bash", {})
+        self._bash_compressor.strip_ansi = bool(bash_cfg.get("strip_ansi", True))
+        self._bash_compressor.trim_whitespace = bool(bash_cfg.get("trim_whitespace", True))
+        self._bash_compressor.strip_progress = bool(bash_cfg.get("strip_progress", False))
+        self._bash_compressor.smart_commands = bool(bash_cfg.get("smart_commands", False))
+
+        time_cfg = new_config.get("time", {})
+        self._tool_result_optimizer.keep_turns = max(1, int(time_cfg.get("tool_result_keep_turns", 5)))
+        self._image_optimizer.keep_turns = max(1, int(time_cfg.get("image_keep_turns", 5)))
+        self._thinking_optimizer.keep_turns = max(1, int(time_cfg.get("thinking_keep_turns", 5)))
+
         self._init_active_defaults()
         self._sync_edit_mcp_env()
         self._sync_jira_mcp_env()
@@ -1365,6 +1509,177 @@ class VoittaDesktopApp(rumps.App):
         sender.state = self._optimizer_pipeline.enabled
         self._config.setdefault("optimizer", {})["enabled"] = self._optimizer_pipeline.enabled
         save_config(self._config)
+
+    def _collect_info_state(self) -> dict:
+        """Snapshot of system state for the Info-tab diagram.
+
+        Computed each render — cheap (no upstream calls). Each MCP backend
+        is classified by the cached tool count + last refresh outcome:
+          - "ok"    → cached tools available
+          - "empty" → no cache yet, no failure recorded
+          - "error" → cache empty AND last refresh failed
+        """
+        from claude_link import (
+            load_claude_settings, is_voitta_connected, is_mcp_wired,
+            is_codex_mcp_wired,
+        )
+        from urllib.parse import urlparse
+
+        cfg = load_claude_settings()
+        llm_wired = is_voitta_connected(cfg, self.llm_proxy_port)
+        mcp_wired_claude = is_mcp_wired(cfg, self.mcp_proxy_port)
+        mcp_wired_codex = is_codex_mcp_wired(self.mcp_proxy_port)
+        mcp_wired = mcp_wired_claude or mcp_wired_codex
+
+        # Most-recent active conversation, used for the model badge.
+        current_model = None
+        active_count = 0
+        try:
+            convs = self._tracker.get_conversations_sorted()
+            active_count = sum(1 for c in convs if c.turns)
+            for c in convs:
+                model = getattr(c, "model", None) or getattr(c, "last_model", None)
+                if model:
+                    current_model = model_family(model)
+                    break
+        except Exception:
+            pass
+
+        upstream_host = "api.anthropic.com"
+        try:
+            parsed = urlparse(self.llm_upstream_url or "")
+            if parsed.netloc:
+                upstream_host = parsed.netloc
+        except Exception:
+            pass
+
+        backends = []
+        for label, _url, proxy in getattr(self, "_mcp_backends", []) or []:
+            try:
+                count = proxy.peek_cached()
+            except Exception:
+                count = 0
+            err = getattr(proxy, "_last_refresh_error", None)
+            if count > 0:
+                state = "ok"
+            elif err:
+                state = "error"
+            else:
+                state = "empty"
+            backends.append({"label": label, "tools_count": count, "state": state})
+
+        return {
+            "llm_wired": llm_wired,
+            "mcp_wired": mcp_wired,
+            "mcp_wired_claude": mcp_wired_claude,
+            "mcp_wired_codex": mcp_wired_codex,
+            "current_model": current_model,
+            "active_conversations": active_count,
+            "llm_proxy": {"port": self.llm_proxy_port},
+            "mcp_proxy": {"port": self.mcp_proxy_port},
+            "optimizer_enabled": bool(self._optimizer_pipeline.enabled),
+            "upstream_host": upstream_host,
+            "savings_usd": float(self._optimizer_pipeline.total_savings_usd),
+            "backends": backends,
+        }
+
+    def _open_claude_link_popup(self):
+        """Show the Connect/Disconnect diff popup for ~/.claude/settings.json.
+
+        Triggered by the bottom-left button in Settings → Proxies. Computes
+        the plan against the live state of settings.json + the saved LLM
+        proxy port, opens a modal-ish popup with the diff, and applies the
+        changes if the user clicks OK.
+
+        Side effects on confirm:
+          - rewrites ~/.claude/settings.json (env block only; everything
+            else is preserved)
+          - if the plan inherits an upstream URL from Claude's existing
+            ANTHROPIC_BASE_URL, also writes our llm_proxy.upstream_url
+            to apps.json and applies it to the live proxy (requires a
+            restart for the new upstream to take effect — we surface this
+            in the popup, then ship the value).
+          - re-injects _setClaudeLinkState into the open settings webview
+            so the button label flips immediately.
+        """
+        from claude_link import (
+            load_claude_settings, settings_file_is_malformed,
+            is_voitta_connected, plan_connect, plan_disconnect, apply_changes,
+        )
+        from ui.claude_link_popup import ClaudeLinkPopup
+
+        if settings_file_is_malformed():
+            from AppKit import NSAlert
+            alert = NSAlert.alloc().init()
+            alert.setMessageText_("Cannot read ~/.claude/settings.json")
+            alert.setInformativeText_(
+                "The file exists but isn't valid JSON. Fix it by hand and try again."
+            )
+            alert.addButtonWithTitle_("OK")
+            _show_modal(alert)
+            return
+
+        cfg = load_claude_settings()
+        port = self.llm_proxy_port
+        currently_linked = is_voitta_connected(cfg, port)
+
+        if currently_linked:
+            plan = plan_disconnect(cfg, port)
+            title = "Disconnect Claude"
+            ok_label = "Disconnect"
+        else:
+            plan = plan_connect(cfg, port, self.llm_upstream_url)
+            title = "Connect Claude"
+            ok_label = "Connect"
+
+        popup = ClaudeLinkPopup()
+        self._claude_link_popup = popup
+
+        def _on_confirm():
+            try:
+                apply_changes(plan)
+            except Exception as e:
+                logger.error("Claude link apply failed: %s", e, exc_info=True)
+                _notify("Voitta Desktop", "Claude link failed", str(e)[:200])
+                return
+
+            # Inherited upstream goes into apps.json + the live proxy. The
+            # llm_proxy_port hasn't changed, so the running proxy keeps its
+            # listener; only the upstream URL it forwards to is different.
+            # The aiohttp proxy reads upstream_url at construction time, so
+            # a full effect requires restart — surface that.
+            if plan.voitta_upstream_change is not None:
+                new_upstream = plan.voitta_upstream_change.new
+                self._config.setdefault("llm_proxy", {})["upstream_url"] = new_upstream
+                save_config(self._config)
+                self.llm_upstream_url = new_upstream
+                _notify(
+                    "Voitta Desktop",
+                    "Upstream URL updated",
+                    "Restart Voitta Desktop for the new upstream to take effect.",
+                )
+
+            # Push the new state into the still-open settings webview so the
+            # button flips label without requiring the user to reopen it.
+            new_state = plan.target == "connect"
+            refs = getattr(self, "_settings_refs", None)
+            if refs is not None:
+                wv = refs[1]
+                from PyObjCTools import AppHelper
+                def _flip():
+                    try:
+                        wv.evaluateJavaScript_completionHandler_(
+                            f"_setClaudeLinkState({json.dumps(new_state)})", None
+                        )
+                    except Exception:
+                        pass
+                AppHelper.callAfter(_flip)
+
+            verb = "Connected" if plan.target == "connect" else "Disconnected"
+            _notify("Voitta Desktop", verb + " Claude Code", "~/.claude/settings.json")
+
+        popup.set_handlers(_on_confirm, lambda: None)
+        popup.open(plan, title=title, ok_label=ok_label)
 
     def _show_llm_tools_status(self, _):
         """Open the LLM Tools Status popup (read-only) and let the user
@@ -1600,6 +1915,16 @@ class _SettingsTitleObserver(NSObject):
                 AppHelper.callAfter(_inject)
 
             threading.Thread(target=_do_fetch, daemon=True).start()
+            return
+
+        if title.startswith("VOITTA_CLAUDE_LINK_TOGGLE:"):
+            # Reset the title so back-to-back clicks still fire KVO. Do NOT
+            # mark this observer as handled — the settings window stays
+            # open while the link popup is shown.
+            obj.evaluateJavaScript_completionHandler_(
+                "document.title = 'Voitta Desktop — Settings'", None
+            )
+            self._app._open_claude_link_popup()
             return
 
         if title == "VOITTA_SAVE":

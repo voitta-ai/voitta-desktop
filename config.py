@@ -38,6 +38,21 @@ def _default_config() -> dict:
             "enabled": True,
             "haiku_only": False,
         },
+        "bash": {
+            "strip_ansi": True,
+            "trim_whitespace": True,
+            "strip_progress": False,
+            "smart_commands": False,
+        },
+        "time": {
+            # Per-optimizer time horizon: how many recent turns to leave
+            # untouched. Optimization applies only to messages older than
+            # this. BashCompressor doesn't appear here — it operates on
+            # all turns by design.
+            "tool_result_keep_turns": 5,
+            "image_keep_turns": 5,
+            "thinking_keep_turns": 5,
+        },
         "mcp_subprocess": {
             "google_mcp_port": int(os.environ.get("GOOGLE_MCP_PORT", "18766")),
             "google_mcp_dir": os.environ.get("GOOGLE_MCP_DIR", "~/DEVEL/google_workspace_mcp"),
