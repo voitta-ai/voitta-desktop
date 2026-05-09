@@ -1,0 +1,42 @@
+# Smoke build on every master push.
+#
+# Assembles the .app via briefcase (ad-hoc signed, no notarization, no DMG,
+# no upload). Catches breakage between releases without burning a notary slot
+# or producing publishable artifacts. Runs on macos-14 to match
+# `min_os_version = 14.0` and the arm64-only `universal_build = false`
+# settings in pyproject.toml.
+name: smoke
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup venv
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -q -r requirements.txt briefcase
+
+      - name: Build (ad-hoc, no package)
+        run: ./scripts/build_app.sh
+
+      - name: Verify bundle exists
+        run: |
+          APP="build/voitta_desktop/macos/app/Voitta Desktop.app"
+          test -d "$APP"
+          du -sh "$APP"
