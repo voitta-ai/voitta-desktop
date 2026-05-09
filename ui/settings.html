@@ -258,96 +258,203 @@
     color: var(--text-secondary);
     font-size: 12px;
   }
+  /* Tabs */
+  .tabs {
+    display: flex;
+    gap: 2px;
+    border-bottom: 1px solid var(--card-border);
+    margin: -4px -4px 20px;
+    padding: 0 4px;
+  }
+  .tab {
+    padding: 8px 14px;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    transition: color 0.15s, border-color 0.15s;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+  .tab-pane { display: none; }
+  .tab-pane.active { display: block; }
 </style>
 </head>
 <body>
 
-<h2>LLM Proxy</h2>
-<div class="card" id="llm-proxy-card">
-  <div class="field">
-    <label>Upstream URL</label>
-    <input type="text" id="llm_upstream_url" placeholder="https://api.anthropic.com">
+<nav class="tabs">
+  <button class="tab active" data-tab="proxies" onclick="switchTab('proxies')">Proxies</button>
+  <button class="tab" data-tab="tools" onclick="switchTab('tools')">Tools</button>
+  <button class="tab" data-tab="accounts" onclick="switchTab('accounts')">Accounts</button>
+  <button class="tab" data-tab="backends" onclick="switchTab('backends')">Backends</button>
+</nav>
+
+<!-- ── Accounts ───────────────────────────────────────────────────────────── -->
+<div class="tab-pane" id="tab-accounts">
+
+  <h2>OAuth Applications</h2>
+  <div id="apps-container"></div>
+  <button class="btn-add" onclick="addApp()">+ Add Application</button>
+
+  <h2>Jira</h2>
+  <div class="card" id="jira-card">
+    <div class="field">
+      <label>Server URL</label>
+      <input type="text" id="jira_url" placeholder="https://company.atlassian.net">
+    </div>
+    <div class="field">
+      <label>Email</label>
+      <input type="text" id="jira_email" placeholder="you@company.com">
+    </div>
+    <div class="field">
+      <label>API Token</label>
+      <input type="password" id="jira_api_token" placeholder="API token">
+    </div>
+    <div class="field">
+      <label>Project(s)</label>
+      <select id="jira_project" multiple style="flex:1; min-height:80px; padding:4px; border:1px solid var(--input-border); border-radius:6px; background:var(--input-bg); color:var(--text); font-size:12px; font-family:ui-monospace,'SF Mono',monospace;">
+      </select>
+      <span id="jira_project_status" style="font-size:11px; color:var(--text-secondary); min-width:60px; text-align:center;"></span>
+    </div>
   </div>
-  <div class="field">
-    <label>Port</label>
-    <input type="text" id="llm_proxy_port" placeholder="18900">
-  </div>
+
 </div>
 
-<h2>OAuth Applications</h2>
-<div id="apps-container"></div>
-<button class="btn-add" onclick="addApp()">+ Add Application</button>
+<!-- ── Backends ───────────────────────────────────────────────────────────── -->
+<div class="tab-pane" id="tab-backends">
 
-<h2>Jira</h2>
-<div class="card" id="jira-card">
-  <div class="field">
-    <label>Server URL</label>
-    <input type="text" id="jira_url" placeholder="https://company.atlassian.net">
+  <h2>Voitta RAG</h2>
+  <div class="card" id="rag-card">
+    <div class="field">
+      <label>URL</label>
+      <input type="text" id="rag_url" placeholder="https://rag.voitta.ai">
+    </div>
   </div>
-  <div class="field">
-    <label>Email</label>
-    <input type="text" id="jira_email" placeholder="you@company.com">
+
+  <h2>Voitta Image RAG</h2>
+  <div class="card" id="image-rag-card">
+    <div class="field">
+      <label>URL</label>
+      <input type="text" id="image_rag_url" placeholder="https://rag-img.voitta.ai/mcp">
+    </div>
+    <div class="field">
+      <label>API Key</label>
+      <input type="password" id="image_rag_key" placeholder="vk_...">
+    </div>
   </div>
-  <div class="field">
-    <label>API Token</label>
-    <input type="password" id="jira_api_token" placeholder="API token">
+
+  <h2>Paperclip</h2>
+  <div class="card" id="paperclip-card">
+    <div class="field">
+      <label>URL</label>
+      <input type="text" id="paperclip_url" placeholder="https://paperclip.gxl.ai/mcp">
+    </div>
+    <div class="field">
+      <label>API Key</label>
+      <input type="password" id="paperclip_key" placeholder="gxl_...">
+    </div>
   </div>
-  <div class="field">
-    <label>Project(s)</label>
-    <select id="jira_project" multiple style="flex:1; min-height:80px; padding:4px; border:1px solid var(--input-border); border-radius:6px; background:var(--input-bg); color:var(--text); font-size:12px; font-family:ui-monospace,'SF Mono',monospace;">
-    </select>
-    <span id="jira_project_status" style="font-size:11px; color:var(--text-secondary); min-width:60px; text-align:center;"></span>
+
+  <h2>Google Workspace MCP</h2>
+  <div class="card" id="google-mcp-card">
+    <div class="field">
+      <label>Port</label>
+      <input type="text" id="google_mcp_port" placeholder="18766">
+    </div>
+    <div class="field">
+      <label>Directory</label>
+      <input type="text" id="google_mcp_dir" placeholder="~/DEVEL/google_workspace_mcp">
+    </div>
+    <div class="field">
+      <label>Env Path</label>
+      <input type="text" id="google_mcp_env_path" placeholder="~/DEVEL/google_workspace_mcp/.env">
+    </div>
   </div>
+
+  <h2>Jira MCP</h2>
+  <div class="card" id="jira-mcp-card">
+    <div class="field">
+      <label>Port</label>
+      <input type="text" id="jira_mcp_port" placeholder="18767">
+    </div>
+    <div class="field">
+      <label>Directory</label>
+      <input type="text" id="jira_mcp_dir" placeholder="~/DEVEL/mcp-atlassian">
+    </div>
+    <div class="field">
+      <label>Env Path</label>
+      <input type="text" id="jira_mcp_env_path" placeholder="~/.voitta_desktop/jira.env">
+    </div>
+  </div>
+
 </div>
 
-<h2>MCP Proxy</h2>
-<div class="card" id="proxy-card">
-  <div class="field">
-    <label>Port</label>
-    <input type="text" id="proxy_port" placeholder="18765">
+<!-- ── Proxies ────────────────────────────────────────────────────────────── -->
+<div class="tab-pane active" id="tab-proxies">
+
+  <h2>LLM Proxy</h2>
+  <div class="card" id="llm-proxy-card">
+    <div class="field">
+      <label>Upstream URL</label>
+      <input type="text" id="llm_upstream_url" placeholder="https://api.anthropic.com">
+    </div>
+    <div class="field">
+      <label>Port</label>
+      <input type="text" id="llm_proxy_port" placeholder="18900">
+    </div>
   </div>
-  <div class="field">
-    <label>Edit Proxy URL</label>
-    <input type="text" id="edit_proxy_url" placeholder="http://localhost:18766">
+
+  <h2>MCP Proxy</h2>
+  <div class="card" id="proxy-card">
+    <div class="field">
+      <label>Port</label>
+      <input type="text" id="proxy_port" placeholder="18765">
+    </div>
+    <div class="field">
+      <label>Edit Proxy URL</label>
+      <input type="text" id="edit_proxy_url" placeholder="http://localhost:18766">
+    </div>
   </div>
+
+  <h2>OAuth Callback</h2>
+  <div class="card" id="oauth-card">
+    <div class="field">
+      <label>Redirect Port</label>
+      <input type="text" id="oauth_redirect_port" placeholder="53214">
+    </div>
+  </div>
+
+  <h2>Optimizer</h2>
+  <div class="card" id="optimizer-card">
+    <div class="field">
+      <label></label>
+      <div class="checkboxes">
+        <label><input type="checkbox" id="optimizer_enabled"> Optimize context</label>
+        <label><input type="checkbox" id="optimizer_haiku_only"> Haiku only</label>
+      </div>
+    </div>
+  </div>
+
 </div>
 
-<h2>Voitta RAG</h2>
-<div class="card" id="rag-card">
-  <div class="field">
-    <label>URL</label>
-    <input type="text" id="rag_url" placeholder="https://rag.voitta.ai">
-  </div>
-</div>
+<!-- ── Tools ──────────────────────────────────────────────────────────────── -->
+<div class="tab-pane" id="tab-tools">
 
-<h2>Voitta Image RAG</h2>
-<div class="card" id="image-rag-card">
-  <div class="field">
-    <label>URL</label>
-    <input type="text" id="image_rag_url" placeholder="https://rag-img.voitta.ai/mcp">
+  <h2>MCP Tools</h2>
+  <div class="card" id="mcp-tools-card">
+    <input type="text" class="tool-filter" id="tool-filter" placeholder="Filter tools..." oninput="filterTools(this.value)">
+    <ul class="tool-tree" id="tool-tree"></ul>
   </div>
-  <div class="field">
-    <label>API Key</label>
-    <input type="password" id="image_rag_key" placeholder="vk_...">
-  </div>
-</div>
 
-<h2>Paperclip</h2>
-<div class="card" id="paperclip-card">
-  <div class="field">
-    <label>URL</label>
-    <input type="text" id="paperclip_url" placeholder="https://paperclip.gxl.ai/mcp">
-  </div>
-  <div class="field">
-    <label>API Key</label>
-    <input type="password" id="paperclip_key" placeholder="gxl_...">
-  </div>
-</div>
-
-<h2>MCP Tools</h2>
-<div class="card" id="mcp-tools-card">
-  <input type="text" class="tool-filter" id="tool-filter" placeholder="Filter tools..." oninput="filterTools(this.value)">
-  <ul class="tool-tree" id="tool-tree"></ul>
 </div>
 
 <div class="bottom-bar">
@@ -506,6 +613,8 @@ function _setJiraProjectsError(msg) {
 function loadProxy() {
   var mcp = config.mcp_proxy || config.proxy || {};
   var llm = config.llm_proxy || {};
+  var oauth = config.oauth || {};
+  var sub = config.mcp_subprocess || {};
   document.getElementById('proxy_port').value = mcp.port || '18765';
   document.getElementById('edit_proxy_url').value = mcp.edit_proxy_url || '';
   document.getElementById('rag_url').value = mcp.rag_url || '';
@@ -515,6 +624,17 @@ function loadProxy() {
   document.getElementById('paperclip_key').value = mcp.paperclip_key || '';
   document.getElementById('llm_proxy_port').value = llm.port || '18900';
   document.getElementById('llm_upstream_url').value = llm.upstream_url || 'https://api.anthropic.com';
+  document.getElementById('oauth_redirect_port').value = oauth.redirect_port || '53214';
+  document.getElementById('google_mcp_port').value = sub.google_mcp_port || '18766';
+  document.getElementById('google_mcp_dir').value = sub.google_mcp_dir || '~/DEVEL/google_workspace_mcp';
+  document.getElementById('google_mcp_env_path').value = sub.google_mcp_env_path || '~/DEVEL/google_workspace_mcp/.env';
+  document.getElementById('jira_mcp_port').value = sub.jira_mcp_port || '18767';
+  document.getElementById('jira_mcp_dir').value = sub.jira_mcp_dir || '~/DEVEL/mcp-atlassian';
+  document.getElementById('jira_mcp_env_path').value = sub.jira_mcp_env_path || '~/.voitta_desktop/jira.env';
+
+  var opt = config.optimizer || {};
+  document.getElementById('optimizer_enabled').checked = opt.enabled !== false;  // default true
+  document.getElementById('optimizer_haiku_only').checked = !!opt.haiku_only;
 }
 
 function collectAll() {
@@ -539,6 +659,21 @@ function collectAll() {
   config.llm_proxy = {
     port: parseInt(document.getElementById('llm_proxy_port').value) || 18900,
     upstream_url: document.getElementById('llm_upstream_url').value.trim() || 'https://api.anthropic.com',
+  };
+  config.oauth = {
+    redirect_port: parseInt(document.getElementById('oauth_redirect_port').value) || 53214,
+  };
+  config.mcp_subprocess = {
+    google_mcp_port: parseInt(document.getElementById('google_mcp_port').value) || 18766,
+    google_mcp_dir: document.getElementById('google_mcp_dir').value.trim() || '~/DEVEL/google_workspace_mcp',
+    google_mcp_env_path: document.getElementById('google_mcp_env_path').value.trim() || '~/DEVEL/google_workspace_mcp/.env',
+    jira_mcp_port: parseInt(document.getElementById('jira_mcp_port').value) || 18767,
+    jira_mcp_dir: document.getElementById('jira_mcp_dir').value.trim() || '~/DEVEL/mcp-atlassian',
+    jira_mcp_env_path: document.getElementById('jira_mcp_env_path').value.trim() || '~/.voitta_desktop/jira.env',
+  };
+  config.optimizer = {
+    enabled: document.getElementById('optimizer_enabled').checked,
+    haiku_only: document.getElementById('optimizer_haiku_only').checked,
   };
   config.disabled_tools = collectDisabledTools();
   return config;
@@ -703,6 +838,16 @@ function save() {
 
 function cancel() {
   document.title = 'VOITTA_CANCEL';
+}
+
+// Tab switching
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(function(t) {
+    t.classList.toggle('active', t.dataset.tab === name);
+  });
+  document.querySelectorAll('.tab-pane').forEach(function(p) {
+    p.classList.toggle('active', p.id === 'tab-' + name);
+  });
 }
 
 // Init from embedded config

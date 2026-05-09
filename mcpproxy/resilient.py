@@ -18,8 +18,11 @@ logger = logging.getLogger("voitta-desktop.mcp")
 #   block on upstream — give plane Wi-Fi a real chance to populate. After
 #   that one success, stale-while-revalidate keeps every subsequent popup
 #   instant regardless of network.
+# - REFRESH_TIMEOUT_S applies to the user-triggered "Refresh LLM Tools"
+#   menu action — generous because the user is explicitly waiting.
 LISTING_TIMEOUT_S = 6.0
 LISTING_FIRST_FILL_TIMEOUT_S = 15.0
+REFRESH_TIMEOUT_S = 30.0
 
 TOOL_CACHE_DIR = Path.home() / ".voitta_desktop_cache"
 
@@ -82,22 +85,14 @@ class ResilientProxyProvider(ProxyProvider):
         self._app_ref = app_ref
         self._prefix = prefix
 
-    def _is_tool_disabled(self, tool_name: str) -> bool:
-        if self._app_ref is None:
-            return False
-        disabled = getattr(self._app_ref, "disabled_tools", set())
-        full_name = f"{self._prefix}_{tool_name}" if self._prefix else tool_name
-        return full_name in disabled
-
     def _stash_tool_names(self, tools):
-        if self._app_ref is not None and tools:
-            names = [f"{self._prefix}_{t.name}" if self._prefix else t.name for t in tools]
-            self._app_ref._mcp_tools[self._prefix] = sorted(names)
-
-    def _filter_disabled(self, tools):
-        if not tools:
-            return tools
-        return [t for t in tools if not self._is_tool_disabled(t.name)]
+        """Mirror the upstream tool list into app_ref._mcp_tools for the gate
+        popup and the settings tool tree. Always writes (so empty upstream
+        clears stale names instead of leaving them stuck)."""
+        if self._app_ref is None:
+            return
+        names = [f"{self._prefix}_{t.name}" if self._prefix else t.name for t in (tools or [])]
+        self._app_ref._mcp_tools[self._prefix] = sorted(names)
 
     def _spawn_refresh(self, kind: str, coro_factory):
         """Kick off a background refresh for `kind` if one isn't already in flight.
@@ -150,6 +145,41 @@ class ResilientProxyProvider(ProxyProvider):
         if tools:
             _save_cache(self._backend_name, "tools", tools)
             self._stash_tool_names(tools)
+
+    async def force_refresh(self) -> tuple[bool, int, str | None]:
+        """Synchronously fetch fresh tools from upstream — used by the manual
+        "Refresh LLM Tools" menu action.
+
+        Cache replacement is conditional: the disk cache is only overwritten
+        on a successful fetch. Failure, timeout, and cancellation leave both
+        the disk cache and the in-memory stash intact, so clients keep being
+        served the last-known-good tool list while the user retries or moves
+        on. A successful but empty upstream response is treated as ground
+        truth and wipes the cache (the backend has 0 tools right now).
+
+        Returns (success, tool_count, error_message).
+        """
+        try:
+            tools = await asyncio.wait_for(
+                ProxyProvider._list_tools(self),
+                timeout=REFRESH_TIMEOUT_S,
+            )
+        except asyncio.CancelledError:
+            return False, 0, "cancelled"
+        except asyncio.TimeoutError:
+            return False, 0, f"timeout after {REFRESH_TIMEOUT_S:.0f}s"
+        except Exception as e:
+            return False, 0, str(e)
+
+        if tools:
+            _save_cache(self._backend_name, "tools", tools)
+        else:
+            try:
+                _cache_path(self._backend_name, "tools").unlink(missing_ok=True)
+            except Exception as e:
+                logger.debug("[%s] couldn't unlink stale tools cache: %s", self._backend_name, e)
+        self._stash_tool_names(tools)
+        return True, len(tools or []), None
 
     async def _list_resources(self):
         if self._cache_listings:
@@ -228,8 +258,28 @@ class ResilientFastMCPProxy(FastMCPProxy):
                  app_ref=None, prefix: str = "", **kwargs):
         FastMCPServer.__init__(self, **kwargs)
         self.client_factory = client_factory
-        provider = ResilientProxyProvider(
+        self._resilient_provider = ResilientProxyProvider(
             client_factory, backend_name=backend_name, cache_listings=cache_listings,
             app_ref=app_ref, prefix=prefix,
         )
-        self.add_provider(provider)
+        self.add_provider(self._resilient_provider)
+        self._backend_name = backend_name
+
+    async def force_refresh(self) -> tuple[bool, int, str | None]:
+        """Delegate to provider — fetch fresh, return summary."""
+        return await self._resilient_provider.force_refresh()
+
+    def peek_cached(self) -> int:
+        """Synchronously read the on-disk tool count for this backend.
+
+        Returns 0 if the cache file is missing or unreadable. Used by the
+        LLM Tools Status popup to render initial state without contacting
+        upstream or running an event loop.
+        """
+        path = _cache_path(self._backend_name, "tools")
+        if not path.exists():
+            return 0
+        try:
+            return len(json.loads(path.read_text()))
+        except Exception:
+            return 0

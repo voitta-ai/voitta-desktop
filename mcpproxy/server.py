@@ -213,7 +213,10 @@ class ToolGateMiddleware(FastMCPMiddleware):
 
             import time
             if gate_result is None:
-                self._last_disabled = set()  # cancel = no tools
+                # Cancel = no tools allowed. Disable ALL of them so any
+                # reuse-window calls also block. (An empty set would mean
+                # "filter nothing" and leak every tool back to the LLM.)
+                self._last_disabled = {t.name for t in tools}
                 self._last_time = time.time()
                 return []
 
@@ -293,6 +296,7 @@ def run_mcp_proxy(app_ref, port: int, jira_mcp_port: int):
 
     # ── Simple backends (driven from backends.py) ───────────────────
 
+    simple_proxies: list[tuple[str, str, ResilientFastMCPProxy]] = []
     for b in simple_backends():
         proxy = ResilientFastMCPProxy(
             client_factory=lambda b=b: ProxyClient(
@@ -304,6 +308,20 @@ def run_mcp_proxy(app_ref, port: int, jira_mcp_port: int):
             app_ref=app_ref, prefix=b["prefix"],
         )
         main_server.mount(proxy, prefix=b["prefix"])
+        simple_proxies.append((b["label"], b["url"], proxy))
+
+    # Expose the full list of resilient backends — (label, url, proxy) — for
+    # the menu's manual "Refresh LLM Tools" popup. URLs are display-only and
+    # captured at startup; if the user changes a URL via Settings later, they
+    # need to restart for the popup to reflect it.
+    app_ref._mcp_backends = [
+        ("RAG", getattr(app_ref, "voitta_rag_url", ""), rag_proxy),
+        ("Google Workspace", getattr(app_ref, "edit_proxy_url", ""), google_proxy),
+        ("Jira", f"http://localhost:{jira_mcp_port}/mcp", jira_proxy),
+        ("Voitta Image RAG", getattr(app_ref, "voitta_image_rag_url", ""), image_rag_proxy),
+        ("Paperclip", getattr(app_ref, "paperclip_url", ""), paperclip_proxy),
+        *simple_proxies,
+    ]
 
     # ── Built-in tools ──────────────────────────────────────────────
 

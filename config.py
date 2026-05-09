@@ -31,8 +31,33 @@ def _default_config() -> dict:
             "port": int(os.environ.get("LLM_PROXY_PORT", "18900")),
             "upstream_url": os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
         },
+        "oauth": {
+            "redirect_port": int(os.environ.get("OAUTH_REDIRECT_PORT", "53214")),
+        },
+        "optimizer": {
+            "enabled": True,
+            "haiku_only": False,
+        },
+        "mcp_subprocess": {
+            "google_mcp_port": int(os.environ.get("GOOGLE_MCP_PORT", "18766")),
+            "google_mcp_dir": os.environ.get("GOOGLE_MCP_DIR", "~/DEVEL/google_workspace_mcp"),
+            "google_mcp_env_path": os.environ.get("GOOGLE_MCP_ENV_PATH", "~/DEVEL/google_workspace_mcp/.env"),
+            "jira_mcp_port": int(os.environ.get("JIRA_MCP_PORT", "18767")),
+            "jira_mcp_dir": os.environ.get("JIRA_MCP_DIR", "~/DEVEL/mcp-atlassian"),
+            "jira_mcp_env_path": os.environ.get("JIRA_MCP_ENV_PATH", str(CONFIG_DIR / "jira.env")),
+        },
         "disabled_tools": [],
     }
+
+
+def _deep_backfill(target: dict, defaults: dict) -> None:
+    """Recursively populate missing keys in `target` from `defaults` without
+    overwriting saved values."""
+    for k, v in defaults.items():
+        if k not in target:
+            target[k] = v
+        elif isinstance(v, dict) and isinstance(target.get(k), dict):
+            _deep_backfill(target[k], v)
 
 
 def load_config() -> dict:
@@ -42,17 +67,14 @@ def load_config() -> dict:
         return defaults
     try:
         data = json.loads(CONFIG_PATH.read_text())
-        for key in defaults:
-            if key not in data:
-                data[key] = defaults[key]
         # Migrate: rename "proxy" -> "mcp_proxy" if old config
         if "proxy" in data and "mcp_proxy" not in data:
             data["mcp_proxy"] = data.pop("proxy")
-        # Env vars override saved ports (so .env is always authoritative)
-        data.setdefault("mcp_proxy", {})["port"] = defaults["mcp_proxy"]["port"]
-        data.setdefault("llm_proxy", {})["port"] = defaults["llm_proxy"]["port"]
-        # Backfill new fields onto pre-existing configs without clobbering saved values
-        data["llm_proxy"].setdefault("upstream_url", defaults["llm_proxy"]["upstream_url"])
+        # Backfill missing top-level + nested keys from env-derived defaults.
+        # Saved values win — env only seeds new/missing fields. The Settings
+        # window is the single source of truth; .env merely provides initial
+        # values on first run.
+        _deep_backfill(data, defaults)
         return data
     except Exception:
         return defaults

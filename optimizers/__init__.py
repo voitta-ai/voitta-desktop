@@ -218,7 +218,7 @@ class BaseOptimizer(Middleware):
 class OptimizerPipeline(Middleware):
     """Runs multiple optimizers in sequence, aggregates savings."""
 
-    def __init__(self, optimizers: list[BaseOptimizer], enabled: bool = False, haiku_only: bool = True):
+    def __init__(self, optimizers: list[BaseOptimizer], enabled: bool = True, haiku_only: bool = False):
         self.optimizers = optimizers
         self.enabled = enabled
         self.haiku_only = haiku_only

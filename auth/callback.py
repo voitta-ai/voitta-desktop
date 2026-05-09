@@ -1,11 +1,12 @@
 """OAuth2 redirect callback handler."""
 
-import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
 
+from config import load_config
 
-REDIRECT_PORT = int(os.environ.get("OAUTH_REDIRECT_PORT", "53214"))
+
+REDIRECT_PORT = int(load_config().get("oauth", {}).get("redirect_port", 53214))
 REDIRECT_URI = f"http://localhost:{REDIRECT_PORT}"
 
 

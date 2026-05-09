@@ -58,15 +58,19 @@ from ui.chart import generate_chart_html
 
 logger = logging.getLogger("voitta-desktop")
 
-# ── Ports from env ───────────────────────────────────────────────────────────
+# ── Subprocess + OAuth settings (sourced from apps.json; env seeds defaults) ─
 
-OAUTH_REDIRECT_PORT = int(os.environ.get("OAUTH_REDIRECT_PORT", "53214"))
-GOOGLE_MCP_PORT = int(os.environ.get("GOOGLE_MCP_PORT", "18766"))
-JIRA_MCP_PORT = int(os.environ.get("JIRA_MCP_PORT", "18767"))
-GOOGLE_MCP_DIR = os.path.expanduser(os.environ.get("GOOGLE_MCP_DIR", "~/DEVEL/google_workspace_mcp"))
-GOOGLE_MCP_ENV_PATH = os.path.expanduser(os.environ.get("GOOGLE_MCP_ENV_PATH", "~/DEVEL/google_workspace_mcp/.env"))
-JIRA_MCP_DIR = os.path.expanduser(os.environ.get("JIRA_MCP_DIR", "~/DEVEL/mcp-atlassian"))
-JIRA_MCP_ENV_PATH = os.path.expanduser(os.environ.get("JIRA_MCP_ENV_PATH", str(CONFIG_DIR / "jira.env")))
+_startup_cfg = load_config()
+_oauth_cfg = _startup_cfg.get("oauth", {})
+_sub_cfg = _startup_cfg.get("mcp_subprocess", {})
+
+OAUTH_REDIRECT_PORT = int(_oauth_cfg.get("redirect_port", 53214))
+GOOGLE_MCP_PORT = int(_sub_cfg.get("google_mcp_port", 18766))
+JIRA_MCP_PORT = int(_sub_cfg.get("jira_mcp_port", 18767))
+GOOGLE_MCP_DIR = os.path.expanduser(_sub_cfg.get("google_mcp_dir", "~/DEVEL/google_workspace_mcp"))
+GOOGLE_MCP_ENV_PATH = os.path.expanduser(_sub_cfg.get("google_mcp_env_path", "~/DEVEL/google_workspace_mcp/.env"))
+JIRA_MCP_DIR = os.path.expanduser(_sub_cfg.get("jira_mcp_dir", "~/DEVEL/mcp-atlassian"))
+JIRA_MCP_ENV_PATH = os.path.expanduser(_sub_cfg.get("jira_mcp_env_path", str(CONFIG_DIR / "jira.env")))
 LEGACY_SETTINGS_PATH = Path.home() / ".voitta_auth_settings.json"
 
 ICON_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "images", "icon_menubar_bright.png")
@@ -174,7 +178,12 @@ class VoittaDesktopApp(rumps.App):
         self._image_optimizer = ImageOptimizer()
         self._file_read_optimizer = FileReadOptimizer()
         self._thinking_optimizer = ThinkingOptimizer()
-        self._optimizer_pipeline = OptimizerPipeline([self._tool_result_optimizer, self._image_optimizer, self._thinking_optimizer])
+        opt_cfg = self._config.get("optimizer", {})
+        self._optimizer_pipeline = OptimizerPipeline(
+            [self._tool_result_optimizer, self._image_optimizer, self._thinking_optimizer],
+            enabled=bool(opt_cfg.get("enabled", True)),
+            haiku_only=bool(opt_cfg.get("haiku_only", False)),
+        )
         self._cache_sim = CacheSimulator()
         self._proxy = AnthropicProxy(
             middlewares=[self._request_logger, self._tracker, self._optimizer_pipeline, self._cache_sim],
@@ -377,13 +386,12 @@ class VoittaDesktopApp(rumps.App):
 
         menu_list.append(None)
 
-        # ── Conversations section ────────────────────────────────────────────
-        conv_header = rumps.MenuItem("\u2500\u2500 Conversations \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
-        conv_header.set_callback(self._noop)
-        self._menu_items["conv_header"] = conv_header
-        menu_list.append(conv_header)
+        # ── LLM Proxy section ────────────────────────────────────────────────
+        proxy_header = rumps.MenuItem("\u2500\u2500 LLM Proxy \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
+        proxy_header.set_callback(self._noop)
+        menu_list.append(proxy_header)
 
-        self._llm_status = rumps.MenuItem(f"LLM Proxy  http://127.0.0.1:{self.llm_proxy_port}")
+        self._llm_status = rumps.MenuItem(f"  http://127.0.0.1:{self.llm_proxy_port}")
         self._llm_status.set_callback(self._noop)
         menu_list.append(self._llm_status)
 
@@ -391,16 +399,17 @@ class VoittaDesktopApp(rumps.App):
         self._optimize_toggle.state = self._optimizer_pipeline.enabled
         menu_list.append(self._optimize_toggle)
 
-        self._haiku_only_toggle = rumps.MenuItem("    Haiku only", callback=self._toggle_haiku_only)
-        self._haiku_only_toggle.state = self._optimizer_pipeline.haiku_only
-        menu_list.append(self._haiku_only_toggle)
+        self._status_item = rumps.MenuItem("  LLM Tools Status", callback=self._show_llm_tools_status)
+        menu_list.append(self._status_item)
 
-        self._tool_gate_rearm = rumps.MenuItem("  Re-arm MCP tool gate", callback=self._rearm_tool_gate)
-        menu_list.append(self._tool_gate_rearm)
+        menu_list.append(None)
 
-        self._no_conversations = rumps.MenuItem("  (none yet)")
-        self._no_conversations.set_callback(self._noop)
-        menu_list.append(self._no_conversations)
+        # ── Conversations section ────────────────────────────────────────────
+        # Header is always visible; the section sits empty until live
+        # conversations stream in via _update_conversations.
+        self._conv_header = rumps.MenuItem("── Conversations ─────────────────────────")
+        self._conv_header.set_callback(self._noop)
+        menu_list.append(self._conv_header)
 
         menu_list.append(None)
 
@@ -876,16 +885,9 @@ class VoittaDesktopApp(rumps.App):
             self._conv_block_counts.pop(cid, None)
 
         if not convs or not any(c.turns for c in convs):
-            if self._no_conversations.title not in self.menu:
-                self.menu.insert_after(self._llm_status.title, self._no_conversations)
             return
 
-        try:
-            del self.menu[self._no_conversations.title]
-        except KeyError:
-            pass
-
-        prev = self._llm_status.title
+        prev = self._conv_header.title
         for conv in [c for c in convs[:20] if c.turns]:
             tokens = self._fmt_tokens(conv.total_tokens)
             cache_info = ""
@@ -1308,6 +1310,10 @@ class VoittaDesktopApp(rumps.App):
         self.edit_proxy_url = mcp_proxy_cfg.get("edit_proxy_url", f"http://localhost:{GOOGLE_MCP_PORT}")
         self.disabled_tools = set(new_config.get("disabled_tools", []))
 
+        opt_cfg = new_config.get("optimizer", {})
+        self._optimizer_pipeline.enabled = bool(opt_cfg.get("enabled", True))
+        self._optimizer_pipeline.haiku_only = bool(opt_cfg.get("haiku_only", False))
+
         self._init_active_defaults()
         self._sync_edit_mcp_env()
         self._sync_jira_mcp_env()
@@ -1357,18 +1363,154 @@ class VoittaDesktopApp(rumps.App):
     def _toggle_optimizer(self, sender):
         self._optimizer_pipeline.enabled = not self._optimizer_pipeline.enabled
         sender.state = self._optimizer_pipeline.enabled
+        self._config.setdefault("optimizer", {})["enabled"] = self._optimizer_pipeline.enabled
+        save_config(self._config)
 
-    def _toggle_haiku_only(self, sender):
-        self._optimizer_pipeline.haiku_only = not self._optimizer_pipeline.haiku_only
-        sender.state = self._optimizer_pipeline.haiku_only
+    def _show_llm_tools_status(self, _):
+        """Open the LLM Tools Status popup (read-only) and let the user
+        drive refreshes from inside it.
 
-    def _rearm_tool_gate(self, _):
-        """Reset the tool gate so the next tools/list shows the popup."""
-        gate = getattr(self, "_tool_gate", None)
-        if gate:
-            gate._last_disabled = None
-            gate._last_time = 0
-            logger.info("Tool gate re-armed")
+        Opening does NOT touch upstream — rows are filled from each backend's
+        on-disk cache via `peek_cached()`. A persistent worker loop runs for
+        the popup's lifetime so the user can refresh individual backends or
+        all of them on demand. Closing the popup tears down the loop.
+        """
+        # If popup is already up, just bring it to front — no duplicates.
+        existing = getattr(self, "_status_popup", None)
+        if existing is not None and not existing._closed:
+            try:
+                NSApp.activateIgnoringOtherApps_(True)
+                existing.window.makeKeyAndOrderFront_(None)
+            except Exception:
+                pass
+            return
+
+        backends = getattr(self, "_mcp_backends", None)
+        if not backends:
+            _notify("Voitta Desktop", None, "No MCP backends configured")
+            return
+
+        # Build initial rows from the on-disk cache.
+        rows: list[tuple[str, str, str, str]] = []
+        for label, url, proxy in backends:
+            count = proxy.peek_cached()
+            row_label = f"{count} tools" if count else "Not loaded"
+            rows.append((label, url, "idle", row_label))
+
+        from ui.refresh_popup import StatusPopup
+        popup = StatusPopup()
+        self._status_popup = popup
+
+        # Worker-loop state, populated once the loop thread is up.
+        self._status_loop: asyncio.AbstractEventLoop | None = None
+        self._status_tasks: dict[int, asyncio.Task] = {}
+        self._status_cancelled: set[int] = set()
+
+        loop_ready = threading.Event()
+
+        def _worker():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self._status_loop = loop
+            loop_ready.set()
+            try:
+                loop.run_forever()
+            finally:
+                # Best-effort drain of any tasks left mid-flight before close.
+                try:
+                    pending = asyncio.all_tasks(loop)
+                    for t in pending:
+                        t.cancel()
+                    if pending:
+                        loop.run_until_complete(
+                            asyncio.gather(*pending, return_exceptions=True)
+                        )
+                except Exception:
+                    pass
+                try:
+                    loop.close()
+                except Exception:
+                    pass
+                self._status_loop = None
+                self._status_tasks = {}
+                self._status_cancelled = set()
+
+        threading.Thread(target=_worker, daemon=True).start()
+        # Wait briefly for the loop to be ready so the first user click
+        # doesn't race against worker startup. 1s is generous; if it
+        # somehow doesn't come up, handlers degrade to no-ops.
+        loop_ready.wait(timeout=1.0)
+
+        async def _refresh_one(idx: int, label: str, proxy):
+            import time
+            start = time.time()
+            try:
+                ok, count, err = await proxy.force_refresh()
+            except asyncio.CancelledError:
+                ok, count, err = False, 0, "cancelled"
+            except Exception as e:
+                ok, count, err = False, 0, str(e)
+            elapsed = time.time() - start
+
+            # If user cancelled this row, the popup already shows
+            # "✗ cancelled" — don't overwrite it with a late result.
+            if idx in self._status_cancelled:
+                self._status_cancelled.discard(idx)
+                return
+
+            if ok:
+                popup.update(idx, "ok", f"✓ {count} tools · {elapsed:.1f}s")
+            elif err == "cancelled":
+                popup.update(idx, "fail", "✗ cancelled")
+            else:
+                popup.update(idx, "fail", f"✗ {err or 'unknown error'}")
+
+        def _start_one(idx: int):
+            """Schedule a refresh task for backend `idx` on the worker loop."""
+            loop = self._status_loop
+            if loop is None:
+                return
+            existing = self._status_tasks.get(idx)
+            if existing is not None and not existing.done():
+                return  # already refreshing
+            self._status_cancelled.discard(idx)
+            popup.update(idx, "fetching", "Fetching…")
+            label, _url, proxy = backends[idx]
+
+            def _create():
+                task = loop.create_task(_refresh_one(idx, label, proxy))
+                self._status_tasks[idx] = task
+
+            loop.call_soon_threadsafe(_create)
+
+        def _refresh_all():
+            for i in range(len(backends)):
+                _start_one(i)
+
+        def _cancel(idx: int):
+            if idx in self._status_cancelled:
+                return
+            self._status_cancelled.add(idx)
+            # Immediate visual feedback regardless of whether the task
+            # honors cancellation promptly.
+            popup.update(idx, "fail", "✗ cancelled")
+            loop = self._status_loop
+            task = self._status_tasks.get(idx)
+            if loop is not None and task is not None and not task.done():
+                loop.call_soon_threadsafe(task.cancel)
+
+        def _on_close():
+            loop = self._status_loop
+            if loop is not None:
+                # Stops run_forever; finally-block in _worker drains pending tasks.
+                loop.call_soon_threadsafe(loop.stop)
+            self._status_popup = None
+
+        popup.set_refresh_handler(_start_one)
+        popup.set_refresh_all_handler(_refresh_all)
+        popup.set_cancel_handler(_cancel)
+        popup.set_close_handler(_on_close)
+        popup.open(rows)
 
     def _quit(self, _):
         rumps.quit_application()
