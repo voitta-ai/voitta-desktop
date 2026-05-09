@@ -74,16 +74,26 @@ jobs:
           API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
           API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
           KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
         run: |
           KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
           echo "$API_KEY_P8_BASE64" | base64 --decode > "$KEY_PATH"
-          # Profile name "voitta-notary" matches build_app.sh's default.
-          xcrun notarytool store-credentials voitta-notary \
-            --key "$KEY_PATH" \
-            --key-id "$API_KEY_ID" \
-            --issuer "$API_ISSUER_ID" \
-            --keychain "$RUNNER_TEMP/build.keychain"
+          # Two profiles needed:
+          #   • voitta-notary               — used by scripts/build_app.sh's
+          #     explicit `xcrun notarytool submit` block.
+          #   • briefcase-macOS-<TEAM_ID>   — used by `briefcase package`
+          #     internally when --identity is passed (briefcase derives the
+          #     name from the team-id parsed out of the signing identity).
+          # Same credentials, two names.
+          TEAM_ID=$(printf '%s' "$SIGN_IDENTITY" | sed -E 's/.*\(([A-Z0-9]+)\).*/\1/')
+          for PROFILE in voitta-notary "briefcase-macOS-${TEAM_ID}"; do
+            xcrun notarytool store-credentials "$PROFILE" \
+              --key "$KEY_PATH" \
+              --key-id "$API_KEY_ID" \
+              --issuer "$API_ISSUER_ID" \
+              --keychain "$RUNNER_TEMP/build.keychain"
+          done
           rm -f "$KEY_PATH"
 
       - name: Setup venv
