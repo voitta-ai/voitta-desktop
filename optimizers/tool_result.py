@@ -1,8 +1,9 @@
 """ToolResultOptimizer — strips large tool results from older turns, stores them by hash.
 
-Replaces BashOptimizer with a general-purpose version that handles all tool
-results except file-access tools (Read, Write, Edit), which have their own
-staleness-based optimizer.
+Skips Read/Write/Edit results: their lifecycle (file gets re-read/edited
+later in the same conversation) is too coupled to "what the agent is doing
+right now" for a generic strip-by-age policy to be safe. They remain
+untouched in the upstream request.
 """
 
 import hashlib
@@ -14,7 +15,7 @@ from middleware.parsing import find_tool_name
 
 TOOL_RESULT_KEEP_TURNS = 5
 
-# File-access tools are handled by FileReadOptimizer
+# File-access tools are intentionally untouched (see module docstring).
 _SKIP_TOOLS = frozenset({"Read", "Write", "Edit"})
 
 

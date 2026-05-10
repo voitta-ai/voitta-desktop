@@ -78,7 +78,6 @@ class Turn:
     assistant_text_chars: int = 0
     tool_call_chars: int = 0
     image_chars: int = 0
-    stale_read_chars: int = 0
     bash_chars: int = 0
     thinking_chars: int = 0
     images: list[ImageInfo] = field(default_factory=list)

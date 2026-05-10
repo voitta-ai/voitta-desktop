@@ -52,7 +52,6 @@ from middleware.cache_sim import CacheSimulator
 from optimizers import OptimizerPipeline
 from optimizers.bash_compress import BashCompressor
 from optimizers.image import ImageOptimizer
-from optimizers.file_read import FileReadOptimizer
 from optimizers.thinking import ThinkingOptimizer
 from optimizers.tool_result import ToolResultOptimizer
 from proxy import AnthropicProxy
@@ -243,7 +242,6 @@ class VoittaDesktopApp(rumps.App):
         self._image_optimizer = ImageOptimizer(
             keep_turns=int(time_cfg.get("image_keep_turns", 5))
         )
-        self._file_read_optimizer = FileReadOptimizer()
         self._thinking_optimizer = ThinkingOptimizer(
             keep_turns=int(time_cfg.get("thinking_keep_turns", 5))
         )
@@ -1099,7 +1097,6 @@ class VoittaDesktopApp(rumps.App):
                         "assistant_text": t.assistant_text_chars,
                         "tool_call": t.tool_call_chars,
                         "image": sum(int(img.width * img.height / 750 * 3.5) for img in t.images),
-                        "stale_read": t.stale_read_chars,
                         "bash": t.bash_chars,
                         "thinking": t.thinking_chars,
                         "stripped_tool": stripped_tool,

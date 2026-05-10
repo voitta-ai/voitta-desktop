@@ -122,8 +122,8 @@ class BaseOptimizer(Middleware):
     Common infrastructure: turn-boundary detection, per-model savings tracking.
 
     Each subclass should set `chart_key` to the turn-data field it strips
-    (e.g. "image", "bash", "stale_read", "thinking").  The pipeline uses
-    this to tell the chart which optimizers are active.
+    (e.g. "image", "bash", "thinking").  The pipeline uses this to tell
+    the chart which optimizers are active.
     """
 
     chart_key: str = ""
@@ -274,12 +274,17 @@ class OptimizerPipeline(Middleware):
         if len(starts) < self.CACHE_BP_MIN_TURNS:
             return request
 
-        # Use the first optimizer's keep_turns (they're all the same)
-        keep = self.optimizers[0].keep_turns if self.optimizers else 5
+        # Use the smallest non-zero keep_turns across optimizers. The breakpoint
+        # marks the leading edge of the *fully-optimized* zone — the region where
+        # every threshold-based optimizer has already run. That zone ends one
+        # turn before the most-aggressive (smallest) threshold; placing the
+        # marker any deeper would land in a flux band where bytes flip when an
+        # optimizer with a larger keep_turns crosses its own threshold next turn.
+        # BashCompressor uses keep_turns=0 (processes all messages) and is
+        # excluded from the min — it doesn't define a threshold boundary.
+        keeps = [o.keep_turns for o in self.optimizers if o.keep_turns > 0]
+        keep = min(keeps) if keeps else 5
 
-        # We want one turn BEFORE the threshold turn — the fully-stable zone
-        # threshold_turn_idx = len(starts) - keep
-        # stable_turn_idx = threshold_turn_idx - 1
         stable_idx = len(starts) - keep - 1
         if stable_idx < 0:
             return request

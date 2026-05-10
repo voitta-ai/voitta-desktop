@@ -130,28 +130,6 @@ class ConversationTracker(Middleware):
                             turn.tool_use_ids.append(tid)
             msg_index = turn_end
 
-        # Compute stale read chars per turn
-        from optimizers.file_read import analyze_stale_reads
-        stale = analyze_stale_reads(messages)
-        if stale:
-            tool_result_msg: dict[str, int] = {}
-            for mi, m in enumerate(messages):
-                if m.get("role") != "user":
-                    continue
-                content = m.get("content", [])
-                if not isinstance(content, list):
-                    continue
-                for item in content:
-                    if isinstance(item, dict) and item.get("type") == "tool_result":
-                        tool_result_msg[item.get("tool_use_id", "")] = mi
-
-            for turn in turns:
-                start, end = turn._msg_range
-                for tid, chars in stale.items():
-                    result_mi = tool_result_msg.get(tid)
-                    if result_mi is not None and start <= result_mi < end:
-                        turn.stale_read_chars += chars
-
         # Compute bash tool_result chars per turn
         tool_names: dict[str, str] = {}
         tool_result_msg_bash: dict[str, int] = {}
@@ -379,7 +357,6 @@ class ConversationTracker(Middleware):
                 "assistant_text_chars": t.assistant_text_chars,
                 "tool_call_chars": t.tool_call_chars,
                 "image_chars": t.image_chars,
-                "stale_read_chars": t.stale_read_chars,
                 "bash_chars": t.bash_chars,
                 "thinking_chars": t.thinking_chars,
                 "input_tokens": t.input_tokens,

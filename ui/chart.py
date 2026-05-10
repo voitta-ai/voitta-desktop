@@ -279,7 +279,6 @@ def generate_chart_html(
                     parts.push(row('<span style="color:' + C_TOOLRES + ';">&block;</span> Tool results', trLabel));
                 }}
                 if (t.bash) parts.push(row('&emsp;Bash', fmtChars(t.bash) + ' chars'));
-                if (t.stale_read) parts.push(row('&emsp;Stale reads', fmtChars(t.stale_read) + ' chars'));
                 const assistChars = (t.assistant_text || 0) + (t.tool_call || 0);
                 if (assistChars) {{
                     let aLabel = fmtChars(assistChars) + ' chars';
@@ -371,18 +370,14 @@ def generate_chart_html(
             for (let ti = 0; ti < turns.length; ti++) {{
                 const t = turns[ti];
                 const imgs = t.images || [];
-                const staleRead = t.stale_read || 0;
                 const bashChars = t.bash || 0;
-                const freshToolRes = Math.max(0, t.tool_result - staleRead - bashChars);
+                const freshToolRes = Math.max(0, t.tool_result - bashChars);
                 const segs = [
                     {{ color: C_USERTEXT, value: t.user_text, type: 'user_text' }},
                     {{ color: C_TOOLRES, value: freshToolRes, type: 'tool_result' }},
                 ];
                 if (bashChars > 0) {{
                     segs.push({{ color: C_TOOLRES, value: bashChars, type: 'bash' }});
-                }}
-                if (staleRead > 0) {{
-                    segs.push({{ color: C_TOOLRES, value: staleRead, type: 'stale_read' }});
                 }}
 
                 // Split image portion into individual image segments
@@ -501,7 +496,7 @@ def generate_chart_html(
                     const ti = c - 1;
                     const turnStripped = c > 0 ? (turns[ti].stripped_tool || 0) : 0;
                     const turnStrippedThink = c > 0 ? (turns[ti].stripped_thinking || 0) : 0;
-                    const isStrippedToolSeg = turnStripped > 0 && (segs[s].type === 'tool_result' || segs[s].type === 'bash' || segs[s].type === 'stale_read' || segs[s].type === 'image');
+                    const isStrippedToolSeg = turnStripped > 0 && (segs[s].type === 'tool_result' || segs[s].type === 'bash' || segs[s].type === 'image');
                     const isStrippedThinking = turnStrippedThink > 0 && segs[s].type === 'thinking';
                     const isHatched = isStrippedToolSeg || isStrippedThinking;
 
