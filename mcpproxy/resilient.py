@@ -297,6 +297,10 @@ class ResilientFastMCPProxy(FastMCPProxy):
         )
         self.add_provider(self._resilient_provider)
         self._backend_name = backend_name
+        # Tool-name prefix (e.g. "voitta_rag"); empty for unprefixed backends.
+        # Read by Settings → Tools to reconstruct prefixed tool names from
+        # the per-backend disk cache without a live HTTP listing.
+        self._prefix = prefix
         # Last force_refresh outcome — None if successful or never attempted,
         # error string otherwise. Read by the Info-tab diagram to show ⚠ when
         # cache is empty AND last refresh failed.
@@ -322,3 +326,27 @@ class ResilientFastMCPProxy(FastMCPProxy):
             return len(json.loads(path.read_text()))
         except Exception:
             return 0
+
+    def peek_cached_names(self, prefix: str = "") -> list[str]:
+        """Synchronously read tool names from the on-disk cache, optionally
+        prefixed (e.g. ``voitta_rag_search``).
+
+        Same disk file as :meth:`peek_cached`. Used by the Settings tools
+        tree, which needs names — not just counts — to render per-tool
+        toggles. Returns ``[]`` if the cache is missing or unreadable.
+        """
+        path = _cache_path(self._backend_name, "tools")
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text())
+        except Exception:
+            return []
+        names: list[str] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            if isinstance(name, str) and name:
+                names.append(f"{prefix}_{name}" if prefix else name)
+        return sorted(names)

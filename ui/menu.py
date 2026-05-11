@@ -1232,68 +1232,34 @@ class VoittaDesktopApp(rumps.App):
 
     # ── Settings ─────────────────────────────────────────────────────────────
 
-    def _poll_mcp_tools(self):
-        """Poll the MCP proxy for ALL tool names (blocking HTTP). Run from a thread."""
-        import urllib.request
-        try:
-            req = urllib.request.Request(
-                f"http://127.0.0.1:{self.mcp_proxy_port}/mcp",
-                data=json.dumps({"jsonrpc": "2.0", "method": "initialize", "id": 1,
-                                 "params": {"protocolVersion": "2025-03-26",
-                                            "capabilities": {},
-                                            "clientInfo": {"name": "settings", "version": "1"}}}).encode(),
-                headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
-                method="POST",
-            )
-            resp = urllib.request.urlopen(req, timeout=5)
-            session_id = resp.headers.get("Mcp-Session-Id", "")
-
-            headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
-            if session_id:
-                headers["Mcp-Session-Id"] = session_id
-            req2 = urllib.request.Request(
-                f"http://127.0.0.1:{self.mcp_proxy_port}/mcp",
-                data=json.dumps({"jsonrpc": "2.0", "method": "tools/list", "id": 2, "params": {}}).encode(),
-                headers=headers,
-                method="POST",
-            )
-            resp2 = urllib.request.urlopen(req2, timeout=10)
-            body = resp2.read().decode()
-
-            if body.strip().startswith("event:") or body.strip().startswith("data:"):
-                for line in body.splitlines():
-                    if line.startswith("data:"):
-                        body = line[5:].strip()
-                        break
-
-            result = json.loads(body)
-            # These are the *filtered* tools (disabled ones excluded by the proxy).
-            # Merge with _mcp_tools which has ALL tools (stashed before filtering).
-            return [t["name"] for t in result.get("result", {}).get("tools", [])]
-        except Exception as e:
-            logger.warning("Failed to poll MCP proxy for tools: %s", e)
-            return []
-
     def _build_tool_tree(self):
-        """Build tool tree from _mcp_tools (always has ALL tools, including disabled)."""
-        all_tools = set()
-        for names in self._mcp_tools.values():
-            all_tools.update(names)
+        """Build tool tree by reading each backend's on-disk tool cache.
 
+        Same data source as the LLM Tools Status popup (peek_cached). No
+        HTTP, no live MCP round-trip, no dependency on _mcp_tools being
+        populated — which is what stuck Settings → Tools at "Loading…".
+
+        Per-backend caches live in ~/.voitta_desktop_cache/<name>_tools.json
+        and are filled on the first listing after startup (then kept fresh
+        via stale-while-revalidate).
+        """
         from mcpproxy.backends import tool_tree_groups
-        groups = tool_tree_groups()
+
+        backends = getattr(self, "_mcp_backends", None) or []
+        # Map prefix → proxy. Resilient proxies expose _prefix; other types
+        # (e.g. plain FastMCPProxy if someone slips one in) are ignored.
+        prefix_to_proxy = {
+            p._prefix: p for _label, _url, p in backends if getattr(p, "_prefix", None)
+        }
+
         tree = []
-        used = set()
-        for prefix, label in groups:
-            matching = sorted([t for t in all_tools if t.startswith(prefix + "_")])
-            used.update(matching)
-            if matching:
-                tree.append({"prefix": prefix, "label": label, "tools": matching})
-
-        remaining = sorted(all_tools - used)
-        if remaining:
-            tree.append({"prefix": "", "label": "Other", "tools": remaining})
-
+        for prefix, label in tool_tree_groups():
+            proxy = prefix_to_proxy.get(prefix)
+            if proxy is None or not hasattr(proxy, "peek_cached_names"):
+                continue
+            names = proxy.peek_cached_names(prefix)
+            if names:
+                tree.append({"prefix": prefix, "label": label, "tools": names})
         return tree
 
     def show_settings(self, _):
@@ -1344,12 +1310,15 @@ class VoittaDesktopApp(rumps.App):
         # Live Info-tab state at popup open. Subsequent updates pushed by
         # the _InfoTicker every ~3s.
         info_state = self._collect_info_state()
+        # Build the tool tree synchronously from the on-disk cache so the
+        # webview renders complete on first paint. No HTTP, no polling.
+        tool_tree = self._build_tool_tree()
         html_content = html_content.replace(
             "/*INJECT_CONFIG*/",
             f"var _initialConfig = {config_json};\n"
             f"var _initialClaudeLinked = {json.dumps(linked)};\n"
             f"var _initialInfo = {json.dumps(info_state)};\n"
-            f"var _toolTree = [];",
+            f"var _toolTree = {json.dumps(tool_tree)};",
         )
         webview.loadHTMLString_baseURL_(html_content, None)
 
@@ -1384,24 +1353,6 @@ class VoittaDesktopApp(rumps.App):
             0.1, trigger, "focus:", None, False
         )
         NSRunLoop.mainRunLoop().addTimer_forMode_(timer, "NSDefaultRunLoopMode")
-
-        # Poll MCP proxy in background, then inject tools into webview
-        def _poll_and_inject():
-            self._poll_mcp_tools()
-            tree = self._build_tool_tree()
-            js = f"_toolGroups = {json.dumps(tree)}; renderToolTree();"
-            from PyObjCTools import AppHelper
-            def _inject():
-                # Guard: skip if settings window was closed or reopened since we started
-                if self._settings_gen != gen or not self._settings_refs:
-                    return
-                wv = self._settings_refs[1]
-                try:
-                    wv.evaluateJavaScript_completionHandler_(js, None)
-                except Exception:
-                    logger.debug("Settings webview gone before tool inject")
-            AppHelper.callAfter(_inject)
-        threading.Thread(target=_poll_and_inject, daemon=True).start()
 
     def _apply_settings(self, new_config):
         """Apply new settings. Safe to call from any thread — UI updates
