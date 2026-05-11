@@ -26,6 +26,7 @@ def _default_config() -> dict:
             "image_rag_key": "",
             "paperclip_url": os.environ.get("PAPERCLIP_URL", "https://paperclip.gxl.ai/mcp"),
             "paperclip_key": "",
+            "freecad_url": os.environ.get("FREECAD_URL", "http://127.0.0.1:50005/mcp"),
         },
         "llm_proxy": {
             "port": int(os.environ.get("LLM_PROXY_PORT", "18900")),
@@ -193,6 +194,7 @@ def migrate_from_legacy(settings: dict, env_defaults: dict | None = None) -> dic
         "image_rag_key": settings.get("voitta_image_rag_key", ""),
         "paperclip_url": settings.get("paperclip_url", os.environ.get("PAPERCLIP_URL", "https://paperclip.gxl.ai/mcp")),
         "paperclip_key": settings.get("paperclip_key", ""),
+        "freecad_url": settings.get("freecad_url", os.environ.get("FREECAD_URL", "http://127.0.0.1:50005/mcp")),
     }
 
     # LLM Proxy

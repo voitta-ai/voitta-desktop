@@ -206,6 +206,7 @@ class VoittaDesktopApp(rumps.App):
         self.voitta_image_rag_key = mcp_proxy_cfg.get("image_rag_key", "")
         self.paperclip_url = mcp_proxy_cfg.get("paperclip_url", "https://paperclip.gxl.ai/mcp")
         self.paperclip_key = mcp_proxy_cfg.get("paperclip_key", "")
+        self.freecad_url = mcp_proxy_cfg.get("freecad_url", "http://127.0.0.1:50005/mcp")
         self.edit_proxy_url = mcp_proxy_cfg.get("edit_proxy_url", f"http://localhost:{GOOGLE_MCP_PORT}")
         self.mcp_proxy_port = self._resolve_port("MCP proxy", mcp_proxy_cfg.get("port", 18765))
         self.llm_proxy_port = self._resolve_port("LLM proxy", llm_proxy_cfg.get("port", 18900))
@@ -1437,6 +1438,7 @@ class VoittaDesktopApp(rumps.App):
         self.voitta_image_rag_key = mcp_proxy_cfg.get("image_rag_key", "")
         self.paperclip_url = mcp_proxy_cfg.get("paperclip_url", "https://paperclip.gxl.ai/mcp")
         self.paperclip_key = mcp_proxy_cfg.get("paperclip_key", "")
+        self.freecad_url = mcp_proxy_cfg.get("freecad_url", "http://127.0.0.1:50005/mcp")
         self.edit_proxy_url = mcp_proxy_cfg.get("edit_proxy_url", f"http://localhost:{GOOGLE_MCP_PORT}")
         self.disabled_tools = set(new_config.get("disabled_tools", []))
 

@@ -504,6 +504,14 @@
     </div>
   </div>
 
+  <h2>FreeCAD</h2>
+  <div class="card" id="freecad-card">
+    <div class="field">
+      <label>URL</label>
+      <input type="text" id="freecad_url" placeholder="http://127.0.0.1:50005/mcp">
+    </div>
+  </div>
+
   <h2>Google Workspace MCP</h2>
   <div class="card" id="google-mcp-card">
     <div class="field">
@@ -958,6 +966,7 @@ function loadProxy() {
   document.getElementById('image_rag_key').value = mcp.image_rag_key || '';
   document.getElementById('paperclip_url').value = mcp.paperclip_url || 'https://paperclip.gxl.ai/mcp';
   document.getElementById('paperclip_key').value = mcp.paperclip_key || '';
+  document.getElementById('freecad_url').value = mcp.freecad_url || 'http://127.0.0.1:50005/mcp';
   document.getElementById('llm_proxy_port').value = llm.port || '18900';
   document.getElementById('llm_upstream_url').value = llm.upstream_url || 'https://api.anthropic.com';
   document.getElementById('oauth_redirect_port').value = oauth.redirect_port || '53214';
@@ -1002,6 +1011,7 @@ function collectAll() {
     image_rag_key: document.getElementById('image_rag_key').value,
     paperclip_url: document.getElementById('paperclip_url').value,
     paperclip_key: document.getElementById('paperclip_key').value,
+    freecad_url: document.getElementById('freecad_url').value,
   };
   config.llm_proxy = {
     port: parseInt(document.getElementById('llm_proxy_port').value) || 18900,

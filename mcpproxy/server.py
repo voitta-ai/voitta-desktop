@@ -298,9 +298,15 @@ def run_mcp_proxy(app_ref, port: int, jira_mcp_port: int):
 
     simple_proxies: list[tuple[str, str, ResilientFastMCPProxy]] = []
     for b in simple_backends():
+        # Allow a config-supplied override at app_ref.<prefix>_url. Lets
+        # FreeCAD (and any future simple backend that opts in) be set via
+        # Settings → Backends, while the YAML still provides the default.
+        override = getattr(app_ref, f"{b['prefix']}_url", None)
+        url = override.strip() if isinstance(override, str) and override.strip() else b["url"]
+        headers = b.get("headers", {})
         proxy = ResilientFastMCPProxy(
-            client_factory=lambda b=b: ProxyClient(
-                StreamableHttpTransport(url=b["url"], headers=b.get("headers", {}))
+            client_factory=lambda url=url, headers=headers: ProxyClient(
+                StreamableHttpTransport(url=url, headers=headers)
             ),
             name=b["prefix"].replace("_", "-"),
             backend_name=b["label"],
@@ -308,7 +314,7 @@ def run_mcp_proxy(app_ref, port: int, jira_mcp_port: int):
             app_ref=app_ref, prefix=b["prefix"],
         )
         main_server.mount(proxy, prefix=b["prefix"])
-        simple_proxies.append((b["label"], b["url"], proxy))
+        simple_proxies.append((b["label"], url, proxy))
 
     # Expose the full list of resilient backends — (label, url, proxy) — for
     # the menu's manual "Refresh LLM Tools" popup. URLs are display-only and
