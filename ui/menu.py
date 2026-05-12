@@ -223,6 +223,8 @@ class VoittaDesktopApp(rumps.App):
                 self._rebuild_msal_for_app(app)
 
         self.disabled_tools = set(self._config.get("disabled_tools", []))
+        tools_cfg = self._config.get("tools", {})
+        self.suppress_codex_popup = bool(tools_cfg.get("suppress_codex_popup", True))
         self._mcp_tools = {}
 
         self._active_app = {}
@@ -1392,6 +1394,8 @@ class VoittaDesktopApp(rumps.App):
         self.freecad_url = mcp_proxy_cfg.get("freecad_url", "http://127.0.0.1:50005/mcp")
         self.edit_proxy_url = mcp_proxy_cfg.get("edit_proxy_url", f"http://localhost:{GOOGLE_MCP_PORT}")
         self.disabled_tools = set(new_config.get("disabled_tools", []))
+        tools_cfg = new_config.get("tools", {})
+        self.suppress_codex_popup = bool(tools_cfg.get("suppress_codex_popup", True))
 
         opt_cfg = new_config.get("optimizer", {})
         self._optimizer_pipeline.enabled = bool(opt_cfg.get("enabled", True))

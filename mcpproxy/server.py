@@ -130,6 +130,21 @@ class ToolGateMiddleware(FastMCPMiddleware):
             logger.warning("tool_gate: pass-through (%s)", client_name or "no session")
             return await call_next(context)
 
+        # Codex fast path — signs every handshake and reconnects often, so
+        # an interactive popup is friction for no security gain. When
+        # suppression is on (default), filter using the saved disabled_tools
+        # silently and skip the popup entirely. Match on the clientInfo.name
+        # prefix Codex sends ("codex-mcp-client", "codex", etc.).
+        if (getattr(self._app_ref, "suppress_codex_popup", True)
+                and isinstance(client_name, str)
+                and client_name.lower().startswith("codex")):
+            tools = await call_next(context)
+            disabled = set(getattr(self._app_ref, "disabled_tools", set()))
+            filtered = [t for t in tools if t.name not in disabled]
+            logger.info("tool_gate: codex silent pass (%d/%d tools, client=%s)",
+                        len(filtered), len(tools), client_name)
+            return filtered
+
         # Serialize popup access — second request waits for first popup to finish
         async with self._get_lock():
             # Reuse recent result within the window

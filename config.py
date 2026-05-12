@@ -63,6 +63,14 @@ def _default_config() -> dict:
             "jira_mcp_env_path": os.environ.get("JIRA_MCP_ENV_PATH", str(CONFIG_DIR / "jira.env")),
         },
         "disabled_tools": [],
+        "tools": {
+            # Codex signs its MCP handshake; we don't need to confirm tool
+            # exposure interactively every time. When True, the tool-gate
+            # popup is skipped for Codex clients and the disabled_tools list
+            # is applied silently. Other clients (Claude Code, etc.) still
+            # see the popup. Default True per user preference.
+            "suppress_codex_popup": True,
+        },
     }
 
 

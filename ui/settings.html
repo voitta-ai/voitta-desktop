@@ -597,6 +597,16 @@
 <!-- ── Tools ──────────────────────────────────────────────────────────────── -->
 <div class="tab-pane" id="tab-tools">
 
+  <h2>Client Behavior</h2>
+  <div class="card">
+    <div class="field">
+      <label></label>
+      <div class="checkboxes" style="flex-direction:column; align-items:flex-start; gap:8px;">
+        <label><input type="checkbox" id="suppress_codex_popup"> <strong>Suppress popup for Codex</strong> &nbsp;<span style="color:var(--text-secondary);">— Codex signs its handshake; apply the selection below silently instead of asking each time</span></label>
+      </div>
+    </div>
+  </div>
+
   <h2>MCP Tools</h2>
   <div class="card" id="mcp-tools-card">
     <input type="text" class="tool-filter" id="tool-filter" placeholder="Filter tools..." oninput="filterTools(this.value)">
@@ -991,6 +1001,10 @@ function loadProxy() {
   document.getElementById('tool_result_keep_turns').value = time.tool_result_keep_turns || 5;
   document.getElementById('image_keep_turns').value       = time.image_keep_turns       || 5;
   document.getElementById('thinking_keep_turns').value    = time.thinking_keep_turns    || 5;
+
+  var tools = config.tools || {};
+  // Default true — Codex signs its handshake, no need to confirm every time.
+  document.getElementById('suppress_codex_popup').checked = tools.suppress_codex_popup !== false;
 }
 
 function collectAll() {
@@ -1042,6 +1056,9 @@ function collectAll() {
     tool_result_keep_turns: Math.max(1, parseInt(document.getElementById('tool_result_keep_turns').value) || 5),
     image_keep_turns:       Math.max(1, parseInt(document.getElementById('image_keep_turns').value)       || 5),
     thinking_keep_turns:    Math.max(1, parseInt(document.getElementById('thinking_keep_turns').value)    || 5),
+  };
+  config.tools = {
+    suppress_codex_popup: document.getElementById('suppress_codex_popup').checked,
   };
   config.disabled_tools = collectDisabledTools();
   return config;
