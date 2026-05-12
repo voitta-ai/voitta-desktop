@@ -22,7 +22,8 @@ from urllib.parse import urlparse
 import objc
 import rumps
 from AppKit import (
-    NSApp, NSApplicationActivationPolicyAccessory,
+    NSApp, NSApplication,
+    NSApplicationActivationPolicyAccessory,
     NSApplicationActivationPolicyRegular,
     NSAttributedString, NSBackingStoreBuffered, NSBezierPath,
     NSColor, NSEvent, NSEventMaskKeyDown, NSEventModifierFlagCommand,
@@ -295,6 +296,12 @@ class VoittaDesktopApp(rumps.App):
         if _is_port_free(port):
             return port
 
+        # _resolve_port runs from __init__, before rumps.App.run() boots the
+        # NSApplication. PyObjC's `NSApp` resolves lazily and returns None
+        # until sharedApplication() has been called, which is why this branch
+        # crashed the first time someone hit a busy port. Materialize it now
+        # so the alert (and any subsequent NSApp.* call) work pre-run.
+        NSApplication.sharedApplication()
         NSApp.activateIgnoringOtherApps_(True)
         result = rumps.alert(
             title=f"{label} port {port} in use",
