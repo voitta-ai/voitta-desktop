@@ -380,6 +380,30 @@ def compute_breakdown(body: dict) -> BodyBreakdown:
     return bd
 
 
+def _unwrap_title_json(text: str) -> str:
+    """If `text` is Claude Code's structured ``{"title": "..."}`` message,
+    return the title string; otherwise return `text` unchanged.
+
+    Some Claude Code session-naming flows send the first user message as
+    a JSON object with a single ``title`` key. Displaying the raw JSON
+    in the conversations menu was ugly; users want to see just the title.
+    Defensive: only strips when the text is a single JSON object with a
+    non-empty string ``title``; everything else passes through.
+    """
+    stripped = text.lstrip()
+    if not stripped.startswith("{"):
+        return text
+    try:
+        obj = json.loads(stripped)
+    except (ValueError, TypeError):
+        return text
+    if isinstance(obj, dict):
+        title = obj.get("title")
+        if isinstance(title, str) and title.strip():
+            return title.strip()
+    return text
+
+
 def extract_label(body: dict) -> str:
     """Extract conversation label from the first real user message."""
     messages = body.get("messages", [])
@@ -388,13 +412,13 @@ def extract_label(body: dict) -> str:
             continue
         content = msg.get("content", "")
         if isinstance(content, str):
-            text = clean_text(content)
+            text = clean_text(_unwrap_title_json(content))
             if text and not is_system_junk(text):
                 return truncate(text, 60)
         elif isinstance(content, list):
             for item in content:
                 if isinstance(item, dict) and item.get("type") == "text":
-                    text = clean_text(item.get("text", ""))
+                    text = clean_text(_unwrap_title_json(item.get("text", "")))
                     if text and not is_system_junk(text):
                         return truncate(text, 60)
     return "conversation"
