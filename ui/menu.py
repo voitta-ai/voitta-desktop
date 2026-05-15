@@ -10,16 +10,11 @@ import atexit
 import json
 import logging
 import os
-import socket
-import subprocess
 import sys
 import threading
 import time
-import traceback
 from pathlib import Path
-from urllib.parse import urlparse
 
-import objc
 import rumps
 from AppKit import (
     NSApp, NSApplication,
@@ -35,15 +30,13 @@ from AppKit import (
     NSWindow, NSWindowStyleMaskTitled, NSWindowStyleMaskClosable,
     NSScreen,
 )
-from Foundation import NSMakeRect, NSObject, NSTimer, NSRunLoop
-from WebKit import WKWebView, WKWebViewConfiguration, WKWebsiteDataStore
+from WebKit import WKWebView
 
-from auth.jira import fetch_jira_projects
 from config import (
     load_config, save_config, migrate_from_legacy, apps_for_backend,
     CONFIG_PATH, CONFIG_DIR,
 )
-from middleware import ConversationTracker, RequestLogger, BlockType, Turn
+from middleware import ConversationTracker, RequestLogger
 from middleware.cache_sim import CacheSimulator
 from optimizers import OptimizerPipeline
 from optimizers.bash_compress import BashCompressor
