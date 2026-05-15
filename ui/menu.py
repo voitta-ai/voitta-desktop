@@ -226,6 +226,8 @@ class VoittaDesktopApp(rumps.App):
         self.disabled_tools = set(self._config.get("disabled_tools", []))
         tools_cfg = self._config.get("tools", {})
         self.suppress_codex_popup = bool(tools_cfg.get("suppress_codex_popup", True))
+        link_cfg = self._config.get("claude_link", {})
+        self.claude_link_armed = bool(link_cfg.get("armed", False))
         self._mcp_tools = {}
 
         self._active_app = {}
@@ -283,6 +285,13 @@ class VoittaDesktopApp(rumps.App):
         # Start background servers
         threading.Thread(target=self._run_llm_proxy, daemon=True).start()
         threading.Thread(target=self._run_mcp_proxy, daemon=True).start()
+
+        # Claude link lifecycle: re-arm now if user intent says so; register
+        # the disarm hook for graceful shutdown (atexit) AND for force-quit
+        # via the dock/Cmd-Q path (NSApplicationWillTerminate is delivered
+        # synchronously to atexit handlers by rumps.quit_application).
+        self._rearm_claude_link_if_intended()
+        atexit.register(self._disarm_claude_link_on_quit)
 
     def _resolve_port(self, label: str, port: int) -> int:
         """If `port` is taken, ask the user whether to switch to an
@@ -879,6 +888,56 @@ class VoittaDesktopApp(rumps.App):
                 except subprocess.TimeoutExpired:
                     proc.kill()
 
+    # ── Claude link arm/disarm lifecycle ─────────────────────────────────────
+    #
+    # User intent (claude_link.armed in apps.json) is set/cleared by the
+    # Connect/Disconnect button. While we're running, we *enforce* that
+    # intent: on start, re-arm if intent==True and we're not already wired;
+    # on quit, disarm regardless of current state. A crash/SIGKILL leaves
+    # Claude armed for one session — next start re-evaluates and converges.
+
+    def _rearm_claude_link_if_intended(self):
+        """Re-wire ~/.claude/settings.json at startup if the user's last
+        recorded intent was 'armed'. Idempotent: skips if already wired."""
+        if not self.claude_link_armed:
+            return
+        try:
+            from claude_link import (
+                load_claude_settings, is_voitta_connected,
+                plan_connect, apply_changes,
+            )
+            cfg = load_claude_settings()
+            if is_voitta_connected(cfg, self.llm_proxy_port):
+                return  # nothing to do — already armed
+            plan = plan_connect(cfg, self.llm_proxy_port, self.llm_upstream_url)
+            if plan.is_noop:
+                return
+            apply_changes(plan)
+            logger.info("claude_link: re-armed on startup")
+        except Exception as e:
+            logger.warning("claude_link: re-arm failed: %s", e)
+
+    def _disarm_claude_link_on_quit(self):
+        """Strip Voitta from ~/.claude/settings.json on quit. Best-effort —
+        never raises (any failure is logged and swallowed so it can't block
+        shutdown). Always runs, regardless of the armed flag, so a user who
+        force-quit after toggling Disconnect still gets a clean settings.json."""
+        try:
+            from claude_link import (
+                load_claude_settings, is_voitta_connected,
+                plan_disconnect, apply_changes,
+            )
+            cfg = load_claude_settings()
+            if not is_voitta_connected(cfg, self.llm_proxy_port):
+                return  # not wired, nothing to strip
+            plan = plan_disconnect(cfg, self.llm_proxy_port)
+            if plan.is_noop:
+                return
+            apply_changes(plan)
+            logger.info("claude_link: disarmed on quit")
+        except Exception as e:
+            logger.warning("claude_link: disarm failed: %s", e)
+
     # ── Background servers ───────────────────────────────────────────────────
 
     def _run_llm_proxy(self):
@@ -1439,6 +1498,8 @@ class VoittaDesktopApp(rumps.App):
         self.disabled_tools = set(new_config.get("disabled_tools", []))
         tools_cfg = new_config.get("tools", {})
         self.suppress_codex_popup = bool(tools_cfg.get("suppress_codex_popup", True))
+        link_cfg = new_config.get("claude_link", {})
+        self.claude_link_armed = bool(link_cfg.get("armed", False))
 
         opt_cfg = new_config.get("optimizer", {})
         self._optimizer_pipeline.enabled = bool(opt_cfg.get("enabled", True))
@@ -1639,6 +1700,13 @@ class VoittaDesktopApp(rumps.App):
                 logger.error("Claude link apply failed: %s", e, exc_info=True)
                 _notify("Voitta Desktop", "Claude link failed", str(e)[:200])
                 return
+
+            # Record the user's intent. Connect → armed=True so the next
+            # start auto-arms after quit-time disarm; Disconnect → armed=False
+            # so quit stops touching settings.json.
+            self.claude_link_armed = (plan.target == "connect")
+            self._config.setdefault("claude_link", {})["armed"] = self.claude_link_armed
+            save_config(self._config)
 
             # Inherited upstream goes into apps.json + the live proxy. The
             # llm_proxy_port hasn't changed, so the running proxy keeps its

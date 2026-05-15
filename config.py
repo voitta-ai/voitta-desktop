@@ -71,6 +71,14 @@ def _default_config() -> dict:
             # see the popup. Default True per user preference.
             "suppress_codex_popup": True,
         },
+        "claude_link": {
+            # Tracks user intent for the Connect Claude button. Set True the
+            # first time the user clicks Connect; cleared when they click
+            # Disconnect. On quit we disarm ~/.claude/settings.json; on next
+            # launch we re-arm if this is True. Lets the user keep Voitta in
+            # the loop only while Voitta is running.
+            "armed": False,
+        },
     }
 
 
