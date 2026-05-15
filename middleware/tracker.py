@@ -326,8 +326,13 @@ class ConversationTracker(Middleware):
         self._dump_conv_debug(conv, response_chars)
 
     def _dump_conv_debug(self, conv, response_chars: dict):
-        logs_dir = Path(__file__).parent.parent / "logs"
-        logs_dir.mkdir(exist_ok=True)
+        # Always write to the user-writable log dir. The previous form,
+        # Path(__file__).parent.parent / "logs", resolved to the dev tree
+        # when running from source AND to inside the signed .app bundle when
+        # running from the installed copy — the latter is read-only and fails
+        # silently. Both paths now converge on ~/.voitta-desktop/logs/.
+        logs_dir = Path.home() / ".voitta-desktop" / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
         safe_id = re.sub(r'[^a-zA-Z0-9_-]', '_', conv.id)[:60]
         path = logs_dir / f"conv_{safe_id}.json"
 

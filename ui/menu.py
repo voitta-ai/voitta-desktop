@@ -825,10 +825,22 @@ class VoittaDesktopApp(rumps.App):
     def _start_mcp_subprocesses(self):
         self._subprocesses = []
 
+        # Bundle launchctl strips PATH to the minimal /usr/bin:/bin:/usr/sbin:/sbin,
+        # so Homebrew-installed tools (uv, uvx) aren't found. Extend PATH with
+        # the standard install locations before launching subprocesses. CLI dev
+        # already has these, so no-op there.
+        extra_path = ":".join([
+            "/opt/homebrew/bin",   # arm64 Homebrew
+            "/usr/local/bin",      # x86_64 Homebrew / manual installs
+            os.path.expanduser("~/.local/bin"),
+            os.path.expanduser("~/.cargo/bin"),
+        ])
+        base_env = {**os.environ, "PATH": f"{extra_path}:{os.environ.get('PATH', '')}"}
+
         if Path(GOOGLE_MCP_DIR).is_dir():
             try:
                 google_port = str(urlparse(self.edit_proxy_url).port or GOOGLE_MCP_PORT)
-                env = {**os.environ, "PORT": google_port}
+                env = {**base_env, "PORT": google_port}
                 proc = subprocess.Popen(
                     ["uv", "run", "main.py", "--transport", "streamable-http"],
                     cwd=GOOGLE_MCP_DIR, env=env,
@@ -848,7 +860,7 @@ class VoittaDesktopApp(rumps.App):
                         "--port", str(JIRA_MCP_PORT),
                         "--env-file", JIRA_MCP_ENV_PATH,
                     ],
-                    cwd=JIRA_MCP_DIR,
+                    cwd=JIRA_MCP_DIR, env=base_env,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )
                 self._subprocesses.append(proc)
@@ -1272,6 +1284,30 @@ class VoittaDesktopApp(rumps.App):
         return tree
 
     def show_settings(self, _):
+        """Menu callback. rumps swallows exceptions raised in callbacks, so
+        any path/attribute/import failure inside ``_show_settings`` would
+        produce a silent click with no window. Wrap once and surface to the
+        log + an alert so the bundle doesn't appear to do nothing."""
+        try:
+            self._show_settings()
+        except Exception as e:
+            logger.exception("show_settings failed: %s", e)
+            try:
+                rumps.alert(
+                    title="Settings failed to open",
+                    message=(
+                        f"{type(e).__name__}: {e}\n\n"
+                        f"Details written to:\n"
+                        f"~/.voitta-desktop/logs/desktop.log"
+                    ),
+                    ok="OK",
+                )
+            except Exception:
+                # If even the alert fails (rare; usually means NSApp isn't up
+                # yet), at least the log line above already landed.
+                pass
+
+    def _show_settings(self):
         # Prevent double-open: if window still exists, just bring it forward
         if hasattr(self, "_settings_refs") and self._settings_refs:
             win = self._settings_refs[0]
