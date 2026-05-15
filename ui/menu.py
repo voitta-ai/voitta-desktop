@@ -161,7 +161,6 @@ class VoittaDesktopApp(
         # Build menu
         self._menu_items = {}
         self._conv_menus: dict[str, rumps.MenuItem] = {}
-        self._conv_block_counts: dict[str, int] = {}
         self._build_menu()
         self._update_auth_state()
         self._install_edit_shortcuts()

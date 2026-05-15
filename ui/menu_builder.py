@@ -6,7 +6,7 @@ titles. Host attributes consumed:
 
   self.mcp_proxy_port, self.llm_proxy_port, self._config, self._auth,
   self._optimizer_pipeline, self._noop, self._active_app,
-  self._menu_items, self._conv_menus, self._conv_block_counts,
+  self._menu_items, self._conv_menus,
   self._is_active, self._deauth_app, self._do_auth, self._set_active,
   self._toggle_optimizer, self._show_llm_tools_status, self.show_settings,
   self.show_help, self._quit.
@@ -121,7 +121,6 @@ class MenuBuilderMixin:
     def _rebuild_menu(self):
         self._menu_items = {}
         self._conv_menus = {}
-        self._conv_block_counts = {}
         self.menu.clear()
         self._build_menu()
 

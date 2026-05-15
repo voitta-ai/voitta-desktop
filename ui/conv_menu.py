@@ -1,14 +1,13 @@
-"""Conversation submenu + per-conversation chart popup for VoittaDesktopApp.
+"""Conversation menu entries + per-conversation chart popup.
 
 Extracted from menu.py as a mixin. Owns ``_update_conversations``,
-``_build_conv_submenu``, ``_show_conv_popup``, ``_populate_turns``,
-``_populate_blocks``. Reaches the host via ``self._tracker``,
-``self._optimizer_pipeline``, ``self._cache_sim``, ``self._conv_menus``,
-``self._conv_block_counts``, ``self._conv_header``, ``self._fmt_chars``,
-``self._fmt_tokens``, ``self._noop``, and the rumps ``self.menu``.
+``_build_conv_item``, and ``_show_conv_popup``. Reaches the host via
+``self._tracker``, ``self._optimizer_pipeline``, ``self._cache_sim``,
+``self._conv_menus``, ``self._conv_header``, ``self._fmt_tokens``,
+and the rumps ``self.menu``.
 
-BLOCK_ICONS lives here (not menu.py) because _populate_blocks is the
-only consumer; the previous duplicate definition in menu.py is removed.
+Each conversation is a single top-level menu item whose click opens the
+chart popup — no submenu drilldown.
 """
 from __future__ import annotations
 
@@ -20,22 +19,11 @@ from AppKit import (
 from Foundation import NSMakeRect
 from WebKit import WKWebView, WKWebViewConfiguration, WKWebsiteDataStore
 
-from middleware import BlockType, Turn
 from ui.chart import generate_chart_html
-
-BLOCK_ICONS = {
-    BlockType.USER_TEXT:         "▶ ",
-    BlockType.ASSISTANT_TEXT:    "◀ ",
-    BlockType.THINKING:          "◆ ",
-    BlockType.TOOL_CALL:         "⚙ ",
-    BlockType.TOOL_RESULT:       "  ↳ ",
-    BlockType.MCP_TOOL_CALL:     "⚡ ",
-    BlockType.SERVER_TOOL_CALL:  "☁ ",
-}
 
 
 class ConvMenuMixin:
-    """Mixin: conversation submenu + chart popup methods."""
+    """Mixin: conversation menu entries + chart popup."""
 
     def _update_conversations(self):
         convs = self._tracker.get_conversations_sorted()
@@ -47,7 +35,6 @@ class ConvMenuMixin:
             except KeyError:
                 pass
             del self._conv_menus[cid]
-            self._conv_block_counts.pop(cid, None)
 
         if not convs or not any(c.turns for c in convs):
             return
@@ -62,34 +49,32 @@ class ConvMenuMixin:
                 cache_info = f" cache:{cache_pct}%"
 
             title = f"{conv.label}  [{tokens}{cache_info}] ×{conv.request_count}"
-            block_count = sum(len(t.blocks) for t in conv.turns)
 
             if conv.id in self._conv_menus:
                 old_item = self._conv_menus[conv.id]
-                old_block_count = self._conv_block_counts.get(conv.id, 0)
-                if old_item.title != title or block_count != old_block_count:
+                if old_item.title != title:
                     try:
                         del self.menu[old_item.title]
                     except KeyError:
                         pass
-                    new_item = self._build_conv_submenu(conv, title)
+                    new_item = self._build_conv_item(conv, title)
                     self._conv_menus[conv.id] = new_item
-                    self._conv_block_counts[conv.id] = block_count
                     self.menu.insert_after(prev, new_item)
             else:
-                new_item = self._build_conv_submenu(conv, title)
+                new_item = self._build_conv_item(conv, title)
                 self._conv_menus[conv.id] = new_item
-                self._conv_block_counts[conv.id] = block_count
                 self.menu.insert_after(prev, new_item)
 
             prev = self._conv_menus[conv.id].title
 
-    def _build_conv_submenu(self, conv, title: str) -> rumps.MenuItem:
-        submenu = rumps.MenuItem(title, callback=self._show_conv_popup)
-        submenu._conv_label = conv.label
-        submenu._conv_id = conv.id
-        self._populate_turns(submenu, conv)
-        return submenu
+    def _build_conv_item(self, conv, title: str) -> rumps.MenuItem:
+        """Build a flat conversation menu entry: clicking opens the chart popup,
+        no submenu children. rumps fires the callback only when a MenuItem has
+        no children, which is exactly the behaviour we want here."""
+        item = rumps.MenuItem(title, callback=self._show_conv_popup)
+        item._conv_label = conv.label
+        item._conv_id = conv.id
+        return item
 
     def _show_conv_popup(self, sender):
         conv_label = getattr(sender, '_conv_label', 'Conversation')
@@ -214,70 +199,3 @@ class ConvMenuMixin:
         if not hasattr(self, '_popup_windows'):
             self._popup_windows = []
         self._popup_windows.append(window)
-
-    def _populate_turns(self, menu_item: rumps.MenuItem, conv):
-        open_item = rumps.MenuItem(f"open_{conv.id}", callback=self._show_conv_popup)
-        open_item.title = "Open conversation details…"
-        open_item._conv_label = conv.label
-        open_item._conv_id = conv.id
-        menu_item[f"open_{conv.id}"] = open_item
-
-        sep = rumps.MenuItem(f"sep_{conv.id}")
-        sep.title = "─" * 40
-        sep.set_callback(self._noop)
-        menu_item[f"sep_{conv.id}"] = sep
-
-        bd = conv.breakdown
-        if bd:
-            bd_item = rumps.MenuItem(f"bd_{id(bd)}")
-            prompt = self._fmt_chars(bd.system_prompt_chars)
-            tools = self._fmt_chars(bd.tools_chars)
-            msgs = self._fmt_chars(bd.messages_chars)
-            bd_item.title = f"Request overhead: {self._fmt_chars(bd.total_chars)} total — prompt {prompt} / tools {tools} / messages {msgs}"
-
-            sys_item = rumps.MenuItem(f"sys_{id(bd)}")
-            sys_item.title = f"System prompt: {self._fmt_chars(bd.system_prompt_chars)}"
-            for i, (preview, chars) in enumerate(bd.system_blocks):
-                si = rumps.MenuItem(f"sb_{i}_{id(bd)}")
-                si.title = f"[{self._fmt_chars(chars)}] {preview}"
-                si.set_callback(self._noop)
-                sys_item[f"sb_{i}_{id(bd)}"] = si
-            bd_item[f"sys_{id(bd)}"] = sys_item
-
-            tools_item = rumps.MenuItem(f"tools_{id(bd)}")
-            tools_item.title = f"Tools: {bd.tools_count} tools, {self._fmt_chars(bd.tools_chars)}"
-            for gi, group in enumerate(bd.tool_groups):
-                group_item = rumps.MenuItem(f"tg_{gi}_{id(bd)}")
-                group_item.title = f"{group.prefix}: {group.count} tools, {self._fmt_chars(group.total_chars)}"
-                for ti, (name, chars) in enumerate(group.tools):
-                    tool_item = rumps.MenuItem(f"tl_{gi}_{ti}_{id(bd)}")
-                    tool_item.title = f"[{self._fmt_chars(chars)}] {name}"
-                    tool_item.set_callback(self._noop)
-                    group_item[f"tl_{gi}_{ti}_{id(bd)}"] = tool_item
-                tools_item[f"tg_{gi}_{id(bd)}"] = group_item
-            bd_item[f"tools_{id(bd)}"] = tools_item
-
-            menu_item[f"bd_{id(bd)}"] = bd_item
-
-        for turn in conv.turns:
-            in_chars = self._fmt_chars(turn.chars_in)
-            out_chars = self._fmt_chars(turn.chars_out)
-            key = f"t{turn.index}_{id(turn)}"
-            turn_item = rumps.MenuItem(key)
-            turn_item.title = f"[{in_chars}/{out_chars}]  {turn.label}"
-            self._populate_blocks(turn_item, turn)
-            menu_item[key] = turn_item
-
-    def _populate_blocks(self, menu_item: rumps.MenuItem, turn: Turn):
-        for i, block in enumerate(turn.blocks):
-            icon = BLOCK_ICONS.get(block.block_type, "  ")
-            token_info = ""
-            if block.input_tokens:
-                token_info += f"  in:{self._fmt_tokens(block.input_tokens)}"
-            if block.output_tokens:
-                token_info += f"  out:{self._fmt_tokens(block.output_tokens)}"
-            key = f"b{i}_{id(block)}"
-            item = rumps.MenuItem(key)
-            item.title = f"{icon}{block.summary}{token_info}"
-            item.set_callback(self._noop)
-            menu_item[key] = item
