@@ -15,6 +15,20 @@ from pathlib import Path
 _TEMPLATE_PATH = Path(__file__).parent / "chart_template.html"
 
 
+def _safe_json(value) -> str:
+    """JSON-encode for inclusion inside an HTML <script> block.
+
+    Escapes ``</`` as ``<\\/`` — a JSON string containing ``</script>``
+    would otherwise terminate the surrounding ``<script>`` tag and the rest
+    of the data would render as page text (exactly the symptom users hit
+    when a tool result captured HTML source containing ``</script>``).
+    ``\\/`` is equivalent to ``/`` per JSON 7159 §7 (and the JS HTML5 spec
+    explicitly allows it), so the parsed value is unchanged in both
+    Python's ``json.loads`` and the browser's ``JSON.parse``.
+    """
+    return json.dumps(value).replace("</", "<\\/")
+
+
 def generate_chart_html(
     title: str | None,
     breakdown: dict,
@@ -46,9 +60,9 @@ def generate_chart_html(
     title_div = f'<div class="title">{title}</div>' if title else ""
     data_script = (
         "<script>"
-        f"const _BREAKDOWN = {json.dumps(breakdown)};"
-        f"const _TURNS = {json.dumps(turns)};"
-        f"const _ACTIVE_OPT = {json.dumps(active_optimizers)};"
+        f"const _BREAKDOWN = {_safe_json(breakdown)};"
+        f"const _TURNS = {_safe_json(turns)};"
+        f"const _ACTIVE_OPT = {_safe_json(active_optimizers)};"
         "</script>"
     )
 

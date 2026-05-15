@@ -37,6 +37,7 @@ from WebKit import WKWebView
 
 from config import save_config
 from optimizers import model_family  # used by _collect_info_state
+from ui.chart import _safe_json
 from ui._native import (
     _notify, _show_modal, _FocusTrigger, _InfoTicker, _SettingsTitleObserver,
 )
@@ -147,7 +148,6 @@ class SettingsWindowMixin:
         ui_dir = Path(__file__).parent
         html_content = (ui_dir / "settings.html").read_text(encoding="utf-8")
         js_body = (ui_dir / "settings.js").read_text(encoding="utf-8")
-        config_json = json.dumps(self._config)
         # Inject the live Claude-link state so the bottom-left button shows
         # the correct label the moment the window opens.
         from claude_link import load_claude_settings, is_voitta_connected
@@ -158,12 +158,14 @@ class SettingsWindowMixin:
         # Build the tool tree synchronously from the on-disk cache so the
         # webview renders complete on first paint. No HTTP, no polling.
         tool_tree = self._build_tool_tree()
+        # _safe_json escapes "</" so a user-pasted token containing
+        # "</script>" can't terminate the surrounding <script> tag.
         html_content = html_content.replace(
             "/*INJECT_CONFIG*/",
-            f"var _initialConfig = {config_json};\n"
-            f"var _initialClaudeLinked = {json.dumps(linked)};\n"
-            f"var _initialInfo = {json.dumps(info_state)};\n"
-            f"var _toolTree = {json.dumps(tool_tree)};\n"
+            f"var _initialConfig = {_safe_json(self._config)};\n"
+            f"var _initialClaudeLinked = {_safe_json(linked)};\n"
+            f"var _initialInfo = {_safe_json(info_state)};\n"
+            f"var _toolTree = {_safe_json(tool_tree)};\n"
             + js_body,
         )
         webview.loadHTMLString_baseURL_(html_content, None)
