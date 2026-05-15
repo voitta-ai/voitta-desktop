@@ -1403,9 +1403,12 @@ class VoittaDesktopApp(rumps.App):
         webview.setAutoresizingMask_(18)
         window.contentView().addSubview_(webview)
 
-        # Load HTML immediately with empty tool tree — tools injected after poll
-        html_path = Path(__file__).parent / "settings.html"
-        html_content = html_path.read_text(encoding="utf-8")
+        # Load HTML immediately with the live state injected. JS body lives
+        # in a sibling settings.js — we read it here and stitch it into the
+        # single <script>/*INJECT_CONFIG*/</script> placeholder.
+        ui_dir = Path(__file__).parent
+        html_content = (ui_dir / "settings.html").read_text(encoding="utf-8")
+        js_body = (ui_dir / "settings.js").read_text(encoding="utf-8")
         config_json = json.dumps(self._config)
         # Inject the live Claude-link state so the bottom-left button shows
         # the correct label the moment the window opens.
@@ -1422,7 +1425,8 @@ class VoittaDesktopApp(rumps.App):
             f"var _initialConfig = {config_json};\n"
             f"var _initialClaudeLinked = {json.dumps(linked)};\n"
             f"var _initialInfo = {json.dumps(info_state)};\n"
-            f"var _toolTree = {json.dumps(tool_tree)};",
+            f"var _toolTree = {json.dumps(tool_tree)};\n"
+            + js_body,
         )
         webview.loadHTMLString_baseURL_(html_content, None)
 
