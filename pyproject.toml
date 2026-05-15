@@ -39,6 +39,7 @@ sources = [
     "src/voitta_desktop",
     "app.py",
     "config.py",
+    "claude_link.py",
     "auth",
     "mcpproxy",
     "middleware",
