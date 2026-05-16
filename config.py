@@ -8,6 +8,164 @@ from pathlib import Path
 CONFIG_DIR = Path.home() / ".voitta_desktop"
 CONFIG_PATH = CONFIG_DIR / "apps.json"
 
+
+# ── MCP servers (the new editable list) ──────────────────────────────────────
+#
+# Each entry:
+#   id           uuid
+#   name         human-visible label (e.g. "Enterprise Voitta MCP")
+#   prefix       tool-name namespace ("vim", "voitta_rag", …) — fully editable
+#   description  surfaced to the LLM via the unified instructions block
+#   kind         "http" | "subprocess"
+#   url          (kind=http) HTTP endpoint
+#   subprocess   (kind=subprocess) {template, cwd, env_path, port}
+#                  template ∈ {"google_mcp", "jira_mcp"} — pins the command shape
+#   auth         {type, …}
+#                  type ∈ {none, bearer, api_key, basic, custom_headers,
+#                          oauth_app, voitta_rag_legacy}
+
+
+def _default_mcp_servers() -> list[dict]:
+    """Single factory-default MCP server for fresh installs — the user
+    can wire everything else from Settings → MCPs."""
+    return [{
+        "id": str(uuid.uuid4()),
+        "name": "Enterprise Voitta MCP",
+        "prefix": "vim",
+        "description": "Enterprise Voitta MCP — image RAG, search, retrieval",
+        "kind": "http",
+        "url": "https://enterprise.voitta.ai/mcp",
+        "auth": {"type": "bearer", "token": ""},
+    }]
+
+
+def _migrate_mcp_servers(cfg: dict) -> bool:
+    """Build mcp_servers list from the legacy hardcoded shape if absent.
+
+    Reads URLs / API keys from cfg.mcp_proxy and subprocess parameters
+    from cfg.mcp_subprocess, then writes a unified list. Idempotent:
+    returns False (and does nothing) if mcp_servers already exists.
+
+    The legacy fields are left in place after migration so a rollback to
+    an older Voitta Desktop build is still functional — they're just no
+    longer read by the new code path.
+    """
+    existing = cfg.get("mcp_servers")
+    if isinstance(existing, list) and existing:
+        return False
+
+    mp = cfg.get("mcp_proxy", {})
+    sub = cfg.get("mcp_subprocess", {})
+    servers: list[dict] = []
+
+    # Voitta RAG — keep the legacy multi-app X-Auth-Token-* scheme.
+    rag_url = mp.get("rag_url", "").strip()
+    if rag_url:
+        servers.append({
+            "id": str(uuid.uuid4()),
+            "name": "Voitta RAG",
+            "prefix": "voitta_rag",
+            "description": "RAG search, memory, file retrieval",
+            "kind": "http",
+            "url": f"{rag_url.rstrip('/')}/mcp/mcp",
+            "auth": {"type": "voitta_rag_legacy"},
+        })
+
+    # Enterprise Voitta MCP (was "Image RAG").
+    image_rag_url = mp.get("image_rag_url", "").strip() or "https://enterprise.voitta.ai/mcp"
+    servers.append({
+        "id": str(uuid.uuid4()),
+        "name": "Enterprise Voitta MCP",
+        "prefix": "vim",
+        "description": "Enterprise Voitta MCP — image RAG, search, retrieval",
+        "kind": "http",
+        "url": image_rag_url,
+        "auth": {"type": "bearer", "token": mp.get("image_rag_key", "")},
+    })
+
+    # Paperclip.
+    paperclip_url = mp.get("paperclip_url", "").strip()
+    if paperclip_url:
+        servers.append({
+            "id": str(uuid.uuid4()),
+            "name": "Paperclip",
+            "prefix": "paperclip",
+            "description": "Paperclip biomedical paper search (8M+ papers)",
+            "kind": "http",
+            "url": paperclip_url,
+            "auth": {
+                "type": "api_key",
+                "header": "X-API-Key",
+                "value": mp.get("paperclip_key", ""),
+            },
+        })
+
+    # Ex-YAML simple backends (PPTX, PubMed, FreeCAD).
+    servers.append({
+        "id": str(uuid.uuid4()),
+        "name": "PPTX",
+        "prefix": "voitta_pptx",
+        "description": "PowerPoint slide rendering",
+        "kind": "http",
+        "url": "http://192.168.88.212:8001/mcp",
+        "auth": {"type": "none"},
+    })
+    servers.append({
+        "id": str(uuid.uuid4()),
+        "name": "PubMed",
+        "prefix": "pubmed",
+        "description": "PubMed literature search & memory",
+        "kind": "http",
+        "url": "http://192.168.88.210:8000/mcp/mcp",
+        "auth": {
+            "type": "custom_headers",
+            "headers": [{"name": "X-User-Name", "value": "roman"}],
+        },
+    })
+    servers.append({
+        "id": str(uuid.uuid4()),
+        "name": "FreeCAD",
+        "prefix": "freecad",
+        "description": "FreeCAD CAD manipulation",
+        "kind": "http",
+        "url": mp.get("freecad_url", "").strip() or "http://127.0.0.1:50005/mcp",
+        "auth": {"type": "none"},
+    })
+
+    # Subprocess-launched servers — Google Workspace + Jira.
+    servers.append({
+        "id": str(uuid.uuid4()),
+        "name": "Google Workspace",
+        "prefix": "google_workspace",
+        "description": "Google Workspace (Gmail, Drive, Sheets, Docs, Calendar)",
+        "kind": "subprocess",
+        "subprocess": {
+            "template": "google_mcp",
+            "cwd": sub.get("google_mcp_dir", "~/DEVEL/google_workspace_mcp"),
+            "env_path": sub.get("google_mcp_env_path", "~/DEVEL/google_workspace_mcp/.env"),
+            "port": int(sub.get("google_mcp_port", 18766)),
+        },
+        "auth": {"type": "oauth_app", "backend": "google_workspace", "app_type": "google"},
+    })
+    servers.append({
+        "id": str(uuid.uuid4()),
+        "name": "Jira",
+        "prefix": "jira",
+        "description": "Jira issues, sprints, boards",
+        "kind": "subprocess",
+        "subprocess": {
+            "template": "jira_mcp",
+            "cwd": sub.get("jira_mcp_dir", "~/DEVEL/mcp-atlassian"),
+            "env_path": sub.get("jira_mcp_env_path", str(CONFIG_DIR / "jira.env")),
+            "port": int(sub.get("jira_mcp_port", 18767)),
+        },
+        "auth": {"type": "none"},
+    })
+
+    cfg["mcp_servers"] = servers
+    return True
+
+
 def _default_config() -> dict:
     """Build defaults from environment variables — no hardcoded ports."""
     return {
@@ -79,6 +237,7 @@ def _default_config() -> dict:
             # the loop only while Voitta is running.
             "armed": False,
         },
+        "mcp_servers": _default_mcp_servers(),
     }
 
 
@@ -102,11 +261,18 @@ def load_config() -> dict:
         # Migrate: rename "proxy" -> "mcp_proxy" if old config
         if "proxy" in data and "mcp_proxy" not in data:
             data["mcp_proxy"] = data.pop("proxy")
+        # If the loaded config predates the unified mcp_servers list, build
+        # it from the legacy mcp_proxy / mcp_subprocess shape BEFORE backfill
+        # plants the single-entry factory default. Idempotent — no-op once
+        # the list is populated.
+        migrated = _migrate_mcp_servers(data)
         # Backfill missing top-level + nested keys from env-derived defaults.
         # Saved values win — env only seeds new/missing fields. The Settings
         # window is the single source of truth; .env merely provides initial
         # values on first run.
         _deep_backfill(data, defaults)
+        if migrated:
+            save_config(data)
         return data
     except Exception:
         return defaults
