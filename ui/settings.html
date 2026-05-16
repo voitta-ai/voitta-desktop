@@ -68,21 +68,37 @@
     flex: 1;
     font-weight: 600;
     font-size: 14px;
-    border: none;
-    background: transparent;
-    color: var(--text);
-    outline: none;
-    padding: 2px 0;
-  }
-  .card-header select {
-    font-size: 12px;
-    padding: 3px 8px;
-    border-radius: 6px;
     border: 1px solid var(--input-border);
     background: var(--input-bg);
     color: var(--text);
-    cursor: pointer;
+    outline: none;
+    padding: 5px 8px;
+    border-radius: 6px;
   }
+  .card-header input[type="text"]:focus {
+    border-color: var(--accent, #2997ff);
+  }
+  /* Native <select> picks up the system blue / light theme on macOS unless
+     we restyle it. The `appearance: none` strips the native chevron; we
+     paint our own as an inline SVG background so the control matches the
+     rest of the form. */
+  select,
+  .card-header select,
+  .field select {
+    font-size: 12px;
+    padding: 5px 28px 5px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--input-border);
+    background: var(--input-bg) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='%2386868b' d='M0 0l5 6 5-6z'/></svg>") no-repeat right 8px center;
+    color: var(--text);
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  .field select { flex: 1; }
+  select:focus { outline: none; border-color: var(--accent, #2997ff); }
   .field {
     display: flex;
     align-items: center;
