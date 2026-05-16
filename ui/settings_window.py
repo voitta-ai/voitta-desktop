@@ -11,8 +11,7 @@ The host (VoittaDesktopApp) needs to expose:
   self._optimizer_pipeline, self._mcp_backends, self._bash_compressor,
   self._tool_result_optimizer, self._image_optimizer, self._thinking_optimizer,
   self.disabled_tools, self.suppress_codex_popup, self.claude_link_armed,
-  self.voitta_rag_url, self.voitta_image_rag_url, self.voitta_image_rag_key,
-  self.paperclip_url, self.paperclip_key, self.freecad_url, self.edit_proxy_url,
+  self.mcp_servers, self.edit_proxy_url,
   self.llm_proxy_port, self.mcp_proxy_port, self.llm_upstream_url,
   self._init_active_defaults, self._sync_edit_mcp_env, self._sync_jira_mcp_env,
   self._rebuild_msal_for_app, self._deauth_app, self._rebuild_menu,
@@ -235,12 +234,6 @@ class SettingsWindowMixin:
 
         mcp_proxy_cfg = new_config.get("mcp_proxy", {})
         self.mcp_servers = list(new_config.get("mcp_servers", []))
-        self.voitta_rag_url = mcp_proxy_cfg.get("rag_url", "https://rag.voitta.ai")
-        self.voitta_image_rag_url = mcp_proxy_cfg.get("image_rag_url", "https://rag-img.voitta.ai/mcp")
-        self.voitta_image_rag_key = mcp_proxy_cfg.get("image_rag_key", "")
-        self.paperclip_url = mcp_proxy_cfg.get("paperclip_url", "https://paperclip.gxl.ai/mcp")
-        self.paperclip_key = mcp_proxy_cfg.get("paperclip_key", "")
-        self.freecad_url = mcp_proxy_cfg.get("freecad_url", "http://127.0.0.1:50005/mcp")
         # edit_proxy_url default: derive from the google_mcp subprocess entry.
         _google_servers = [
             s for s in self.mcp_servers

@@ -83,16 +83,10 @@ class VoittaDesktopApp(
         llm_proxy_cfg = self._config.get("llm_proxy", {})
 
         # Unified list of editable MCP backends — server.py + lifecycle drive
-        # everything off this. Legacy mcp_proxy.* fields are still loaded for
-        # the show_help text and for back-compat with anything that hasn't
-        # migrated yet, but they're no longer the source of truth.
+        # everything off this. The legacy mcp_proxy URL/key fields and the
+        # mcp_subprocess block are still present in apps.json (kept for
+        # rollback safety) but no code reads them anymore.
         self.mcp_servers = list(self._config.get("mcp_servers", []))
-        self.voitta_rag_url = mcp_proxy_cfg.get("rag_url", "https://rag.voitta.ai")
-        self.voitta_image_rag_url = mcp_proxy_cfg.get("image_rag_url", "https://rag-img.voitta.ai/mcp")
-        self.voitta_image_rag_key = mcp_proxy_cfg.get("image_rag_key", "")
-        self.paperclip_url = mcp_proxy_cfg.get("paperclip_url", "https://paperclip.gxl.ai/mcp")
-        self.paperclip_key = mcp_proxy_cfg.get("paperclip_key", "")
-        self.freecad_url = mcp_proxy_cfg.get("freecad_url", "http://127.0.0.1:50005/mcp")
         # edit_proxy_url defaults to the Google Workspace MCP subprocess port
         # if one is configured; otherwise legacy fallback to 18766.
         _google_servers = [

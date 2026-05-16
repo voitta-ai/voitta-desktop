@@ -177,14 +177,12 @@ def _default_config() -> dict:
             "project": os.environ.get("JIRA_PROJECT", ""),
         },
         "mcp_proxy": {
+            # The per-backend URLs/keys that used to live here are now in
+            # mcp_servers (see _default_mcp_servers). Only the local proxy
+            # port + the Google Workspace edit-proxy URL remain — the latter
+            # is still used by the auth flow to talk to the local Google MCP.
             "port": int(os.environ.get("MCP_PROXY_PORT", "18765")),
             "edit_proxy_url": os.environ.get("EDIT_PROXY_URL", f"http://localhost:{os.environ.get('GOOGLE_MCP_PORT', '18766')}"),
-            "rag_url": os.environ.get("VOITTA_RAG_URL", "https://rag.voitta.ai"),
-            "image_rag_url": os.environ.get("VOITTA_IMAGE_RAG_URL", "https://rag-img.voitta.ai/mcp"),
-            "image_rag_key": "",
-            "paperclip_url": os.environ.get("PAPERCLIP_URL", "https://paperclip.gxl.ai/mcp"),
-            "paperclip_key": "",
-            "freecad_url": os.environ.get("FREECAD_URL", "http://127.0.0.1:50005/mcp"),
         },
         "llm_proxy": {
             "port": int(os.environ.get("LLM_PROXY_PORT", "18900")),
