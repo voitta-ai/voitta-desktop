@@ -74,6 +74,12 @@ requires = [
     "python-dotenv>=1.0.0",
     "PyYAML>=6.0",
     "Pillow>=10.0",
+
+    # CA bundle — briefcase's standalone Python ships no system root CAs,
+    # so aiohttp's TLS handshake to api.anthropic.com fails with
+    # "unable to get local issuer certificate" inside the bundle. app.py
+    # wires SSL_CERT_FILE → certifi.where() before any TLS connection.
+    "certifi>=2024.2.2",
 ]
 
 [tool.briefcase.app.voitta_desktop.macOS]
