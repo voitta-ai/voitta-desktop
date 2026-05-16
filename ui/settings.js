@@ -94,6 +94,238 @@ function deleteApp(i) {
   renderApps();
 }
 
+// ── MCP servers ─────────────────────────────────────────────────────────────
+// Each server is a card with: name, prefix, description, kind (http/subprocess),
+// transport-specific fields, and auth selector with conditional auth fields.
+// The subprocess kind exposes a `template` (google_mcp / jira_mcp) — the command
+// shape is fixed by template; only cwd/env_path/port are user-editable.
+
+const AUTH_LABELS = {
+  none: 'None / open',
+  bearer: 'Bearer token',
+  api_key: 'API key header',
+  basic: 'Basic auth (user:pass)',
+  custom_headers: 'Custom headers',
+  oauth_app: 'OAuth (linked Auth app)',
+  voitta_rag_legacy: 'Voitta RAG (legacy)',
+};
+
+function _mcpAuth(s) { return s.auth || (s.auth = { type: 'none' }); }
+
+function renderMcpServers() {
+  const c = document.getElementById('mcps-container');
+  if (!c) return;
+  c.innerHTML = '';
+  const servers = config.mcp_servers || (config.mcp_servers = []);
+  servers.forEach((s, i) => c.appendChild(_renderMcpCard(s, i)));
+}
+
+function _renderMcpCard(s, i) {
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.dataset.index = i;
+
+  const header = document.createElement('div');
+  header.className = 'card-header';
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.value = s.name || '';
+  nameInput.placeholder = 'Display name';
+  nameInput.onchange = () => { s.name = nameInput.value; };
+  header.appendChild(nameInput);
+  card.appendChild(header);
+
+  card.appendChild(_field('Prefix (tool namespace)', _textInput(s, 'prefix', 'e.g. vim, voitta_rag')));
+  card.appendChild(_field('Description (sent to LLM)', _textarea(s, 'description', 'Short summary the model sees')));
+
+  // Kind toggle
+  const kindRow = document.createElement('div');
+  kindRow.className = 'field';
+  const kindLabel = document.createElement('label'); kindLabel.textContent = 'Kind';
+  const kindSel = document.createElement('select');
+  ['http', 'subprocess'].forEach(k => {
+    const opt = document.createElement('option');
+    opt.value = k; opt.textContent = k === 'http' ? 'HTTP' : 'Subprocess';
+    if ((s.kind || 'http') === k) opt.selected = true;
+    kindSel.appendChild(opt);
+  });
+  kindSel.onchange = () => { s.kind = kindSel.value; renderMcpServers(); };
+  kindRow.appendChild(kindLabel); kindRow.appendChild(kindSel);
+  card.appendChild(kindRow);
+
+  if ((s.kind || 'http') === 'http') {
+    card.appendChild(_field('URL', _textInput(s, 'url', 'https://...')));
+  } else {
+    const sp = s.subprocess || (s.subprocess = {});
+    // Template (read-only in v1 — google_mcp / jira_mcp / custom)
+    const tplRow = document.createElement('div');
+    tplRow.className = 'field';
+    const tplLabel = document.createElement('label'); tplLabel.textContent = 'Template';
+    const tplSel = document.createElement('select');
+    ['google_mcp', 'jira_mcp'].forEach(t => {
+      const opt = document.createElement('option');
+      opt.value = t; opt.textContent = t;
+      if (sp.template === t) opt.selected = true;
+      tplSel.appendChild(opt);
+    });
+    tplSel.onchange = () => { sp.template = tplSel.value; };
+    tplRow.appendChild(tplLabel); tplRow.appendChild(tplSel);
+    card.appendChild(tplRow);
+
+    card.appendChild(_field('Working directory', _textInputObj(sp, 'cwd', '~/DEVEL/...')));
+    card.appendChild(_field('Env file', _textInputObj(sp, 'env_path', '~/.voitta_desktop/...env')));
+    const portInput = _textInputObj(sp, 'port', '18766');
+    portInput.onchange = () => { sp.port = parseInt(portInput.value) || 0; };
+    card.appendChild(_field('Port', portInput));
+  }
+
+  // Auth section
+  const authRow = document.createElement('div');
+  authRow.className = 'field';
+  const authLabel = document.createElement('label'); authLabel.textContent = 'Auth';
+  const authSel = document.createElement('select');
+  Object.keys(AUTH_LABELS).forEach(t => {
+    const opt = document.createElement('option');
+    opt.value = t; opt.textContent = AUTH_LABELS[t];
+    if (_mcpAuth(s).type === t) opt.selected = true;
+    authSel.appendChild(opt);
+  });
+  authSel.onchange = () => {
+    s.auth = { type: authSel.value };
+    renderMcpServers();
+  };
+  authRow.appendChild(authLabel); authRow.appendChild(authSel);
+  card.appendChild(authRow);
+
+  _renderAuthFields(card, s);
+
+  // Delete
+  const footer = document.createElement('div');
+  footer.className = 'card-footer';
+  const del = document.createElement('button');
+  del.className = 'btn btn-danger';
+  del.textContent = 'Delete';
+  del.onclick = () => deleteMcpServer(i);
+  footer.appendChild(del);
+  card.appendChild(footer);
+
+  return card;
+}
+
+function _renderAuthFields(card, s) {
+  const a = _mcpAuth(s);
+  if (a.type === 'bearer') {
+    card.appendChild(_field('Token', _passwordObj(a, 'token', 'paste token')));
+  } else if (a.type === 'api_key') {
+    if (!a.header) a.header = 'X-API-Key';
+    card.appendChild(_field('Header name', _textInputObj(a, 'header', 'X-API-Key')));
+    card.appendChild(_field('Header value', _passwordObj(a, 'value', 'paste key')));
+  } else if (a.type === 'basic') {
+    card.appendChild(_field('Username', _textInputObj(a, 'username', '')));
+    card.appendChild(_field('Password', _passwordObj(a, 'password', '')));
+  } else if (a.type === 'custom_headers') {
+    if (!Array.isArray(a.headers)) a.headers = [];
+    a.headers.forEach((h, hi) => {
+      const row = document.createElement('div');
+      row.className = 'field';
+      row.style.display = 'grid';
+      row.style.gridTemplateColumns = '1fr 1fr auto';
+      row.style.gap = '6px';
+      const n = document.createElement('input');
+      n.type = 'text'; n.placeholder = 'Header name'; n.value = h.name || '';
+      n.onchange = () => { h.name = n.value; };
+      const v = document.createElement('input');
+      v.type = 'text'; v.placeholder = 'Header value'; v.value = h.value || '';
+      v.onchange = () => { h.value = v.value; };
+      const rm = document.createElement('button');
+      rm.className = 'btn'; rm.textContent = '−';
+      rm.onclick = () => { a.headers.splice(hi, 1); renderMcpServers(); };
+      row.appendChild(n); row.appendChild(v); row.appendChild(rm);
+      card.appendChild(row);
+    });
+    const addBtn = document.createElement('button');
+    addBtn.className = 'btn'; addBtn.textContent = '+ Add header';
+    addBtn.onclick = () => { a.headers.push({ name: '', value: '' }); renderMcpServers(); };
+    card.appendChild(addBtn);
+  } else if (a.type === 'oauth_app') {
+    if (!a.backend) a.backend = 'google_workspace';
+    if (!a.app_type) a.app_type = 'google';
+    card.appendChild(_field('Backend (apps tab)', _textInputObj(a, 'backend', 'google_workspace')));
+    card.appendChild(_field('App type', _textInputObj(a, 'app_type', 'google or microsoft')));
+  } else if (a.type === 'voitta_rag_legacy') {
+    const note = document.createElement('div');
+    note.style.cssText = 'font-size:11px; color:var(--text-secondary); padding:4px 0;';
+    note.textContent = 'Legacy multi-app X-Auth-Token-{Microsoft,Google} scheme. Uses all rag-enabled apps from the Accounts tab.';
+    card.appendChild(note);
+  }
+  // type === 'none': no extra fields
+}
+
+function _field(labelText, control) {
+  const row = document.createElement('div');
+  row.className = 'field';
+  const lbl = document.createElement('label'); lbl.textContent = labelText;
+  row.appendChild(lbl);
+  row.appendChild(control);
+  return row;
+}
+function _textInput(obj, key, ph) {
+  const i = document.createElement('input');
+  i.type = 'text'; i.placeholder = ph || ''; i.value = obj[key] || '';
+  i.onchange = () => { obj[key] = i.value; };
+  return i;
+}
+function _textInputObj(obj, key, ph) { return _textInput(obj, key, ph); }
+function _passwordObj(obj, key, ph) {
+  const i = document.createElement('input');
+  i.type = 'password'; i.placeholder = ph || ''; i.value = obj[key] || '';
+  i.onchange = () => { obj[key] = i.value; };
+  return i;
+}
+function _textarea(obj, key, ph) {
+  const t = document.createElement('textarea');
+  t.placeholder = ph || ''; t.value = obj[key] || '';
+  t.style.cssText = 'width:100%; min-height:48px; font-family:inherit; padding:6px; border-radius:6px; border:1px solid var(--input-border); background:var(--input-bg); color:var(--text); resize:vertical;';
+  t.onchange = () => { obj[key] = t.value; };
+  return t;
+}
+
+function addMcpServer() {
+  if (!Array.isArray(config.mcp_servers)) config.mcp_servers = [];
+  config.mcp_servers.push({
+    id: uuid(),
+    name: 'New MCP Server',
+    prefix: 'my_mcp',
+    description: '',
+    kind: 'http',
+    url: '',
+    auth: { type: 'none' },
+  });
+  renderMcpServers();
+}
+
+function deleteMcpServer(i) {
+  const s = config.mcp_servers[i];
+  const name = s.name || 'Unnamed';
+  const typed = prompt('To delete "' + name + '", type its name below:');
+  if (typed === null) return;
+  if (typed.trim() !== name.trim()) {
+    alert('Name does not match. Deletion cancelled.');
+    return;
+  }
+  config.mcp_servers.splice(i, 1);
+  renderMcpServers();
+}
+
+function collectMcpServers() {
+  // The card inputs mutate config.mcp_servers entries in place via onchange
+  // handlers, so by the time Save fires this list is already up to date.
+  // Just return it. We do strip any entry with an empty prefix on the way
+  // out — those would be skipped by the proxy anyway and would clutter the
+  // help text.
+  return (config.mcp_servers || []).filter(s => (s.prefix || '').trim() !== '');
+}
+
 function loadJira() {
   document.getElementById('jira_url').value = config.jira.server_url || '';
   document.getElementById('jira_email').value = config.jira.email || '';
@@ -148,24 +380,11 @@ function loadProxy() {
   var mcp = config.mcp_proxy || config.proxy || {};
   var llm = config.llm_proxy || {};
   var oauth = config.oauth || {};
-  var sub = config.mcp_subprocess || {};
   document.getElementById('proxy_port').value = mcp.port || '18765';
   document.getElementById('edit_proxy_url').value = mcp.edit_proxy_url || '';
-  document.getElementById('rag_url').value = mcp.rag_url || '';
-  document.getElementById('image_rag_url').value = mcp.image_rag_url || 'https://rag-img.voitta.ai/mcp';
-  document.getElementById('image_rag_key').value = mcp.image_rag_key || '';
-  document.getElementById('paperclip_url').value = mcp.paperclip_url || 'https://paperclip.gxl.ai/mcp';
-  document.getElementById('paperclip_key').value = mcp.paperclip_key || '';
-  document.getElementById('freecad_url').value = mcp.freecad_url || 'http://127.0.0.1:50005/mcp';
   document.getElementById('llm_proxy_port').value = llm.port || '18900';
   document.getElementById('llm_upstream_url').value = llm.upstream_url || 'https://api.anthropic.com';
   document.getElementById('oauth_redirect_port').value = oauth.redirect_port || '53214';
-  document.getElementById('google_mcp_port').value = sub.google_mcp_port || '18766';
-  document.getElementById('google_mcp_dir').value = sub.google_mcp_dir || '~/DEVEL/google_workspace_mcp';
-  document.getElementById('google_mcp_env_path').value = sub.google_mcp_env_path || '~/DEVEL/google_workspace_mcp/.env';
-  document.getElementById('jira_mcp_port').value = sub.jira_mcp_port || '18767';
-  document.getElementById('jira_mcp_dir').value = sub.jira_mcp_dir || '~/DEVEL/mcp-atlassian';
-  document.getElementById('jira_mcp_env_path').value = sub.jira_mcp_env_path || '~/.voitta_desktop/jira.env';
 
   var opt = config.optimizer || {};
   document.getElementById('optimizer_enabled').checked = opt.enabled !== false;  // default true
@@ -197,16 +416,14 @@ function collectAll() {
     api_token: document.getElementById('jira_api_token').value,
     project: selectedProjects,
   };
-  config.mcp_proxy = {
+  // mcp_proxy: only the runtime fields the new layout still exposes.
+  // The legacy URL/key fields (rag_url, image_rag_*, paperclip_*, freecad_url)
+  // are gone — their values now live inside config.mcp_servers entries.
+  // Preserve anything the user already had so a rollback keeps working.
+  config.mcp_proxy = Object.assign({}, config.mcp_proxy || {}, {
     port: parseInt(document.getElementById('proxy_port').value) || 18765,
     edit_proxy_url: document.getElementById('edit_proxy_url').value,
-    rag_url: document.getElementById('rag_url').value,
-    image_rag_url: document.getElementById('image_rag_url').value,
-    image_rag_key: document.getElementById('image_rag_key').value,
-    paperclip_url: document.getElementById('paperclip_url').value,
-    paperclip_key: document.getElementById('paperclip_key').value,
-    freecad_url: document.getElementById('freecad_url').value,
-  };
+  });
   config.llm_proxy = {
     port: parseInt(document.getElementById('llm_proxy_port').value) || 18900,
     upstream_url: document.getElementById('llm_upstream_url').value.trim() || 'https://api.anthropic.com',
@@ -214,14 +431,10 @@ function collectAll() {
   config.oauth = {
     redirect_port: parseInt(document.getElementById('oauth_redirect_port').value) || 53214,
   };
-  config.mcp_subprocess = {
-    google_mcp_port: parseInt(document.getElementById('google_mcp_port').value) || 18766,
-    google_mcp_dir: document.getElementById('google_mcp_dir').value.trim() || '~/DEVEL/google_workspace_mcp',
-    google_mcp_env_path: document.getElementById('google_mcp_env_path').value.trim() || '~/DEVEL/google_workspace_mcp/.env',
-    jira_mcp_port: parseInt(document.getElementById('jira_mcp_port').value) || 18767,
-    jira_mcp_dir: document.getElementById('jira_mcp_dir').value.trim() || '~/DEVEL/mcp-atlassian',
-    jira_mcp_env_path: document.getElementById('jira_mcp_env_path').value.trim() || '~/.voitta_desktop/jira.env',
-  };
+  // mcp_subprocess legacy block — preserved for rollback, no longer edited
+  // from the Proxies tab. Subprocess parameters now live inside
+  // config.mcp_servers[*].subprocess.
+  config.mcp_servers = collectMcpServers();
   config.optimizer = {
     enabled: document.getElementById('optimizer_enabled').checked,
     haiku_only: document.getElementById('optimizer_haiku_only').checked,
@@ -568,6 +781,7 @@ function setArrowTipColor(id, live) {
 
 // Init from embedded config
 renderApps();
+renderMcpServers();
 loadJira();
 loadProxy();
 renderToolTree();
