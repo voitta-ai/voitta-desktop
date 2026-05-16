@@ -42,7 +42,7 @@ function renderApps() {
           </div>
         </div>
         <div class="card-footer">
-          <button class="btn btn-danger" onclick="deleteApp(${i})">Delete</button>
+          <button class="btn btn-danger" onclick="deleteApp(${i})">${_pendingAppDeletes.has(i) ? 'Click again to confirm' : 'Delete'}</button>
         </div>
       </div>`;
   });
@@ -81,17 +81,32 @@ function addApp() {
   renderApps();
 }
 
-function deleteApp(i) {
-  const app = config.apps[i];
-  const name = app.name || 'Unnamed';
-  const typed = prompt('To delete "' + name + '", type its name below:');
-  if (typed === null) return;
-  if (typed.trim() !== name.trim()) {
-    alert('Name does not match. Deletion cancelled.');
-    return;
+// Two-stage delete pattern — WKWebView blocks prompt()/confirm()/alert() by
+// default, so the previous "type the name to confirm" flow silently returned
+// null and the delete never ran. First click flips the button to a confirm
+// state; second click within 3s actually deletes. Used by both Accounts and
+// MCPs tabs.
+const _pendingAppDeletes = new Set();
+const _pendingMcpDeletes = new Set();
+
+function _armDelete(set, key, rerender) {
+  if (set.has(key)) {
+    set.delete(key);
+    return true;  // caller should perform delete
   }
-  config.apps.splice(i, 1);
-  renderApps();
+  set.add(key);
+  rerender();
+  setTimeout(() => {
+    if (set.delete(key)) rerender();
+  }, 3000);
+  return false;
+}
+
+function deleteApp(i) {
+  if (_armDelete(_pendingAppDeletes, i, renderApps)) {
+    config.apps.splice(i, 1);
+    renderApps();
+  }
 }
 
 // ── MCP servers ─────────────────────────────────────────────────────────────
@@ -199,12 +214,12 @@ function _renderMcpCard(s, i) {
 
   _renderAuthFields(card, s);
 
-  // Delete
+  // Delete (two-stage: first click arms, second click within 3s deletes)
   const footer = document.createElement('div');
   footer.className = 'card-footer';
   const del = document.createElement('button');
   del.className = 'btn btn-danger';
-  del.textContent = 'Delete';
+  del.textContent = _pendingMcpDeletes.has(i) ? 'Click again to confirm' : 'Delete';
   del.onclick = () => deleteMcpServer(i);
   footer.appendChild(del);
   card.appendChild(footer);
@@ -305,16 +320,10 @@ function addMcpServer() {
 }
 
 function deleteMcpServer(i) {
-  const s = config.mcp_servers[i];
-  const name = s.name || 'Unnamed';
-  const typed = prompt('To delete "' + name + '", type its name below:');
-  if (typed === null) return;
-  if (typed.trim() !== name.trim()) {
-    alert('Name does not match. Deletion cancelled.');
-    return;
+  if (_armDelete(_pendingMcpDeletes, i, renderMcpServers)) {
+    config.mcp_servers.splice(i, 1);
+    renderMcpServers();
   }
-  config.mcp_servers.splice(i, 1);
-  renderMcpServers();
 }
 
 function collectMcpServers() {
