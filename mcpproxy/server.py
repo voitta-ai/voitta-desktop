@@ -1,26 +1,46 @@
-"""FastMCP proxy server setup — mounts all MCP backends."""
+"""FastMCP proxy server setup — mounts every MCP backend from app_ref.mcp_servers."""
 
 import asyncio
+import base64
 import json
 import logging
 
 from fastmcp import FastMCP as FastMCPServer
 from fastmcp.server.providers.proxy import ProxyClient
 from fastmcp.client.transports import StreamableHttpTransport
-
-import base64
-
 from fastmcp.utilities.types import Image
 
 from optimizers.image import vt_object_store
 from .resilient import ResilientFastMCPProxy
-from .backends import MCP_BACKENDS, simple_backends, build_instructions
 
 logger = logging.getLogger("voitta-desktop.mcp")
 
 
-def make_rag_client_factory(app_ref):
-    """Return a factory that creates a ProxyClient with current RAG auth headers."""
+# ── Auth-factory builders, one per auth.type ─────────────────────────────────
+#
+# Every factory returns a thunk that builds a fresh ProxyClient on each
+# upstream call. The thunk reads headers from the live app_ref state, so
+# token refreshes and config edits propagate without rebuilding the proxy.
+
+def _server_url(server: dict) -> str:
+    """Return the HTTP endpoint for a server, regardless of kind. For
+    subprocess servers, this is the locally-bound port we'll connect to."""
+    if server.get("kind") == "subprocess":
+        port = server.get("subprocess", {}).get("port", 0)
+        return f"http://localhost:{port}/mcp"
+    return (server.get("url") or "").strip()
+
+
+def _make_static_headers_factory(url: str, headers: dict):
+    """Static headers — used by none/bearer/api_key/basic/custom_headers."""
+    def factory():
+        return ProxyClient(StreamableHttpTransport(url=url, headers=dict(headers)))
+    return factory
+
+
+def _make_voitta_rag_legacy_factory(app_ref, url: str):
+    """Multi-app X-Auth-Token-{Microsoft,Google} scheme. Builds the header
+    set on each call from the live auth state of every rag-enabled app."""
     def factory():
         headers = {}
         for app_type in ("microsoft", "google"):
@@ -37,48 +57,20 @@ def make_rag_client_factory(app_ref):
                 headers[f"X-Auth-Email-{suffix}"] = profile["email"]
             if profile.get("name"):
                 headers[f"X-Auth-Name-{suffix}"] = profile["name"]
-        url = f"{app_ref.voitta_rag_url.rstrip('/')}/mcp/mcp"
-        logger.debug("RAG factory: url=%s, %d headers", url, len(headers))
-        transport = StreamableHttpTransport(url=url, headers=headers)
-        return ProxyClient(transport)
+        logger.debug("voitta_rag_legacy factory: url=%s, %d headers", url, len(headers))
+        return ProxyClient(StreamableHttpTransport(url=url, headers=headers))
     return factory
 
 
-def make_image_rag_client_factory(app_ref):
-    """Return a factory that creates a ProxyClient for Voitta Image RAG with Bearer auth."""
+def _make_oauth_app_factory(app_ref, url: str, backend: str, app_type: str):
+    """Per-user OAuth Bearer token — looks up the active Auth-tab app for the
+    given (backend, app_type) pair and uses its current access token. Used
+    for Google Workspace today; generalises to any future OAuth backend."""
     def factory():
         headers = {}
-        key = (app_ref.voitta_image_rag_key or "").strip()
-        if key:
-            headers["Authorization"] = f"Bearer {key}"
-        url = app_ref.voitta_image_rag_url
-        logger.debug("Image RAG factory: url=%s, has_key=%s", url, bool(key))
-        transport = StreamableHttpTransport(url=url, headers=headers)
-        return ProxyClient(transport)
-    return factory
-
-
-def make_paperclip_client_factory(app_ref):
-    """Return a factory that creates a ProxyClient for Paperclip with X-API-Key auth."""
-    def factory():
-        headers = {}
-        key = (app_ref.paperclip_key or "").strip()
-        if key:
-            headers["X-API-Key"] = key
-        url = app_ref.paperclip_url
-        logger.debug("Paperclip factory: url=%s, has_key=%s", url, bool(key))
-        transport = StreamableHttpTransport(url=url, headers=headers)
-        return ProxyClient(transport)
-    return factory
-
-
-def make_google_client_factory(app_ref):
-    """Return a factory that creates a ProxyClient with current Google Workspace Bearer token."""
-    def factory():
-        headers = {}
-        active_id = app_ref._active_app.get(("google_workspace", "google"))
+        active_id = app_ref._active_app.get((backend, app_type))
         if active_id:
-            state = app_ref._auth.get((active_id, "google_workspace"), {})
+            state = app_ref._auth.get((active_id, backend), {})
             if state.get("token"):
                 headers["Authorization"] = f"Bearer {state['token']}"
                 profile = state.get("profile") or {}
@@ -86,11 +78,86 @@ def make_google_client_factory(app_ref):
                     headers["X-Auth-Email"] = profile["email"]
                 if profile.get("name"):
                     headers["X-Auth-Name"] = profile["name"]
-        url = f"{app_ref.edit_proxy_url.rstrip('/')}/mcp"
-        logger.debug("Google factory: url=%s, headers=%s", url, list(headers.keys()))
-        transport = StreamableHttpTransport(url=url, headers=headers)
-        return ProxyClient(transport)
+        logger.debug("oauth_app factory: url=%s, backend=%s, headers=%s",
+                     url, backend, list(headers.keys()))
+        return ProxyClient(StreamableHttpTransport(url=url, headers=headers))
     return factory
+
+
+def _build_factory(server: dict, app_ref):
+    """Pick the right factory for a server entry based on auth.type."""
+    url = _server_url(server)
+    auth = server.get("auth", {}) or {}
+    auth_type = auth.get("type", "none")
+
+    if auth_type == "voitta_rag_legacy":
+        return _make_voitta_rag_legacy_factory(app_ref, url)
+
+    if auth_type == "oauth_app":
+        backend = auth.get("backend", "google_workspace")
+        app_type = auth.get("app_type", "google")
+        return _make_oauth_app_factory(app_ref, url, backend, app_type)
+
+    if auth_type == "bearer":
+        token = (auth.get("token") or "").strip()
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        return _make_static_headers_factory(url, headers)
+
+    if auth_type == "api_key":
+        header = (auth.get("header") or "X-API-Key").strip() or "X-API-Key"
+        value = (auth.get("value") or "").strip()
+        headers = {header: value} if value else {}
+        return _make_static_headers_factory(url, headers)
+
+    if auth_type == "basic":
+        u = auth.get("username") or ""
+        p = auth.get("password") or ""
+        if u or p:
+            creds = base64.b64encode(f"{u}:{p}".encode()).decode()
+            headers = {"Authorization": f"Basic {creds}"}
+        else:
+            headers = {}
+        return _make_static_headers_factory(url, headers)
+
+    if auth_type == "custom_headers":
+        headers = {
+            (h.get("name") or "").strip(): (h.get("value") or "")
+            for h in (auth.get("headers") or [])
+            if (h.get("name") or "").strip()
+        }
+        return _make_static_headers_factory(url, headers)
+
+    # type == "none" or unknown → no auth headers
+    return _make_static_headers_factory(url, {})
+
+
+def build_instructions(mcp_servers: list[dict]) -> str:
+    """Build the LLM instructions block describing what's mounted, from the
+    live mcp_servers list. The description field is the only thing the
+    downstream client sees — keep it short and accurate."""
+    lines = [
+        "You are connected through Voitta Desktop, a unified MCP proxy. "
+        "All tool names are prefixed by backend:"
+    ]
+    for s in mcp_servers:
+        prefix = (s.get("prefix") or "").strip()
+        desc = (s.get("description") or "").strip()
+        if prefix and desc:
+            lines.append(f"  • {prefix}_* — {desc}")
+    lines.append(
+        "If a google_workspace_* tool fails with an auth error, "
+        "ask the user to log in via the Voitta Desktop menu bar icon."
+    )
+    return "\n".join(lines)
+
+
+def tool_tree_groups(mcp_servers: list[dict]) -> list[tuple[str, str]]:
+    """Return (prefix, label) pairs for the settings tool tree."""
+    return [
+        ((s.get("prefix") or "").strip(), s.get("name") or s.get("prefix") or "")
+        for s in mcp_servers
+        if (s.get("prefix") or "").strip()
+    ]
 
 
 from fastmcp.server.middleware import Middleware as FastMCPMiddleware
@@ -246,14 +313,17 @@ class ToolGateMiddleware(FastMCPMiddleware):
             raise
 
 
-def run_mcp_proxy(app_ref, port: int, jira_mcp_port: int):
-    """Run unified FastMCP proxy server mounting all backends. Blocks forever."""
+def run_mcp_proxy(app_ref, port: int):
+    """Run unified FastMCP proxy server mounting every entry in
+    ``app_ref.mcp_servers``. Blocks forever."""
     logger.info("run_mcp_proxy starting (port=%d)", port)
     gate = ToolGateMiddleware(app_ref)
     app_ref._tool_gate = gate
+
+    mcp_servers = list(app_ref.mcp_servers)
     main_server = FastMCPServer(
         "voitta-desktop",
-        instructions=build_instructions(),
+        instructions=build_instructions(mcp_servers),
         middleware=[gate],
     )
     # Disable tools/list_changed notifications — they cause Claude Code
@@ -261,88 +331,34 @@ def run_mcp_proxy(app_ref, port: int, jira_mcp_port: int):
     # triggering unwanted tool gate popups.
     main_server._mcp_server.notification_options.tools_changed = False
 
-    # ── Core backends (custom auth) ─────────────────────────────────
-
-    rag_proxy = ResilientFastMCPProxy(
-        client_factory=make_rag_client_factory(app_ref),
-        name="voitta-rag",
-        backend_name="RAG",
-        cache_listings=True,
-        app_ref=app_ref, prefix="voitta_rag",
-    )
-    main_server.mount(rag_proxy, prefix="voitta_rag")
-
-    google_proxy = ResilientFastMCPProxy(
-        client_factory=make_google_client_factory(app_ref),
-        name="google-workspace",
-        backend_name="Google Workspace",
-        cache_listings=True,
-        app_ref=app_ref, prefix="google_workspace",
-    )
-    main_server.mount(google_proxy, prefix="google_workspace")
-
-    jira_proxy = ResilientFastMCPProxy(
-        client_factory=lambda: ProxyClient(
-            StreamableHttpTransport(url=f"http://localhost:{jira_mcp_port}/mcp")
-        ),
-        name="jira",
-        backend_name="Jira",
-        app_ref=app_ref, prefix="jira",
-    )
-    main_server.mount(jira_proxy, prefix="jira")
-
-    image_rag_proxy = ResilientFastMCPProxy(
-        client_factory=make_image_rag_client_factory(app_ref),
-        name="voitta-image-rag",
-        backend_name="Voitta Image RAG",
-        cache_listings=True,
-        app_ref=app_ref, prefix="vim",
-    )
-    main_server.mount(image_rag_proxy, prefix="vim")
-
-    paperclip_proxy = ResilientFastMCPProxy(
-        client_factory=make_paperclip_client_factory(app_ref),
-        name="paperclip",
-        backend_name="Paperclip",
-        cache_listings=True,
-        app_ref=app_ref, prefix="paperclip",
-    )
-    main_server.mount(paperclip_proxy, prefix="paperclip")
-
-    # ── Simple backends (driven from backends.py) ───────────────────
-
-    simple_proxies: list[tuple[str, str, ResilientFastMCPProxy]] = []
-    for b in simple_backends():
-        # Allow a config-supplied override at app_ref.<prefix>_url. Lets
-        # FreeCAD (and any future simple backend that opts in) be set via
-        # Settings → Backends, while the YAML still provides the default.
-        override = getattr(app_ref, f"{b['prefix']}_url", None)
-        url = override.strip() if isinstance(override, str) and override.strip() else b["url"]
-        headers = b.get("headers", {})
+    # Mount every server. Each entry produces one ResilientFastMCPProxy with
+    # a factory derived from its auth.type. Empty-prefix entries are skipped
+    # with a warning — the prefix is the tool-name namespace and required.
+    proxies: list[tuple[str, str, ResilientFastMCPProxy]] = []
+    for server in mcp_servers:
+        prefix = (server.get("prefix") or "").strip()
+        if not prefix:
+            logger.warning("mcp_server skipped: empty prefix (name=%r)", server.get("name"))
+            continue
+        url = _server_url(server)
+        if not url:
+            logger.warning("mcp_server %r skipped: no URL", server.get("name"))
+            continue
+        factory = _build_factory(server, app_ref)
         proxy = ResilientFastMCPProxy(
-            client_factory=lambda url=url, headers=headers: ProxyClient(
-                StreamableHttpTransport(url=url, headers=headers)
-            ),
-            name=b["prefix"].replace("_", "-"),
-            backend_name=b["label"],
+            client_factory=factory,
+            name=prefix.replace("_", "-"),
+            backend_name=server.get("name") or prefix,
             cache_listings=True,
-            app_ref=app_ref, prefix=b["prefix"],
+            app_ref=app_ref, prefix=prefix,
         )
-        main_server.mount(proxy, prefix=b["prefix"])
-        simple_proxies.append((b["label"], url, proxy))
+        main_server.mount(proxy, prefix=prefix)
+        proxies.append((server.get("name") or prefix, url, proxy))
 
-    # Expose the full list of resilient backends — (label, url, proxy) — for
-    # the menu's manual "Refresh LLM Tools" popup. URLs are display-only and
-    # captured at startup; if the user changes a URL via Settings later, they
-    # need to restart for the popup to reflect it.
-    app_ref._mcp_backends = [
-        ("RAG", getattr(app_ref, "voitta_rag_url", ""), rag_proxy),
-        ("Google Workspace", getattr(app_ref, "edit_proxy_url", ""), google_proxy),
-        ("Jira", f"http://localhost:{jira_mcp_port}/mcp", jira_proxy),
-        ("Voitta Image RAG", getattr(app_ref, "voitta_image_rag_url", ""), image_rag_proxy),
-        ("Paperclip", getattr(app_ref, "paperclip_url", ""), paperclip_proxy),
-        *simple_proxies,
-    ]
+    # Expose proxies for the menu's "Refresh LLM Tools" popup. URLs are
+    # display-only — if the user edits a URL via Settings later, they need
+    # to restart for the running proxy to reflect it.
+    app_ref._mcp_backends = proxies
 
     # ── Built-in tools ──────────────────────────────────────────────
 
@@ -369,13 +385,6 @@ def run_mcp_proxy(app_ref, port: int, jira_mcp_port: int):
     # ── Logging ─────────────────────────────────────────────────────
 
     logger.info("FastMCP proxy on http://127.0.0.1:%d/mcp", port)
-    logger.info("  RAG -> %s", app_ref.voitta_rag_url)
-    logger.info("  Google -> %s", app_ref.edit_proxy_url)
-    logger.info("  Jira -> http://localhost:%d/mcp", jira_mcp_port)
-    logger.info("  Image RAG -> %s (key=%s)", app_ref.voitta_image_rag_url,
-                "set" if (app_ref.voitta_image_rag_key or "").strip() else "blank")
-    logger.info("  Paperclip -> %s (key=%s)", app_ref.paperclip_url,
-                "set" if (app_ref.paperclip_key or "").strip() else "blank")
-    for b in simple_backends():
-        logger.info("  %s -> %s", b["label"], b["url"])
+    for name, url, _ in proxies:
+        logger.info("  %s -> %s", name, url)
     main_server.run(transport="streamable-http", host="127.0.0.1", port=port)

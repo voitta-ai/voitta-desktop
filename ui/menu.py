@@ -86,6 +86,11 @@ class VoittaDesktopApp(
         mcp_proxy_cfg = self._config.get("mcp_proxy", {})
         llm_proxy_cfg = self._config.get("llm_proxy", {})
 
+        # Unified list of editable MCP backends — server.py + lifecycle drive
+        # everything off this. Legacy mcp_proxy.* fields are still loaded for
+        # the show_help text and for back-compat with anything that hasn't
+        # migrated yet, but they're no longer the source of truth.
+        self.mcp_servers = list(self._config.get("mcp_servers", []))
         self.voitta_rag_url = mcp_proxy_cfg.get("rag_url", "https://rag.voitta.ai")
         self.voitta_image_rag_url = mcp_proxy_cfg.get("image_rag_url", "https://rag-img.voitta.ai/mcp")
         self.voitta_image_rag_key = mcp_proxy_cfg.get("image_rag_key", "")
@@ -358,7 +363,7 @@ class VoittaDesktopApp(
 
     def _run_mcp_proxy(self):
         try:
-            run_mcp_proxy(self, self.mcp_proxy_port, JIRA_MCP_PORT)
+            run_mcp_proxy(self, self.mcp_proxy_port)
         except BaseException as e:
             logger.error("MCP proxy failed: %s", e, exc_info=True)
 

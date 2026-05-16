@@ -61,8 +61,11 @@ class SettingsWindowMixin:
         Per-backend caches live in ~/.voitta_desktop_cache/<name>_tools.json
         and are filled on the first listing after startup (then kept fresh
         via stale-while-revalidate).
+
+        Order matches the user's mcp_servers list so the tools tab mirrors
+        the MCPs tab.
         """
-        from mcpproxy.backends import tool_tree_groups
+        from mcpproxy.server import tool_tree_groups
 
         backends = getattr(self, "_mcp_backends", None) or []
         # Map prefix → proxy. Resilient proxies expose _prefix; other types
@@ -72,7 +75,8 @@ class SettingsWindowMixin:
         }
 
         tree = []
-        for prefix, label in tool_tree_groups():
+        mcp_servers = getattr(self, "mcp_servers", None) or []
+        for prefix, label in tool_tree_groups(mcp_servers):
             proxy = prefix_to_proxy.get(prefix)
             if proxy is None or not hasattr(proxy, "peek_cached_names"):
                 continue
@@ -231,6 +235,7 @@ class SettingsWindowMixin:
             self._auth.pop(key, None)
 
         mcp_proxy_cfg = new_config.get("mcp_proxy", {})
+        self.mcp_servers = list(new_config.get("mcp_servers", []))
         self.voitta_rag_url = mcp_proxy_cfg.get("rag_url", "https://rag.voitta.ai")
         self.voitta_image_rag_url = mcp_proxy_cfg.get("image_rag_url", "https://rag-img.voitta.ai/mcp")
         self.voitta_image_rag_key = mcp_proxy_cfg.get("image_rag_key", "")
