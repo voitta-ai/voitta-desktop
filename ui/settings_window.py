@@ -41,7 +41,6 @@ from ui.chart import _safe_json
 from ui._native import (
     _notify, _show_modal, _FocusTrigger, _InfoTicker, _SettingsTitleObserver,
 )
-from ui.mcp_lifecycle import GOOGLE_MCP_PORT
 
 logger = logging.getLogger("voitta-desktop")
 
@@ -242,7 +241,17 @@ class SettingsWindowMixin:
         self.paperclip_url = mcp_proxy_cfg.get("paperclip_url", "https://paperclip.gxl.ai/mcp")
         self.paperclip_key = mcp_proxy_cfg.get("paperclip_key", "")
         self.freecad_url = mcp_proxy_cfg.get("freecad_url", "http://127.0.0.1:50005/mcp")
-        self.edit_proxy_url = mcp_proxy_cfg.get("edit_proxy_url", f"http://localhost:{GOOGLE_MCP_PORT}")
+        # edit_proxy_url default: derive from the google_mcp subprocess entry.
+        _google_servers = [
+            s for s in self.mcp_servers
+            if s.get("kind") == "subprocess"
+            and (s.get("subprocess") or {}).get("template") == "google_mcp"
+        ]
+        _default_edit = (
+            f"http://localhost:{_google_servers[0]['subprocess'].get('port', 18766)}"
+            if _google_servers else "http://localhost:18766"
+        )
+        self.edit_proxy_url = mcp_proxy_cfg.get("edit_proxy_url", _default_edit)
         self.disabled_tools = set(new_config.get("disabled_tools", []))
         tools_cfg = new_config.get("tools", {})
         self.suppress_codex_popup = bool(tools_cfg.get("suppress_codex_popup", True))

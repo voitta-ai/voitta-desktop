@@ -53,11 +53,7 @@ from ui._native import (
 from ui.auth_flows import AuthFlowsMixin
 from ui.conv_menu import ConvMenuMixin
 from ui.menu_builder import MenuBuilderMixin
-from ui.mcp_lifecycle import (
-    MCPLifecycleMixin,
-    OAUTH_REDIRECT_PORT, GOOGLE_MCP_PORT, JIRA_MCP_PORT,
-    GOOGLE_MCP_DIR, GOOGLE_MCP_ENV_PATH, JIRA_MCP_DIR, JIRA_MCP_ENV_PATH,
-)
+from ui.mcp_lifecycle import MCPLifecycleMixin, OAUTH_REDIRECT_PORT
 from ui.settings_window import SettingsWindowMixin
 
 logger = logging.getLogger("voitta-desktop")
@@ -97,7 +93,18 @@ class VoittaDesktopApp(
         self.paperclip_url = mcp_proxy_cfg.get("paperclip_url", "https://paperclip.gxl.ai/mcp")
         self.paperclip_key = mcp_proxy_cfg.get("paperclip_key", "")
         self.freecad_url = mcp_proxy_cfg.get("freecad_url", "http://127.0.0.1:50005/mcp")
-        self.edit_proxy_url = mcp_proxy_cfg.get("edit_proxy_url", f"http://localhost:{GOOGLE_MCP_PORT}")
+        # edit_proxy_url defaults to the Google Workspace MCP subprocess port
+        # if one is configured; otherwise legacy fallback to 18766.
+        _google_servers = [
+            s for s in self.mcp_servers
+            if s.get("kind") == "subprocess"
+            and (s.get("subprocess") or {}).get("template") == "google_mcp"
+        ]
+        _default_edit = (
+            f"http://localhost:{_google_servers[0]['subprocess'].get('port', 18766)}"
+            if _google_servers else "http://localhost:18766"
+        )
+        self.edit_proxy_url = mcp_proxy_cfg.get("edit_proxy_url", _default_edit)
         self.mcp_proxy_port = self._resolve_port("MCP proxy", mcp_proxy_cfg.get("port", 18765))
         self.llm_proxy_port = self._resolve_port("LLM proxy", llm_proxy_cfg.get("port", 18900))
         self.llm_upstream_url = llm_proxy_cfg.get("upstream_url", "https://api.anthropic.com")
@@ -478,14 +485,22 @@ class VoittaDesktopApp(
         from AppKit import NSAlert
         alert = NSAlert.alloc().init()
         alert.setMessageText_("Voitta Desktop Help")
+        # Enumerate the configured MCPs straight from self.mcp_servers so the
+        # help text reflects what's actually mounted.
+        mcp_lines = []
+        for s in self.mcp_servers:
+            name = s.get("name") or s.get("prefix", "?")
+            if s.get("kind") == "subprocess":
+                port = (s.get("subprocess") or {}).get("port", "?")
+                mcp_lines.append(f"  {name} \u2192 http://127.0.0.1:{port}/mcp")
+            else:
+                mcp_lines.append(f"  {name} \u2192 {s.get('url', '')}")
         alert.setInformativeText_(
             "Voitta Desktop sits in your menu bar.\n\n"
             "Auth section: click providers to connect/disconnect.\n"
             "Conversations section: see live Claude Code sessions.\n\n"
             f"MCP proxy: http://127.0.0.1:{self.mcp_proxy_port}/mcp\n"
-            f"  RAG \u2192 {self.voitta_rag_url}\n"
-            f"  Google \u2192 {self.edit_proxy_url}\n"
-            f"  Jira \u2192 http://127.0.0.1:{JIRA_MCP_PORT}/mcp\n\n"
+            + "\n".join(mcp_lines) + "\n\n"
             f"LLM proxy: http://127.0.0.1:{self.llm_proxy_port}\n"
             "  Set ANTHROPIC_BASE_URL to the LLM proxy URL."
         )

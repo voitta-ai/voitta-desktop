@@ -1,16 +1,13 @@
 """MCP subprocess + Claude-link lifecycle for VoittaDesktopApp.
 
-Holds:
+Subprocess launching is data-driven from ``self._config['mcp_servers']``:
+each entry with ``kind=subprocess`` and ``subprocess.template ∈
+{google_mcp, jira_mcp}`` triggers the matching launch + .env-sync flow.
 
-  • Module-level constants for the MCP subprocess paths/ports (read at
-    process start from apps.json, no live reload). menu.py imports them
-    back from here so the dependency direction is one-way.
-
-  • ``MCPLifecycleMixin`` — methods that manage:
-      - ``.env`` sync for the Google Workspace + Jira MCP subprocesses,
-      - launching/stopping those subprocesses,
-      - arming/disarming ``~/.claude/settings.json`` to point at our
-        local LLM proxy across the app's lifetime.
+Two templates are supported in v1 — Google Workspace MCP and Jira MCP.
+Adding a third means adding a branch in ``_start_mcp_subprocesses`` and
+(optionally) a sync hook for its .env file. The UI doesn't yet let users
+create custom subprocess templates from scratch; those flow through code.
 """
 from __future__ import annotations
 
@@ -19,43 +16,55 @@ import logging
 import os
 import subprocess
 from pathlib import Path
-from urllib.parse import urlparse
 
-from config import load_config, CONFIG_DIR
+from config import load_config
 
 logger = logging.getLogger("voitta-desktop")
 
-# ── Subprocess + OAuth settings (sourced from apps.json; env seeds defaults) ─
-# Read once at module import. menu.py exposes these as module-level so other
-# code (show_help, _run_mcp_proxy, _apply_settings default fallback) can use
-# them too.
-
-_startup_cfg = load_config()
-_oauth_cfg = _startup_cfg.get("oauth", {})
-_sub_cfg = _startup_cfg.get("mcp_subprocess", {})
-
+# OAuth redirect port still lives in cfg.oauth (independent of MCPs).
+_oauth_cfg = load_config().get("oauth", {})
 OAUTH_REDIRECT_PORT = int(_oauth_cfg.get("redirect_port", 53214))
-GOOGLE_MCP_PORT = int(_sub_cfg.get("google_mcp_port", 18766))
-JIRA_MCP_PORT = int(_sub_cfg.get("jira_mcp_port", 18767))
-GOOGLE_MCP_DIR = os.path.expanduser(_sub_cfg.get("google_mcp_dir", "~/DEVEL/google_workspace_mcp"))
-GOOGLE_MCP_ENV_PATH = os.path.expanduser(_sub_cfg.get("google_mcp_env_path", "~/DEVEL/google_workspace_mcp/.env"))
-JIRA_MCP_DIR = os.path.expanduser(_sub_cfg.get("jira_mcp_dir", "~/DEVEL/mcp-atlassian"))
-JIRA_MCP_ENV_PATH = os.path.expanduser(_sub_cfg.get("jira_mcp_env_path", str(CONFIG_DIR / "jira.env")))
+
+
+def _subprocess_servers(cfg: dict, template: str) -> list[dict]:
+    """Return mcp_servers entries that match a given subprocess template."""
+    out = []
+    for s in cfg.get("mcp_servers", []) or []:
+        if s.get("kind") != "subprocess":
+            continue
+        sp = s.get("subprocess") or {}
+        if sp.get("template") == template:
+            out.append(s)
+    return out
 
 
 class MCPLifecycleMixin:
     """Mixin: MCP subprocess + Claude-link arm/disarm for ``VoittaDesktopApp``.
 
-    Methods depend on ``self._config``, ``self.edit_proxy_url``,
-    ``self.claude_link_armed``, ``self.llm_proxy_port``,
-    ``self.llm_upstream_url``, ``self._subprocesses``.
+    Methods depend on ``self._config``, ``self.claude_link_armed``,
+    ``self.llm_proxy_port``, ``self.llm_upstream_url``,
+    ``self._subprocesses``.
     """
 
     # ── MCP .env sync ────────────────────────────────────────────────────────
 
     def _sync_edit_mcp_env(self):
+        """Write Google MCP's .env file with the active OAuth client creds.
+
+        Pulls the env_path from the relevant mcp_servers entry; if no
+        google_mcp subprocess server is configured, silently skips.
+        """
+        google_servers = _subprocess_servers(self._config, "google_mcp")
+        if not google_servers:
+            return
+        env_path = os.path.expanduser(
+            google_servers[0]["subprocess"].get("env_path", "")
+        )
+        if not env_path:
+            return
+
         gw_google = [a for a in self._config.get("apps", [])
-                      if a["type"] == "google" and "google_workspace" in a.get("use_for", [])]
+                     if a["type"] == "google" and "google_workspace" in a.get("use_for", [])]
         if not gw_google:
             return
         app = gw_google[0]
@@ -72,13 +81,21 @@ class MCPLifecycleMixin:
             "",
         ]
         try:
-            Path(GOOGLE_MCP_ENV_PATH).parent.mkdir(parents=True, exist_ok=True)
-            with open(GOOGLE_MCP_ENV_PATH, "w") as f:
-                f.write("\n".join(lines))
+            Path(env_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(env_path).write_text("\n".join(lines))
         except Exception as e:
-            logger.warning("Failed to write edit MCP .env: %s", e)
+            logger.warning("Failed to write Google MCP .env: %s", e)
 
     def _sync_jira_mcp_env(self):
+        jira_servers = _subprocess_servers(self._config, "jira_mcp")
+        if not jira_servers:
+            return
+        env_path = os.path.expanduser(
+            jira_servers[0]["subprocess"].get("env_path", "")
+        )
+        if not env_path:
+            return
+
         jira = self._config.get("jira", {})
         server_url = jira.get("server_url", "")
         email = jira.get("email", "")
@@ -96,15 +113,18 @@ class MCPLifecycleMixin:
             lines.append(f"JIRA_PROJECTS_FILTER={project}")
         lines.append("")
         try:
-            Path(JIRA_MCP_ENV_PATH).parent.mkdir(parents=True, exist_ok=True)
-            with open(JIRA_MCP_ENV_PATH, "w") as f:
-                f.write("\n".join(lines))
+            Path(env_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(env_path).write_text("\n".join(lines))
         except Exception as e:
             logger.warning("Failed to write Jira MCP .env: %s", e)
 
     # ── MCP subprocesses ─────────────────────────────────────────────────────
 
     def _start_mcp_subprocesses(self):
+        """Launch every mcp_servers entry with kind=subprocess. Currently
+        supports two templates: google_mcp and jira_mcp. Each template
+        knows its command shape — only cwd/env_path/port flow through
+        from config."""
         self._subprocesses = []
 
         # Bundle launchctl strips PATH to the minimal /usr/bin:/bin:/usr/sbin:/sbin,
@@ -112,43 +132,66 @@ class MCPLifecycleMixin:
         # the standard install locations before launching subprocesses. CLI dev
         # already has these, so no-op there.
         extra_path = ":".join([
-            "/opt/homebrew/bin",   # arm64 Homebrew
-            "/usr/local/bin",      # x86_64 Homebrew / manual installs
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
             os.path.expanduser("~/.local/bin"),
             os.path.expanduser("~/.cargo/bin"),
         ])
         base_env = {**os.environ, "PATH": f"{extra_path}:{os.environ.get('PATH', '')}"}
 
-        if Path(GOOGLE_MCP_DIR).is_dir():
-            try:
-                google_port = str(urlparse(self.edit_proxy_url).port or GOOGLE_MCP_PORT)
-                env = {**base_env, "PORT": google_port}
-                proc = subprocess.Popen(
-                    ["uv", "run", "main.py", "--transport", "streamable-http"],
-                    cwd=GOOGLE_MCP_DIR, env=env,
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                )
-                self._subprocesses.append(proc)
-                logger.info("Started google_workspace_mcp (pid %d)", proc.pid)
-            except Exception as e:
-                logger.warning("Failed to start google_workspace_mcp: %s", e)
+        for server in self._config.get("mcp_servers", []) or []:
+            if server.get("kind") != "subprocess":
+                continue
+            sp = server.get("subprocess") or {}
+            template = sp.get("template", "")
+            name = server.get("name") or server.get("prefix", "")
+            cwd = os.path.expanduser(sp.get("cwd", "") or "")
+            env_path = os.path.expanduser(sp.get("env_path", "") or "")
+            port = int(sp.get("port", 0) or 0)
 
-        if Path(JIRA_MCP_DIR).is_dir() and Path(JIRA_MCP_ENV_PATH).exists():
-            try:
-                proc = subprocess.Popen(
-                    [
-                        "uvx", "mcp-atlassian",
-                        "--transport", "streamable-http",
-                        "--port", str(JIRA_MCP_PORT),
-                        "--env-file", JIRA_MCP_ENV_PATH,
-                    ],
-                    cwd=JIRA_MCP_DIR, env=base_env,
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                )
-                self._subprocesses.append(proc)
-                logger.info("Started mcp-atlassian (pid %d) on port %d", proc.pid, JIRA_MCP_PORT)
-            except Exception as e:
-                logger.warning("Failed to start mcp-atlassian: %s", e)
+            if template == "google_mcp":
+                if not cwd or not Path(cwd).is_dir():
+                    logger.info("subprocess %r skipped: cwd %r missing", name, cwd)
+                    continue
+                if not port:
+                    logger.warning("subprocess %r skipped: no port", name)
+                    continue
+                try:
+                    env = {**base_env, "PORT": str(port)}
+                    proc = subprocess.Popen(
+                        ["uv", "run", "main.py", "--transport", "streamable-http"],
+                        cwd=cwd, env=env,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+                    self._subprocesses.append(proc)
+                    logger.info("Started %s (pid %d) on port %d", name, proc.pid, port)
+                except Exception as e:
+                    logger.warning("Failed to start %s: %s", name, e)
+
+            elif template == "jira_mcp":
+                if not cwd or not Path(cwd).is_dir():
+                    logger.info("subprocess %r skipped: cwd %r missing", name, cwd)
+                    continue
+                if not env_path or not Path(env_path).exists():
+                    logger.info("subprocess %r skipped: env_path %r missing", name, env_path)
+                    continue
+                if not port:
+                    logger.warning("subprocess %r skipped: no port", name)
+                    continue
+                try:
+                    proc = subprocess.Popen(
+                        ["uvx", "mcp-atlassian", "--transport", "streamable-http",
+                         "--port", str(port), "--env-file", env_path],
+                        cwd=cwd, env=base_env,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+                    self._subprocesses.append(proc)
+                    logger.info("Started %s (pid %d) on port %d", name, proc.pid, port)
+                except Exception as e:
+                    logger.warning("Failed to start %s: %s", name, e)
+
+            else:
+                logger.warning("subprocess %r: unknown template %r", name, template)
 
         atexit.register(self._stop_mcp_subprocesses)
 
