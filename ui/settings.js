@@ -390,7 +390,6 @@ function loadProxy() {
   var llm = config.llm_proxy || {};
   var oauth = config.oauth || {};
   document.getElementById('proxy_port').value = mcp.port || '18765';
-  document.getElementById('edit_proxy_url').value = mcp.edit_proxy_url || '';
   document.getElementById('llm_proxy_port').value = llm.port || '18900';
   document.getElementById('llm_upstream_url').value = llm.upstream_url || 'https://api.anthropic.com';
   document.getElementById('oauth_redirect_port').value = oauth.redirect_port || '53214';
@@ -425,13 +424,11 @@ function collectAll() {
     api_token: document.getElementById('jira_api_token').value,
     project: selectedProjects,
   };
-  // mcp_proxy: only the runtime fields the new layout still exposes.
-  // The legacy URL/key fields (rag_url, image_rag_*, paperclip_*, freecad_url)
-  // are gone — their values now live inside config.mcp_servers entries.
-  // Preserve anything the user already had so a rollback keeps working.
+  // mcp_proxy: only the listener port now. Per-backend URLs live in
+  // config.mcp_servers. Preserve anything else the saved file has so a
+  // rollback to an older Voitta Desktop build keeps reading what it expects.
   config.mcp_proxy = Object.assign({}, config.mcp_proxy || {}, {
     port: parseInt(document.getElementById('proxy_port').value) || 18765,
-    edit_proxy_url: document.getElementById('edit_proxy_url').value,
   });
   config.llm_proxy = {
     port: parseInt(document.getElementById('llm_proxy_port').value) || 18900,

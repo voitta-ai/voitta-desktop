@@ -11,7 +11,7 @@ The host (VoittaDesktopApp) needs to expose:
   self._optimizer_pipeline, self._mcp_backends, self._bash_compressor,
   self._tool_result_optimizer, self._image_optimizer, self._thinking_optimizer,
   self.disabled_tools, self.suppress_codex_popup, self.claude_link_armed,
-  self.mcp_servers, self.edit_proxy_url,
+  self.mcp_servers,
   self.llm_proxy_port, self.mcp_proxy_port, self.llm_upstream_url,
   self._init_active_defaults, self._sync_edit_mcp_env, self._sync_jira_mcp_env,
   self._rebuild_msal_for_app, self._deauth_app, self._rebuild_menu,
@@ -289,19 +289,7 @@ class SettingsWindowMixin:
             self._deauth_app(app_id, backend)
             self._auth.pop(key, None)
 
-        mcp_proxy_cfg = new_config.get("mcp_proxy", {})
         self.mcp_servers = list(new_config.get("mcp_servers", []))
-        # edit_proxy_url default: derive from the google_mcp subprocess entry.
-        _google_servers = [
-            s for s in self.mcp_servers
-            if s.get("kind") == "subprocess"
-            and (s.get("subprocess") or {}).get("template") == "google_mcp"
-        ]
-        _default_edit = (
-            f"http://localhost:{_google_servers[0]['subprocess'].get('port', 18766)}"
-            if _google_servers else "http://localhost:18766"
-        )
-        self.edit_proxy_url = mcp_proxy_cfg.get("edit_proxy_url", _default_edit)
         self.disabled_tools = set(new_config.get("disabled_tools", []))
         tools_cfg = new_config.get("tools", {})
         self.suppress_codex_popup = bool(tools_cfg.get("suppress_codex_popup", True))

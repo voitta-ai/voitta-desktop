@@ -87,18 +87,6 @@ class VoittaDesktopApp(
         # mcp_subprocess block are still present in apps.json (kept for
         # rollback safety) but no code reads them anymore.
         self.mcp_servers = list(self._config.get("mcp_servers", []))
-        # edit_proxy_url defaults to the Google Workspace MCP subprocess port
-        # if one is configured; otherwise legacy fallback to 18766.
-        _google_servers = [
-            s for s in self.mcp_servers
-            if s.get("kind") == "subprocess"
-            and (s.get("subprocess") or {}).get("template") == "google_mcp"
-        ]
-        _default_edit = (
-            f"http://localhost:{_google_servers[0]['subprocess'].get('port', 18766)}"
-            if _google_servers else "http://localhost:18766"
-        )
-        self.edit_proxy_url = mcp_proxy_cfg.get("edit_proxy_url", _default_edit)
         self.mcp_proxy_port = self._resolve_port("MCP proxy", mcp_proxy_cfg.get("port", 18765))
         self.llm_proxy_port = self._resolve_port("LLM proxy", llm_proxy_cfg.get("port", 18900))
         self.llm_upstream_url = llm_proxy_cfg.get("upstream_url", "https://api.anthropic.com")

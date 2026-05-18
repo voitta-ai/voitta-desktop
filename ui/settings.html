@@ -514,15 +514,17 @@
     </div>
   </div>
 
-  <h2>MCP Proxy</h2>
+  <h2>MCP Proxy Listener</h2>
   <div class="card" id="proxy-card">
+    <div style="font-size:12px; color:var(--text-secondary); margin-bottom:10px;">
+      The local port Voitta Desktop listens on for MCP clients (Claude Code,
+      Codex). Use <code style="font-family:ui-monospace,monospace;">http://127.0.0.1:&lt;port&gt;/mcp</code>
+      as the MCP URL in those clients. Individual upstream servers are
+      configured in the MCPs tab.
+    </div>
     <div class="field">
       <label>Port</label>
       <input type="text" id="proxy_port" placeholder="18765">
-    </div>
-    <div class="field">
-      <label>Edit Proxy URL</label>
-      <input type="text" id="edit_proxy_url" placeholder="http://localhost:18766">
     </div>
   </div>
 
