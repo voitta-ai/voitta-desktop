@@ -22,6 +22,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import sys
 import threading
 from pathlib import Path
 from urllib.parse import urlparse
@@ -42,6 +44,52 @@ from ui._native import (
 )
 
 logger = logging.getLogger("voitta-desktop")
+
+
+def _mcp_servers_diff(old: list[dict], new: list[dict]) -> bool:
+    """True if the two mcp_servers lists differ in any field that affects
+    the running proxy (URL, prefix, auth, kind, subprocess parameters).
+
+    We don't bother with deep equality — just compare the JSON serialisations
+    of the *user-meaningful* fields. Cheap, correct, no false negatives on
+    nested edits.
+    """
+    def normalise(servers):
+        return [
+            {
+                "name": s.get("name", ""),
+                "prefix": s.get("prefix", ""),
+                "description": s.get("description", ""),
+                "kind": s.get("kind", "http"),
+                "url": s.get("url", ""),
+                "subprocess": s.get("subprocess") or {},
+                "auth": s.get("auth") or {},
+            }
+            for s in (servers or [])
+        ]
+    return normalise(old) != normalise(new)
+
+
+def _restart_voitta_desktop():
+    """Re-exec the current binary so the new mcp_servers list takes effect.
+
+    Uses os.execv: replaces the current process image with a fresh copy
+    of itself, no new PID created, no double-startup. Works for both
+    `python app.py` (terminal dev) and the bundled .app (briefcase's
+    /usr/bin/python3.X wrapper). Best-effort — if the exec fails for any
+    reason we fall back to a notification asking the user to restart by
+    hand, so the app keeps running rather than dying mid-session.
+    """
+    try:
+        executable = sys.executable
+        argv = [executable] + sys.argv
+        logger.info("Re-exec for MCP-server change: %s", argv)
+        os.execv(executable, argv)
+    except Exception as e:
+        logger.error("Auto-restart failed: %s", e)
+        _notify("Voitta Desktop",
+                "Auto-restart failed",
+                "Please quit and re-open Voitta Desktop to apply changes.")
 
 
 class SettingsWindowMixin:
@@ -208,6 +256,15 @@ class SettingsWindowMixin:
         are dispatched to the main thread via AppHelper.callAfter."""
         from PyObjCTools import AppHelper
 
+        # Detect changes that need a process restart to take effect. The
+        # FastMCP proxy mounts each MCP server at startup with a closed-over
+        # client factory; we don't currently support live add/remove. Diff
+        # the user's mcp_servers against what's running and prompt to
+        # restart if anything changed.
+        mcp_servers_changed = _mcp_servers_diff(
+            self.mcp_servers, new_config.get("mcp_servers", [])
+        )
+
         old_keys = set(self._auth.keys())
         self._config = new_config
         save_config(new_config)
@@ -274,7 +331,28 @@ class SettingsWindowMixin:
         def _update_ui():
             self._rebuild_menu()
             self._update_auth_state()
+            if mcp_servers_changed:
+                self._prompt_restart_for_mcp_changes()
         AppHelper.callAfter(_update_ui)
+
+    def _prompt_restart_for_mcp_changes(self):
+        """Show a restart prompt after the user changed mcp_servers.
+
+        Two buttons: Restart Now (re-exec the current binary) and Later
+        (just acknowledge — the changes are persisted but not live until
+        the next launch).
+        """
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Restart required")
+        alert.setInformativeText_(
+            "MCP server changes were saved, but the running proxy still has "
+            "the old mounts. Restart Voitta Desktop to load the new set."
+        )
+        alert.addButtonWithTitle_("Restart Now")
+        alert.addButtonWithTitle_("Later")
+        response = _show_modal(alert)
+        if response == 1000:  # NSAlertFirstButtonReturn → Restart Now
+            _restart_voitta_desktop()
 
     # ── Info-tab state ───────────────────────────────────────────────────────
 

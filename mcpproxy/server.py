@@ -4,6 +4,10 @@ import asyncio
 import base64
 import json
 import logging
+import re
+from urllib.parse import urlparse
+
+import httpx
 
 from fastmcp import FastMCP as FastMCPServer
 from fastmcp.server.providers.proxy import ProxyClient
@@ -31,10 +35,42 @@ def _server_url(server: dict) -> str:
     return (server.get("url") or "").strip()
 
 
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
+
+
+def _is_loopback_https(url: str) -> bool:
+    """True if `url` is HTTPS pointed at loopback. Loopback HTTPS endpoints
+    typically use self-signed certs that fail standard chain validation; the
+    cert isn't protecting against anything an attacker could reach on
+    127.0.0.1, so we skip verification for these URLs.
+
+    Matches localhost, 127.0.0.1, ::1 (with or without brackets). Strict on
+    scheme — only ``https://`` qualifies; ``http://`` is unaffected.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme.lower() != "https":
+        return False
+    host = (parsed.hostname or "").lower()
+    return host in _LOOPBACK_HOSTS
+
+
+def _make_transport(url: str, headers: dict) -> StreamableHttpTransport:
+    """Build a transport, skipping TLS verification for loopback HTTPS."""
+    if _is_loopback_https(url):
+        return StreamableHttpTransport(
+            url=url, headers=headers,
+            httpx_client_factory=lambda *a, **kw: httpx.AsyncClient(verify=False),
+        )
+    return StreamableHttpTransport(url=url, headers=headers)
+
+
 def _make_static_headers_factory(url: str, headers: dict):
     """Static headers — used by none/bearer/api_key/basic/custom_headers."""
     def factory():
-        return ProxyClient(StreamableHttpTransport(url=url, headers=dict(headers)))
+        return ProxyClient(_make_transport(url, dict(headers)))
     return factory
 
 
@@ -58,7 +94,7 @@ def _make_voitta_rag_legacy_factory(app_ref, url: str):
             if profile.get("name"):
                 headers[f"X-Auth-Name-{suffix}"] = profile["name"]
         logger.debug("voitta_rag_legacy factory: url=%s, %d headers", url, len(headers))
-        return ProxyClient(StreamableHttpTransport(url=url, headers=headers))
+        return ProxyClient(_make_transport(url, headers))
     return factory
 
 
@@ -80,7 +116,7 @@ def _make_oauth_app_factory(app_ref, url: str, backend: str, app_type: str):
                     headers["X-Auth-Name"] = profile["name"]
         logger.debug("oauth_app factory: url=%s, backend=%s, headers=%s",
                      url, backend, list(headers.keys()))
-        return ProxyClient(StreamableHttpTransport(url=url, headers=headers))
+        return ProxyClient(_make_transport(url, headers))
     return factory
 
 
