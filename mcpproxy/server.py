@@ -167,23 +167,42 @@ def _build_factory(server: dict, app_ref):
     return _make_static_headers_factory(url, {})
 
 
-def build_instructions(mcp_servers: list[dict]) -> str:
-    """Build the LLM instructions block describing what's mounted, from the
-    live mcp_servers list. The description field is the only thing the
-    downstream client sees — keep it short and accurate."""
+def build_instructions(app_ref, mcp_servers: list[dict]) -> str:
+    """Build the LLM instructions block describing what's currently exposed.
+
+    A backend appears iff it has ≥1 tool not in `app_ref.disabled_tools`
+    right now — i.e. the prompt mirrors the tools array as filtered by the
+    tool gate. Per-backend prose is the upstream `initialize.instructions`
+    (when captured) appended with the locally-configured `description`
+    (when set). Either may be empty; if both are empty the line is omitted.
+
+    Called per new MCP session via the patched `create_initialization_options`
+    on the FastMCP server, so each fresh client handshake reads current state.
+    """
+    disabled = set(getattr(app_ref, "disabled_tools", set()))
+    per_prefix_tools: dict[str, list[str]] = getattr(app_ref, "_mcp_tools", {}) or {}
+    upstream_map: dict[str, str] = getattr(app_ref, "_mcp_upstream_instructions", {}) or {}
+
     lines = [
         "You are connected through Voitta Desktop, a unified MCP proxy. "
         "All tool names are prefixed by backend:"
     ]
     for s in mcp_servers:
         prefix = (s.get("prefix") or "").strip()
-        desc = (s.get("description") or "").strip()
-        if prefix and desc:
-            lines.append(f"  • {prefix}_* — {desc}")
-    lines.append(
-        "If a google_workspace_* tool fails with an auth error, "
-        "ask the user to log in via the Voitta Desktop menu bar icon."
-    )
+        if not prefix:
+            continue
+        names = per_prefix_tools.get(prefix) or []
+        if not names:
+            continue
+        if not any(n not in disabled for n in names):
+            continue
+        upstream = (upstream_map.get(prefix) or "").strip()
+        local = (s.get("description") or "").strip()
+        prose = " ".join(p for p in (upstream, local) if p).strip()
+        if not prose:
+            lines.append(f"  • {prefix}_*")
+        else:
+            lines.append(f"  • {prefix}_* — {prose}")
     return "\n".join(lines)
 
 
@@ -359,7 +378,7 @@ def run_mcp_proxy(app_ref, port: int):
     mcp_servers = list(app_ref.mcp_servers)
     main_server = FastMCPServer(
         "voitta-desktop",
-        instructions=build_instructions(mcp_servers),
+        instructions="",  # refreshed per-session below
         middleware=[gate],
     )
     # Disable tools/list_changed notifications — they cause Claude Code
@@ -417,6 +436,46 @@ def run_mcp_proxy(app_ref, port: int):
             return obj["data"] if isinstance(obj["data"], str) else json.dumps(obj["data"])
 
         return f"Unknown object type: {obj['type']}"
+
+    # ── Dynamic instructions ────────────────────────────────────────
+    #
+    # `create_initialization_options()` is called once per new MCP session
+    # (see mcp.server.streamable_http_manager). We refresh `instructions`
+    # right before each call, so every fresh client handshake — including
+    # the one Claude Code does after `/mcp` toggles a server — reads
+    # current state: only backends with ≥1 currently-enabled tool, upstream
+    # description appended with the locally configured one.
+    #
+    # On the first init we also kick off a one-shot background fetch of
+    # each backend's upstream `initialize.instructions` so subsequent prompt
+    # rebuilds can include them. Failures are tolerated and just leave the
+    # local description as the sole prose.
+    low = main_server._mcp_server
+    _orig_init_opts = low.create_initialization_options
+    _primed = {"done": False}
+
+    async def _prime_upstream_instructions():
+        for _name, _url, proxy in proxies:
+            try:
+                await proxy.fetch_upstream_instructions()
+            except Exception as e:
+                logger.debug("upstream instructions prime failed for %s: %s", _name, e)
+
+    def _patched_init_opts(*args, **kwargs):
+        if not _primed["done"]:
+            _primed["done"] = True
+            try:
+                asyncio.get_event_loop().create_task(_prime_upstream_instructions())
+            except Exception as e:
+                logger.debug("could not schedule upstream-instructions prime: %s", e)
+        try:
+            low.instructions = build_instructions(app_ref, list(app_ref.mcp_servers))
+        except Exception as e:
+            logger.warning("build_instructions failed: %s", e)
+            low.instructions = ""
+        return _orig_init_opts(*args, **kwargs)
+
+    low.create_initialization_options = _patched_init_opts
 
     # ── Logging ─────────────────────────────────────────────────────
 

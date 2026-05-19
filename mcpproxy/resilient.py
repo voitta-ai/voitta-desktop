@@ -127,6 +127,28 @@ class ResilientProxyProvider(ProxyProvider):
         names = [f"{self._prefix}_{t.name}" if self._prefix else t.name for t in (tools or [])]
         self._app_ref._mcp_tools[self._prefix] = sorted(names)
 
+    async def fetch_upstream_instructions(self) -> str:
+        """Open a one-shot client and return upstream `initialize.instructions`.
+
+        Returns "" on any failure. Result is cached on app_ref so subsequent
+        prompt rebuilds are free. Caller decides when to invoke — we don't
+        wire this into _list_tools to keep the listing path lean.
+        """
+        cache = getattr(self._app_ref, "_mcp_upstream_instructions", None) if self._app_ref else None
+        if cache is not None and self._prefix in cache:
+            return cache[self._prefix]
+        text = ""
+        try:
+            client = self.client_factory()
+            async with client:
+                ir = getattr(client, "initialize_result", None)
+                text = (getattr(ir, "instructions", "") or "").strip()
+        except Exception as e:
+            logger.debug("[%s] upstream instructions fetch failed: %s", self._backend_name, e)
+        if cache is not None:
+            cache[self._prefix] = text
+        return text
+
     def _spawn_refresh(self, kind: str, coro_factory):
         """Kick off a background refresh for `kind` if one isn't already in flight.
 
@@ -311,6 +333,9 @@ class ResilientFastMCPProxy(FastMCPProxy):
         ok, count, err = await self._resilient_provider.force_refresh()
         self._last_refresh_error = None if ok else err
         return ok, count, err
+
+    async def fetch_upstream_instructions(self) -> str:
+        return await self._resilient_provider.fetch_upstream_instructions()
 
     def peek_cached(self) -> int:
         """Synchronously read the on-disk tool count for this backend.

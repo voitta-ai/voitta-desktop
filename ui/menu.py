@@ -107,6 +107,7 @@ class VoittaDesktopApp(
         link_cfg = self._config.get("claude_link", {})
         self.claude_link_armed = bool(link_cfg.get("armed", False))
         self._mcp_tools = {}
+        self._mcp_upstream_instructions: dict[str, str] = {}
 
         self._active_app = {}
         self._init_active_defaults()
