@@ -170,23 +170,20 @@ def _build_factory(server: dict, app_ref):
 def build_instructions(app_ref, mcp_servers: list[dict]) -> str:
     """Build the LLM instructions block describing what's currently exposed.
 
-    A backend appears iff it has ≥1 tool not in `app_ref.disabled_tools`
-    right now — i.e. the prompt mirrors the tools array as filtered by the
-    tool gate. Per-backend prose is the upstream `initialize.instructions`
-    (when captured) appended with the locally-configured `description`
-    (when set). Either may be empty; if both are empty the line is omitted.
+    Follows the Claude Code convention: one markdown section per connected
+    backend, containing the upstream server's own initialize.instructions
+    followed by the locally-configured description. Tool names are NOT
+    listed here — the tools array carries that detail; the model maps
+    prefix_* names to sections by the shared prefix.
 
-    Called per new MCP session via the patched `create_initialization_options`
-    on the FastMCP server, so each fresh client handshake reads current state.
+    A backend is included iff it has ≥1 tool not in disabled_tools right now,
+    so the prompt stays in sync with the tools array after /mcp toggles.
     """
     disabled = set(getattr(app_ref, "disabled_tools", set()))
     per_prefix_tools: dict[str, list[str]] = getattr(app_ref, "_mcp_tools", {}) or {}
     upstream_map: dict[str, str] = getattr(app_ref, "_mcp_upstream_instructions", {}) or {}
 
-    lines = [
-        "You are connected through Voitta Desktop, a unified MCP proxy. "
-        "All tool names are prefixed by backend:"
-    ]
+    blocks = []
     for s in mcp_servers:
         prefix = (s.get("prefix") or "").strip()
         if not prefix:
@@ -196,14 +193,23 @@ def build_instructions(app_ref, mcp_servers: list[dict]) -> str:
             continue
         if not any(n not in disabled for n in names):
             continue
+        name = (s.get("name") or prefix).strip()
         upstream = (upstream_map.get(prefix) or "").strip()
         local = (s.get("description") or "").strip()
-        prose = " ".join(p for p in (upstream, local) if p).strip()
-        if not prose:
-            lines.append(f"  • {prefix}_*")
-        else:
-            lines.append(f"  • {prefix}_* — {prose}")
-    return "\n".join(lines)
+        body_parts = [p for p in (upstream, local) if p]
+        body = "\n".join(body_parts) if body_parts else f"Tool prefix: {prefix}_*"
+        blocks.append(f"## {name}\n{body}")
+
+    if not blocks:
+        return "You are connected through Voitta Desktop, a unified MCP proxy. No backends are currently active."
+
+    sections = "\n\n".join(blocks)
+    return (
+        "You are connected through Voitta Desktop, a unified MCP proxy. "
+        "All tool names are prefixed by backend name (e.g. vim_search, freecad_create_document). "
+        "The following MCP servers are currently active:\n\n"
+        f"{sections}"
+    )
 
 
 def tool_tree_groups(mcp_servers: list[dict]) -> list[tuple[str, str]]:
