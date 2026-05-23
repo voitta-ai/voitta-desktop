@@ -65,62 +65,85 @@ class ConvList(ListView):
 
 _SECTION_H = 4   # character rows per section (× 4 braille dots = 16 levels)
 
-# Braille dot layout: (col 0|1, dot_row 0..3 top→bottom) → bit
+# Braille dot layout: dot_col (0=left,1=right), dot_row (0=top..3=bottom) → bit
 _BDOTS = [
     [0x01, 0x02, 0x04, 0x08],  # col 0
     [0x10, 0x20, 0x40, 0x80],  # col 1
 ]
-_B0 = 0x2800  # braille base codepoint
+_B0 = 0x2800
+
+
+import math as _math
+
+
+def _log_norm(vals: list[int | float], res: int) -> list[int]:
+    """Normalize values to 0..(res-1) on a log scale. 0 stays 0."""
+    mx = max(vals, default=0)
+    if mx <= 0:
+        return [0] * len(vals)
+    log_mx = _math.log1p(mx)
+    return [round(_math.log1p(v) / log_mx * (res - 1)) for v in vals]
+
+
+def _set_dot(grid, h, dc, dot_y):
+    """Set a single braille dot at dot-column dc, absolute dot-row dot_y (0=top)."""
+    cr = dot_y // 4
+    dr = dot_y % 4
+    ci = dc // 2   # char col = turn_index // 2, but here dc IS already the turn index
+    # caller passes (grid, h, turn_index, dot_y_from_top)
+    # repurpose: dc=turn_index
+    ci = dc // 2
+    dcol = dc % 2
+    if 0 <= cr < h:
+        grid[cr][ci] |= _BDOTS[dcol][dr]
 
 
 def _braille_line(vals: list[int | float], h: int, color: str, label: str) -> list[str]:
-    """Render a single line as a braille chart, h character-rows tall.
-
-    Each braille character is 2 columns × 4 dot-rows.
-    Two consecutive values share one character column-pair.
-    """
+    """Braille line chart: log scale, full interpolation between every pair of turns."""
     n = len(vals)
+    if n == 0:
+        return [f"[bold {color}]{label}[/bold {color}]│"]
     mx = max(vals, default=0)
-    res = h * 4  # total dot-rows
+    res = h * 4   # total dot rows, 0=top res-1=bottom → we invert
 
-    # Normalize each value to 0..(res-1), 0=bottom
-    norm = [round(v / mx * (res - 1)) if mx else 0 for v in vals]
+    norm = _log_norm(vals, res)  # 0=bottom, res-1=top
 
-    # Build grid: grid[char_row][char_col] = braille bits
     ncols = (n + 1) // 2
     grid = [[0] * ncols for _ in range(h)]
 
-    for i, y in enumerate(norm):
-        ci = i // 2          # which braille character column
-        dc = i % 2           # which dot-column within the char (0 or 1)
-        # y=0 → bottom dot, y=res-1 → top dot
+    def place(turn_idx: int, y: int):
+        """Place dot for turn turn_idx at normalized height y (0=bottom)."""
         dot_from_top = (res - 1) - y
-        char_row = dot_from_top // 4
-        dot_row  = dot_from_top % 4
-        if 0 <= char_row < h:
-            grid[char_row][ci] |= _BDOTS[dc][dot_row]
+        ci = turn_idx // 2
+        dcol = turn_idx % 2
+        cr = dot_from_top // 4
+        dr = dot_from_top % 4
+        if 0 <= cr < h and 0 <= ci < ncols:
+            grid[cr][ci] |= _BDOTS[dcol][dr]
 
-    # Optionally connect adjacent dots in same char with intermediate dots
-    for ci in range(ncols):
-        y0 = norm[ci * 2]     if ci * 2     < n else None
-        y1 = norm[ci * 2 + 1] if ci * 2 + 1 < n else None
-        if y0 is not None and y1 is not None:
+    # Place each point and interpolate between consecutive turns
+    for i, y in enumerate(norm):
+        place(i, y)
+        if i > 0:
+            y0, y1 = norm[i - 1], y
             lo, hi = sorted([y0, y1])
-            for fy in range(lo, hi + 1):
-                dot_from_top = (res - 1) - fy
-                cr = dot_from_top // 4
-                dr = dot_from_top % 4
-                dc = 0 if fy == y0 else 1
-                if 0 <= cr < h:
-                    grid[cr][ci] |= _BDOTS[dc][dr]
+            # For each intermediate level, assign to the turn whose column is closer
+            for fy in range(lo + 1, hi):
+                frac = (fy - y0) / (y1 - y0) if y1 != y0 else 0.5
+                ti = i - 1 if frac < 0.5 else i
+                place(ti, fy)
 
     lw = len(label)
     rows = []
     for r in range(h):
         line = "".join(chr(_B0 | grid[r][ci]) for ci in range(ncols))
         prefix = f"[bold {color}]{label}[/bold {color}]│" if r == 0 else f"{'':>{lw}}│"
-        suffix = f"  [dim]max {mx//1000}k[/dim]" if r == 0 and mx >= 1000 else (
-                 f"  [dim]max {mx}[/dim]" if r == 0 and mx else "")
+        if r == 0 and mx >= 1000:
+            suffix = f"  [dim]max {mx//1000}k[/dim]"
+        elif r == 0 and mx:
+            suffix = f"  [dim]max {mx}[/dim]"
+        else:
+            suffix = ""
         rows.append(f"{prefix}[{color}]{line}[/{color}]{suffix}")
     return rows
 
@@ -144,10 +167,16 @@ def _render_turn_chart(conv) -> str:
     lw  = 5
     cw  = (n + 1) // 2   # braille chars wide (2 turns per char)
     sep = f"{'':>{lw}}┼" + "─" * cw
-    x_axis = f"{'':>{lw}}│" + "".join(
-        str((i * 2 + 1) % 10) if (i * 2 + 1) % 5 < 2 else " "
-        for i in range(cw)
-    )
+    # x-axis: each braille char = turns i*2 and i*2+1
+    # show label at every 5th turn; use last digit of turn number
+    def _xlabel(i):
+        t0 = i * 2 + 1   # turn number (1-based) of left dot-col
+        t1 = i * 2 + 2
+        if t0 % 10 == 0: return str(t0 // 10 % 10) if t0 >= 10 else " "
+        if t0 % 5 == 0:  return str(t0 % 10)
+        if t1 % 5 == 0:  return str(t1 % 10)
+        return " "
+    x_axis = f"{'':>{lw}}│" + "".join(_xlabel(i) for i in range(cw))
 
     pre_sec  = _braille_line(pre_vals,  _SECTION_H, "red",    "pre  ")
     post_sec = _braille_line(post_vals, _SECTION_H, "blue",   "post ")
