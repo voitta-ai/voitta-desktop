@@ -165,7 +165,7 @@ class ConvDetail(ScrollableContainer):
             inner.update("No conversation selected.")
             return
         inner.update(_render_turn_chart(conv))
-        self.scroll_end(animate=False)
+        self.scroll_x = self.max_scroll_x
 
 
 class StatusBar(Static):
