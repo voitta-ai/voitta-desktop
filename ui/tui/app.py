@@ -96,9 +96,9 @@ def _render_turn_chart(conv, stripped_tool_ids: dict, stripped_msg_indices: dict
                  for mi in range(t._msg_range[0], t._msg_range[1]))
         return st + sm
 
-    pre_vals  = [t.input_tokens + _stripped(t) for t in turns]
-    post_vals = [t.input_tokens                 for t in turns]
-    cr_vals   = [t.cache_read_input_tokens       for t in turns]
+    pre_vals  = [t.input_tokens + t.cache_read_input_tokens + _stripped(t) for t in turns]
+    post_vals = [t.input_tokens + t.cache_read_input_tokens               for t in turns]
+    cr_vals   = [t.cache_read_input_tokens                                 for t in turns]
     out_vals  = [t.output_tokens                 for t in turns]
     # cache hit rate 0–100
     hit_vals  = [
@@ -123,8 +123,9 @@ def _render_turn_chart(conv, stripped_tool_ids: dict, stripped_msg_indices: dict
     hit_sec  = _section(hit_vals,  "cyan",   "hit% ", lambda v: f"max {v}%")
 
     last = turns[-1]
-    last_pre = last.input_tokens + _stripped(last)
-    savings_pct = int((last_pre - last.input_tokens) * 100 / last_pre) if last_pre else 0
+    last_pre = last.input_tokens + last.cache_read_input_tokens + _stripped(last)
+    last_post = last.input_tokens + last.cache_read_input_tokens
+    savings_pct = int(_stripped(last) * 100 / last_pre) if last_pre else 0
     last_hit = hit_vals[-1]
 
     header = (
@@ -135,7 +136,7 @@ def _render_turn_chart(conv, stripped_tool_ids: dict, stripped_msg_indices: dict
     last_line = (
         f"[dim]last:[/dim]  "
         f"[red]pre={last_pre:,}[/red]  "
-        f"[blue]post={last.input_tokens:,}[/blue]  "
+        f"[blue]post={last_post:,}[/blue]  "
         f"[green]cr={last.cache_read_input_tokens:,}[/green]  "
         f"[yellow]out={last.output_tokens:,}[/yellow]  "
         f"[cyan]hit={last_hit}%[/cyan]  "
