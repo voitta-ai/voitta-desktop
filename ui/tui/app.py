@@ -152,7 +152,11 @@ class StatusBar(Static):
         total_in = sum(c.input_tokens + c.cache_read_input_tokens for c in convs)
         total_cr = sum(c.cache_read_input_tokens for c in convs)
         cache_pct = int(total_cr * 100 / total_in) if total_in else 0
-        arm = "[green]Armed[/green]" if app_ref.claude_link_armed else "[dim]Disarmed[/dim]"
+        # Read ground truth from ~/.claude/settings.json, not the stale flag.
+        from claude_link import is_voitta_connected, load_claude_settings
+        actually_armed = is_voitta_connected(load_claude_settings(), app_ref.llm_proxy_port)
+        app_ref.claude_link_armed = actually_armed  # keep flag in sync
+        arm = "[green]Armed[/green]" if actually_armed else "[dim]Disarmed[/dim]"
         backends = len([
             s for s in app_ref.mcp_servers
             if (s.get("prefix") or "").strip()
