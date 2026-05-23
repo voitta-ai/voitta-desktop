@@ -106,7 +106,7 @@ class StatusBar(Static):
             f"📊 {cache_pct}% cache  "
             f"🔗 {arm}  "
             f"⚙ {backends} backend(s) active  "
-            f"  [dim]q quit  a arm/disarm[/dim]"
+            f"  [dim]^C quit  ^D arm/disarm  ^R refresh tools[/dim]"
         )
 
 
@@ -135,9 +135,13 @@ class TUIApp(App, AppBase):
     """
 
     BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("a", "toggle_arm", "Arm/Disarm"),
-        Binding("r", "refresh_tools", "Refresh tools"),
+        # ctrl+c / ctrl+q are Textual built-ins for quit — no custom q binding
+        # to avoid accidental exits when navigating the conversation list.
+        # ctrl+a is screen's prefix — use ctrl+d (arm/disarm) instead.
+        # ctrl+b is tmux's prefix — avoid entirely.
+        # ctrl+r has no multiplexer meaning in this context.
+        Binding("ctrl+d", "toggle_arm", "Arm/Disarm"),
+        Binding("ctrl+r", "refresh_tools", "Refresh tools"),
     ]
 
     def __init__(self):
