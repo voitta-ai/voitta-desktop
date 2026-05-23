@@ -57,6 +57,15 @@ class ConversationTracker(Middleware):
         conv.last_active = now
         conv.model = body.get("model", conv.model)
 
+        # Re-run label extraction on every request: Claude Code's explicit
+        # {"title": "..."} JSON arrives mid-conversation (not the first turn),
+        # so we must keep looking until we find it. Once an explicit title
+        # has been found (i.e. label no longer equals the first-turn heuristic
+        # or "conversation"), don't downgrade it on later requests.
+        new_label = extract_label(body)
+        if new_label != "conversation":
+            conv.label = new_label
+
         self._pending[id(request)] = {
             "chunks": [],
             "body": body,

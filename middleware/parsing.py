@@ -405,20 +405,48 @@ def _unwrap_title_json(text: str) -> str:
 
 
 def extract_label(body: dict) -> str:
-    """Extract conversation label from the first real user message."""
+    """Extract conversation label from messages.
+
+    Two-pass strategy:
+    1. Scan ALL user messages for an explicit {"title": "..."} JSON — Claude
+       Code injects this mid-conversation, so it may not be the first message.
+       An explicit title is authoritative and returned immediately.
+    2. Fall back to the first real user message text (original behaviour).
+    """
     messages = body.get("messages", [])
+
+    # Pass 1 — explicit title anywhere in the message list (scan in reverse
+    # so the most recent title wins if there are multiple).
+    for msg in reversed(messages):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content", "")
+        texts = []
+        if isinstance(content, str):
+            texts = [content]
+        elif isinstance(content, list):
+            texts = [item.get("text", "") for item in content
+                     if isinstance(item, dict) and item.get("type") == "text"]
+        for raw in texts:
+            unwrapped = _unwrap_title_json(raw)
+            if unwrapped != raw:
+                title = clean_text(unwrapped)
+                if title:
+                    return truncate(title, 60)
+
+    # Pass 2 — first real user message text.
     for msg in messages:
         if msg.get("role") != "user":
             continue
         content = msg.get("content", "")
         if isinstance(content, str):
-            text = clean_text(_unwrap_title_json(content))
+            text = clean_text(content)
             if text and not is_system_junk(text):
                 return truncate(text, 60)
         elif isinstance(content, list):
             for item in content:
                 if isinstance(item, dict) and item.get("type") == "text":
-                    text = clean_text(_unwrap_title_json(item.get("text", "")))
+                    text = clean_text(item.get("text", ""))
                     if text and not is_system_junk(text):
                         return truncate(text, 60)
     return "conversation"
