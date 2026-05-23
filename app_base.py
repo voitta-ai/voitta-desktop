@@ -170,9 +170,13 @@ class AppBase:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(self._proxy.run())
+            loop.run_until_complete(self._proxy.start())
+            self._proxy_running = True
+            logger.info("LLM proxy started on port %d", self.llm_proxy_port)
+            loop.run_forever()
         except Exception as e:
-            logger.error("LLM proxy crashed: %s", e, exc_info=True)
+            logger.error("LLM proxy failed to start: %s", e, exc_info=True)
+            self._proxy_running = False
 
     def _run_mcp_proxy(self) -> None:
         from mcpproxy.server import run_mcp_proxy
