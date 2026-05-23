@@ -52,7 +52,7 @@ class AppBase:
             tools_cfg.get("suppress_codex_popup", True)
         )
         link_cfg = self._config.get("claude_link", {})
-        self.claude_link_armed: bool = bool(link_cfg.get("armed", False))
+        self.claude_link_armed: bool = bool(link_cfg.get("armed", True))
 
         self._mcp_tools: dict[str, list[str]] = {}
         self._mcp_upstream_instructions: dict[str, str] = {}

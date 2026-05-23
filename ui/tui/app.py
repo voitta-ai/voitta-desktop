@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, ScrollableContainer
 from textual.message import Message
 from textual.widgets import Footer, Header, Label, ListItem, ListView, RichLog, Static
 
@@ -63,32 +63,84 @@ class ConvList(ListView):
             self.append(item)
 
 
-class ConvDetail(Static):
-    """Right panel: turn-by-turn view of the selected conversation."""
+_CHART_HEIGHT = 8   # character rows for bars
+_BLOCKS = " ▁▂▃▄▅▆▇█"
+
+
+def _bar_col(value: int, max_val: int, color: str) -> str:
+    """Return a single-character bar cell of the right height."""
+    if max_val == 0 or value == 0:
+        return f"[dim]·[/dim]"
+    frac = value / max_val
+    idx = max(1, round(frac * (len(_BLOCKS) - 1)))
+    return f"[{color}]{_BLOCKS[idx]}[/{color}]"
+
+
+def _render_turn_chart(conv) -> str:
+    """Render a compact 3-row stacked bar chart (in / cr / out per turn).
+
+    Each turn is one character wide.  Colors:
+      blue  = input tokens
+      green = cache-read tokens
+      yellow = output tokens
+
+    A label row shows the turn index every 5 turns.
+    """
+    turns = conv.turns
+    if not turns:
+        return "[dim]no turns yet[/dim]"
+
+    max_in  = max((t.input_tokens for t in turns), default=0)
+    max_cr  = max((t.cache_read_input_tokens for t in turns), default=0)
+    max_out = max((t.output_tokens for t in turns), default=0)
+
+    in_row  = "".join(_bar_col(t.input_tokens,              max_in,  "blue")   for t in turns)
+    cr_row  = "".join(_bar_col(t.cache_read_input_tokens,   max_cr,  "green")  for t in turns)
+    out_row = "".join(_bar_col(t.output_tokens,             max_out, "yellow") for t in turns)
+
+    # index label: show turn number every 5, right-aligned to 1 char
+    label_row = "".join(
+        str((t.index + 1) % 10) if (t.index + 1) % 5 == 0 else " "
+        for t in turns
+    )
+
+    header = (
+        f"[bold]{conv.label}[/bold]  "
+        f"model={conv.model or '?'}  requests={conv.request_count}  "
+        f"turns={len(turns)}"
+    )
+    legend = (
+        "[blue]▇[/blue] in  "
+        "[green]▇[/green] cache-read  "
+        "[yellow]▇[/yellow] out"
+    )
+    separator = "─" * max(len(turns), 20)
+
+    return "\n".join([
+        header,
+        legend,
+        separator,
+        f"[blue]in [/blue] {in_row}",
+        f"[green]cr [/green] {cr_row}",
+        f"[yellow]out[/yellow] {out_row}",
+        f"[dim]   {label_row}[/dim]",
+    ])
+
+
+class ConvDetail(ScrollableContainer):
+    """Right panel: horizontal-scrolling bar chart of turns."""
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="detail-inner")
 
     def show(self, conv) -> None:
+        inner = self.query_one("#detail-inner", Static)
         if conv is None:
-            self.update("No conversation selected.")
+            inner.update("No conversation selected.")
             return
-
-        lines = [f"[bold]{conv.label}[/bold]  model={conv.model or '?'}  "
-                 f"requests={conv.request_count}\n"]
-
-        for turn in conv.turns:
-            tok = f"in={turn.input_tokens} cr={turn.cache_read_input_tokens} out={turn.output_tokens}"
-            lines.append(f"[dim]── Turn {turn.index + 1}  {tok}[/dim]")
-            for block in turn.blocks:
-                btype = getattr(block, "type", "?")
-                if btype == "text":
-                    text = (block.text or "").strip()
-                    lines.append(f"  [green]text[/green]  {text[:120]}")
-                elif btype == "tool_use":
-                    lines.append(f"  [yellow]tool[/yellow]  {block.name}")
-                elif btype == "tool_result":
-                    lines.append(f"  [blue]result[/blue]  (id={block.tool_use_id})")
-                elif btype == "thinking":
-                    lines.append(f"  [magenta]think[/magenta]  {(block.thinking or '')[:80]}")
-        self.update("\n".join(lines))
+        inner.update(_render_turn_chart(conv))
+        # autoscroll to the right so the latest turn is always visible
+        self.scroll_end(animate=False)
 
 
 class StatusBar(Static):
@@ -171,7 +223,11 @@ class TUIApp(App, AppBase):
     ConvDetail {
         width: 1fr;
         padding: 1 2;
-        overflow-y: auto;
+        overflow-x: scroll;
+        overflow-y: hidden;
+    }
+    #detail-inner {
+        width: auto;
     }
     StatusBar {
         height: 1;
