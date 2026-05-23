@@ -219,7 +219,77 @@ def _render_turn_chart(conv) -> str:
     lines += cr_sec;   lines.append(sep)
     lines += out_sec;  lines.append(sep)
     lines += hit_sec;  lines += [sep, x_axis]
+
+    lines.append("")
+    lines += _render_breakdown(conv)
+
     return "\n".join(lines)
+
+
+def _k(v: int) -> str:
+    if v >= 1_000_000: return f"{v/1_000_000:.1f}M"
+    if v >= 1_000:     return f"{v//1_000}k"
+    return str(v)
+
+
+def _render_breakdown(conv) -> list[str]:
+    bd = conv.breakdown
+    lines = []
+
+    # ── Context composition ──────────────────────────────────────────
+    if bd:
+        sys_k  = _k(bd.system_prompt_chars)
+        tool_k = _k(bd.tools_chars)
+        other_k = _k(bd.other_chars)
+        lines.append(
+            f"[dim]context:[/dim]  "
+            f"[blue]system {sys_k}[/blue]  "
+            f"[yellow]tools {tool_k} ({bd.tools_count})[/yellow]  "
+            f"[dim]other {other_k}[/dim]"
+        )
+
+        # Per-tool-group breakdown (top 6)
+        if bd.tool_groups:
+            groups = sorted(bd.tool_groups, key=lambda g: g.total_chars, reverse=True)[:6]
+            row = "  [dim]tools:[/dim]  " + "  ".join(
+                f"[yellow]{g.prefix}[/yellow][dim]×{g.count} {_k(g.total_chars)}[/dim]"
+                for g in groups
+            )
+            lines.append(row)
+
+        # System blocks (top 3)
+        if bd.system_blocks:
+            for preview, chars in bd.system_blocks[:3]:
+                lines.append(f"  [dim]sys·[/dim] [blue]{preview[:60]}[/blue] [dim]{_k(chars)}[/dim]")
+
+    # ── Last-turn content breakdown ───────────────────────────────────
+    if conv.turns:
+        last = conv.turns[-1]
+        parts = []
+        if last.user_text_chars:    parts.append(f"[green]user {_k(last.user_text_chars)}[/green]")
+        if last.tool_result_chars:  parts.append(f"[cyan]results {_k(last.tool_result_chars)}[/cyan]")
+        if last.bash_chars:         parts.append(f"[dim]bash {_k(last.bash_chars)}[/dim]")
+        if last.thinking_chars:     parts.append(f"[magenta]think {_k(last.thinking_chars)}[/magenta]")
+        if last.assistant_text_chars: parts.append(f"[white]asst {_k(last.assistant_text_chars)}[/white]")
+        if last.tool_call_chars:    parts.append(f"[yellow]calls {_k(last.tool_call_chars)}[/yellow]")
+        if last.images:             parts.append(f"[dim]imgs ×{len(last.images)}[/dim]")
+        if parts:
+            lines.append(f"[dim]last turn:[/dim]  " + "  ".join(parts))
+
+    # ── Cumulative savings ────────────────────────────────────────────
+    total_in = sum(t.input_tokens + t.cache_read_input_tokens for t in conv.turns)
+    total_cr = sum(t.cache_read_input_tokens for t in conv.turns)
+    total_stripped = sum(t.stripped_chars for t in conv.turns)
+    cache_pct = int(total_cr * 100 / total_in) if total_in else 0
+    saved_pct = int(total_stripped * 100 / (total_in + total_stripped)) if (total_in + total_stripped) else 0
+    lines.append(
+        f"[dim]totals:[/dim]  "
+        f"[green]cache {cache_pct}%[/green]  "
+        f"[magenta]optimizer saved {saved_pct}%[/magenta]  "
+        f"[dim]in {_k(total_in)}  cr {_k(total_cr)}[/dim]"
+    )
+
+    return lines
 
 
 class ConvDetail(ScrollableContainer):
