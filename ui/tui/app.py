@@ -165,6 +165,9 @@ class ConvDetail(ScrollableContainer):
             inner.update("No conversation selected.")
             return
         inner.update(_render_turn_chart(conv))
+        self.call_after_refresh(self._scroll_to_right)
+
+    def _scroll_to_right(self) -> None:
         self.scroll_x = self.max_scroll_x
 
 
