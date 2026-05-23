@@ -345,21 +345,30 @@ class OptimizerPipeline(Middleware):
         for o in self.optimizers:
             request = await o.on_request(request)
 
-        # Stamp per-turn stripped_chars on the current turn so historical
-        # charts can show pre vs post without relying on last_stripped_* dicts
-        # (which reset each request).
-        if self._tracker:
-            body = request.json
-            if body:
-                sid = request.headers.get("X-Claude-Code-Session-Id", "")
-                if not sid:
-                    import hashlib, json as _json
-                    sid = hashlib.md5(_json.dumps(body.get("system", "")).encode()).hexdigest()[:8]
-                conv = self._tracker.conversations.get(sid)
-                if conv and conv.turns:
-                    total_stripped = sum(self.stripped_tool_ids.values()) + sum(self.stripped_msg_indices.values())
-                    conv.turns[-1].stripped_chars = total_stripped
+        # Stash stripped total on the request so on_response_done can stamp
+        # the correct turn (turns are created by the tracker in on_response_done,
+        # which fires before ours since middlewares run in list order).
+        request._optimizer_stripped = (
+            sum(self.stripped_tool_ids.values()) +
+            sum(self.stripped_msg_indices.values())
+        )
 
         # Inject cache breakpoint only when optimization is active
         request = self._inject_cache_breakpoint(request)
         return request
+
+    async def on_response_done(self, request: ProxyRequest, response) -> None:
+        if not self._tracker:
+            return
+        stripped = getattr(request, "_optimizer_stripped", 0)
+        if not stripped:
+            return
+        sid = request.headers.get("X-Claude-Code-Session-Id", "")
+        if not sid:
+            body = request.json
+            if body:
+                import hashlib, json as _json
+                sid = hashlib.md5(_json.dumps(body.get("system", "")).encode()).hexdigest()[:8]
+        conv = self._tracker.conversations.get(sid)
+        if conv and conv.turns:
+            conv.turns[-1].stripped_chars = stripped
