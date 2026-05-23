@@ -84,6 +84,7 @@ class Turn:
     cache_control_types: list[str] = field(default_factory=list)
     tool_use_ids: list[str] = field(default_factory=list)
     file_ops: list[FileOp] = field(default_factory=list)
+    stripped_chars: int = 0  # chars removed by optimizer on this turn's context
 
     @property
     def total_tokens(self) -> int:

@@ -84,20 +84,13 @@ def _section(vals: list[int | float], color: str, label: str, fmt=None) -> list[
     return rows
 
 
-def _render_turn_chart(conv, stripped_tool_ids: dict, stripped_msg_indices: dict) -> str:
+def _render_turn_chart(conv) -> str:
     turns = conv.turns
     if not turns:
         return "[dim]no turns yet[/dim]"
 
-    # Per-turn optimizer savings (same logic as conv_menu.py)
-    def _stripped(t) -> int:
-        st = sum(stripped_tool_ids.get(tid, 0) for tid in t.tool_use_ids)
-        sm = sum(stripped_msg_indices.get(mi, 0)
-                 for mi in range(t._msg_range[0], t._msg_range[1]))
-        return st + sm
-
-    pre_vals  = [t.input_tokens + t.cache_read_input_tokens + _stripped(t) for t in turns]
-    post_vals = [t.input_tokens + t.cache_read_input_tokens               for t in turns]
+    pre_vals  = [t.input_tokens + t.cache_read_input_tokens + t.stripped_chars for t in turns]
+    post_vals = [t.input_tokens + t.cache_read_input_tokens                    for t in turns]
     cr_vals   = [t.cache_read_input_tokens                                 for t in turns]
     out_vals  = [t.output_tokens                 for t in turns]
     # cache hit rate 0–100
@@ -123,9 +116,9 @@ def _render_turn_chart(conv, stripped_tool_ids: dict, stripped_msg_indices: dict
     hit_sec  = _section(hit_vals,  "cyan",   "hit% ", lambda v: f"max {v}%")
 
     last = turns[-1]
-    last_pre = last.input_tokens + last.cache_read_input_tokens + _stripped(last)
+    last_pre = last.input_tokens + last.cache_read_input_tokens + last.stripped_chars
     last_post = last.input_tokens + last.cache_read_input_tokens
-    savings_pct = int(_stripped(last) * 100 / last_pre) if last_pre else 0
+    savings_pct = int(last.stripped_chars * 100 / last_pre) if last_pre else 0
     last_hit = hit_vals[-1]
 
     header = (
@@ -166,12 +159,12 @@ class ConvDetail(ScrollableContainer):
     def compose(self) -> ComposeResult:
         yield Static(id="detail-inner")
 
-    def show(self, conv, stripped_tool_ids: dict, stripped_msg_indices: dict) -> None:
+    def show(self, conv) -> None:
         inner = self.query_one("#detail-inner", Static)
         if conv is None:
             inner.update("No conversation selected.")
             return
-        inner.update(_render_turn_chart(conv, stripped_tool_ids, stripped_msg_indices))
+        inner.update(_render_turn_chart(conv))
         self.scroll_end(animate=False)
 
 
@@ -352,9 +345,7 @@ class TUIApp(App, AppBase):
         ) or (convs[0] if convs else None)
         if selected:
             self._selected_conv_id = selected.id
-        stripped_tool_ids    = self._optimizer_pipeline.stripped_tool_ids
-        stripped_msg_indices = self._optimizer_pipeline.stripped_msg_indices
-        self.query_one("#conv-detail", ConvDetail).show(selected, stripped_tool_ids, stripped_msg_indices)
+        self.query_one("#conv-detail", ConvDetail).show(selected)
         self.query_one("#status-bar", StatusBar).refresh_stats(self)
 
     # ── List selection ───────────────────────────────────────────────
@@ -364,11 +355,7 @@ class TUIApp(App, AppBase):
         if conv_id:
             self._selected_conv_id = conv_id
             conv = self._tracker.conversations.get(conv_id)
-            self.query_one("#conv-detail", ConvDetail).show(
-                conv,
-                self._optimizer_pipeline.stripped_tool_ids,
-                self._optimizer_pipeline.stripped_msg_indices,
-            )
+            self.query_one("#conv-detail", ConvDetail).show(conv)
 
     # ── Actions ─────────────────────────────────────────────────────
 

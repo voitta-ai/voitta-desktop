@@ -151,6 +151,7 @@ class AppBase:
             ],
             enabled=bool(opt_cfg.get("enabled", True)),
             haiku_only=bool(opt_cfg.get("haiku_only", False)),
+            tracker=self._tracker,
         )
         self._cache_sim = CacheSimulator()
         self._proxy = AnthropicProxy(

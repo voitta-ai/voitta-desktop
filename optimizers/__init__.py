@@ -218,10 +218,11 @@ class BaseOptimizer(Middleware):
 class OptimizerPipeline(Middleware):
     """Runs multiple optimizers in sequence, aggregates savings."""
 
-    def __init__(self, optimizers: list[BaseOptimizer], enabled: bool = True, haiku_only: bool = False):
+    def __init__(self, optimizers: list[BaseOptimizer], enabled: bool = True, haiku_only: bool = False, tracker=None):
         self.optimizers = optimizers
         self.enabled = enabled
         self.haiku_only = haiku_only
+        self._tracker = tracker  # optional ref for per-turn stripped_chars stamping
 
     @property
     def total_savings_usd(self) -> float:
@@ -343,6 +344,21 @@ class OptimizerPipeline(Middleware):
 
         for o in self.optimizers:
             request = await o.on_request(request)
+
+        # Stamp per-turn stripped_chars on the current turn so historical
+        # charts can show pre vs post without relying on last_stripped_* dicts
+        # (which reset each request).
+        if self._tracker:
+            body = request.json
+            if body:
+                sid = request.headers.get("X-Claude-Code-Session-Id", "")
+                if not sid:
+                    import hashlib, json as _json
+                    sid = hashlib.md5(_json.dumps(body.get("system", "")).encode()).hexdigest()[:8]
+                conv = self._tracker.conversations.get(sid)
+                if conv and conv.turns:
+                    total_stripped = sum(self.stripped_tool_ids.values()) + sum(self.stripped_msg_indices.values())
+                    conv.turns[-1].stripped_chars = total_stripped
 
         # Inject cache breakpoint only when optimization is active
         request = self._inject_cache_breakpoint(request)
