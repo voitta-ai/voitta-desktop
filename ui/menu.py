@@ -152,6 +152,8 @@ class VoittaDesktopApp(
             upstream_url=self.llm_upstream_url,
         )
         self._proxy_running = False
+        self.terminal_mode = False
+        self._tracker.app_ref = self  # enables notify_update callbacks
 
         # Build menu
         self._menu_items = {}
@@ -356,6 +358,9 @@ class VoittaDesktopApp(
             run_mcp_proxy(self, self.mcp_proxy_port)
         except BaseException as e:
             logger.error("MCP proxy failed: %s", e, exc_info=True)
+
+    def notify_update(self) -> None:
+        """No-op — Mac UI polls on a 2-second timer instead."""
 
     # ── Menu bar title + icon ────────────────────────────────────────────────
 

@@ -251,6 +251,13 @@ class ToolGateMiddleware(FastMCPMiddleware):
     async def on_list_tools(self, context, call_next):
         import time
 
+        # Terminal mode: no interactive popup — apply stored disabled_tools
+        # silently, identical to the Codex fast path.
+        if getattr(self._app_ref, "terminal_mode", False):
+            tools = await call_next(context)
+            disabled = set(getattr(self._app_ref, "disabled_tools", set()))
+            return [t for t in tools if t.name not in disabled]
+
         client_name, session_id = self._get_client_info(context)
 
         # Skip internal calls
@@ -382,6 +389,18 @@ def run_mcp_proxy(app_ref, port: int):
     app_ref._tool_gate = gate
 
     mcp_servers = list(app_ref.mcp_servers)
+
+    # Terminal mode: subprocess-kind servers require OAuth/local processes
+    # that aren't supported outside macOS. Filter them out silently.
+    if getattr(app_ref, "terminal_mode", False):
+        skipped = [s for s in mcp_servers if s.get("kind") == "subprocess"]
+        if skipped:
+            logger.info(
+                "terminal mode: skipping %d subprocess server(s): %s",
+                len(skipped),
+                ", ".join(s.get("name", s.get("prefix", "?")) for s in skipped),
+            )
+        mcp_servers = [s for s in mcp_servers if s.get("kind") != "subprocess"]
     main_server = FastMCPServer(
         "voitta-desktop",
         instructions="",  # refreshed per-session below

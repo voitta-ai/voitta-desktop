@@ -334,6 +334,14 @@ class ConversationTracker(Middleware):
 
         self._dump_conv_debug(conv, response_chars)
 
+        # Notify UI driver (Mac menu or Textual TUI) of updated state.
+        app_ref = getattr(self, "app_ref", None)
+        if app_ref is not None:
+            try:
+                app_ref.notify_update()
+            except Exception:
+                pass
+
     def _dump_conv_debug(self, conv, response_chars: dict):
         # Always write to the user-writable log dir. The previous form,
         # Path(__file__).parent.parent / "logs", resolved to the dev tree

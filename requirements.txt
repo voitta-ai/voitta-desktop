@@ -1,5 +1,8 @@
-# Menu bar UI
+# Menu bar UI (macOS only)
 rumps>=0.4.0
+
+# Terminal UI
+textual>=0.70.0
 
 # LLM reverse proxy
 aiohttp>=3.9.0

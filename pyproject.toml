@@ -70,6 +70,9 @@ requires = [
     "msal>=1.28.0",
     "requests>=2.31.0",
 
+    # Terminal UI
+    "textual>=0.70.0",
+
     # Config + image processing
     "python-dotenv>=1.0.0",
     "PyYAML>=6.0",
