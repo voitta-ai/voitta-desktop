@@ -63,74 +63,99 @@ class ConvList(ListView):
             self.append(item)
 
 
-_BAR_H = 8   # rows per metric section
+_BAR_H = 6   # rows per section
 
 
-def _section(turns: list, get_val, color: str, label: str) -> list[str]:
-    """Render one bar-chart section: _BAR_H rows tall, one col per turn."""
-    vals = [get_val(t) for t in turns]
+def _section(vals: list[int | float], color: str, label: str, fmt=None) -> list[str]:
+    """Render one bar section: _BAR_H rows tall, one col per value."""
     mx = max(vals, default=0)
+    lw = len(label)
     rows = []
     for r in range(_BAR_H):
         cells = []
         for v in vals:
             bar_h = round(v / mx * _BAR_H) if mx else 0
-            if r >= _BAR_H - bar_h:
-                cells.append(f"[{color}]█[/{color}]")
-            else:
-                cells.append("[dim]·[/dim]")
-        prefix = f"[bold {color}]{label}[/bold {color}]│" if r == 0 else f"{'':>{len(label)}}│"
-        rows.append(prefix + "".join(cells))
+            cells.append(f"[{color}]█[/{color}]" if r >= _BAR_H - bar_h else "[dim]·[/dim]")
+        prefix = f"[bold {color}]{label}[/bold {color}]│" if r == 0 else f"{'':>{lw}}│"
+        suffix = ""
+        if r == 0 and fmt and mx:
+            suffix = f"  [dim]{fmt(mx)}[/dim]"
+        rows.append(prefix + "".join(cells) + suffix)
     return rows
 
 
-def _render_turn_chart(conv) -> str:
+def _render_turn_chart(conv, stripped_tool_ids: dict, stripped_msg_indices: dict) -> str:
     turns = conv.turns
     if not turns:
         return "[dim]no turns yet[/dim]"
 
-    label_w = 3  # "in " / "cr " / "out"
+    # Per-turn optimizer savings (same logic as conv_menu.py)
+    def _stripped(t) -> int:
+        st = sum(stripped_tool_ids.get(tid, 0) for tid in t.tool_use_ids)
+        sm = sum(stripped_msg_indices.get(mi, 0)
+                 for mi in range(t._msg_range[0], t._msg_range[1]))
+        return st + sm
 
-    in_sec  = _section(turns, lambda t: t.input_tokens,            "blue",   "in ")
-    cr_sec  = _section(turns, lambda t: t.cache_read_input_tokens, "green",  "cr ")
-    out_sec = _section(turns, lambda t: t.output_tokens,           "yellow", "out")
+    pre_vals  = [t.input_tokens + _stripped(t) for t in turns]
+    post_vals = [t.input_tokens                 for t in turns]
+    cr_vals   = [t.cache_read_input_tokens       for t in turns]
+    out_vals  = [t.output_tokens                 for t in turns]
+    # cache hit rate 0–100
+    hit_vals  = [
+        int(t.cache_read_input_tokens * 100 / (t.input_tokens + t.cache_read_input_tokens))
+        if (t.input_tokens + t.cache_read_input_tokens) else 0
+        for t in turns
+    ]
 
-    sep = f"{'':>{label_w}}┼" + "─" * len(turns)
-
-    # x-axis: turn number every 5 turns, last-digit only
-    x_axis = f"{'':>{label_w}}│" + "".join(
+    lw  = 5   # label width: "pre  " / "post " / "cr   " / "out  " / "hit% "
+    sep = f"{'':>{lw}}┼" + "─" * len(turns)
+    x_axis = f"{'':>{lw}}│" + "".join(
         str((t.index + 1) % 10) if (t.index + 1) % 5 == 0 else " "
         for t in turns
     )
 
-    # token totals for last turn
+    def ktok(v): return f"max {v//1000}k" if v >= 1000 else f"max {v}"
+
+    pre_sec  = _section(pre_vals,  "red",    "pre  ", ktok)
+    post_sec = _section(post_vals, "blue",   "post ", ktok)
+    cr_sec   = _section(cr_vals,   "green",  "cr   ", ktok)
+    out_sec  = _section(out_vals,  "yellow", "out  ", ktok)
+    hit_sec  = _section(hit_vals,  "cyan",   "hit% ", lambda v: f"max {v}%")
+
     last = turns[-1]
-    last_stats = (
-        f"  [dim]last turn:[/dim] "
-        f"[blue]in={last.input_tokens:,}[/blue]  "
-        f"[green]cr={last.cache_read_input_tokens:,}[/green]  "
-        f"[yellow]out={last.output_tokens:,}[/yellow]"
-    )
+    last_pre = last.input_tokens + _stripped(last)
+    savings_pct = int((last_pre - last.input_tokens) * 100 / last_pre) if last_pre else 0
+    last_hit = hit_vals[-1]
+
     header = (
         f"[bold]{conv.label}[/bold]  "
-        f"model=[italic]{conv.model or '?'}[/italic]  "
-        f"requests={conv.request_count}  turns={len(turns)}"
-        + last_stats
+        f"[dim]{conv.model or '?'}[/dim]  "
+        f"turns={len(turns)}  requests={conv.request_count}"
+    )
+    last_line = (
+        f"[dim]last:[/dim]  "
+        f"[red]pre={last_pre:,}[/red]  "
+        f"[blue]post={last.input_tokens:,}[/blue]  "
+        f"[green]cr={last.cache_read_input_tokens:,}[/green]  "
+        f"[yellow]out={last.output_tokens:,}[/yellow]  "
+        f"[cyan]hit={last_hit}%[/cyan]  "
+        f"[magenta]saved={savings_pct}%[/magenta]"
     )
     legend = (
-        f"{'':>{label_w}}  "
-        "[blue]█[/blue] input  "
+        f"{'':>{lw}}  "
+        "[red]█[/red] pre-opt  "
+        "[blue]█[/blue] post-opt  "
         "[green]█[/green] cache-read  "
-        "[yellow]█[/yellow] output"
+        "[yellow]█[/yellow] output  "
+        "[cyan]█[/cyan] cache-hit%"
     )
 
-    lines = [header, legend, sep]
-    lines += in_sec
-    lines.append(sep)
-    lines += cr_sec
-    lines.append(sep)
-    lines += out_sec
-    lines += [sep, x_axis]
+    lines = [header, last_line, legend, sep]
+    lines += pre_sec;  lines.append(sep)
+    lines += post_sec; lines.append(sep)
+    lines += cr_sec;   lines.append(sep)
+    lines += out_sec;  lines.append(sep)
+    lines += hit_sec;  lines += [sep, x_axis]
     return "\n".join(lines)
 
 
@@ -140,13 +165,12 @@ class ConvDetail(ScrollableContainer):
     def compose(self) -> ComposeResult:
         yield Static(id="detail-inner")
 
-    def show(self, conv) -> None:
+    def show(self, conv, stripped_tool_ids: dict, stripped_msg_indices: dict) -> None:
         inner = self.query_one("#detail-inner", Static)
         if conv is None:
             inner.update("No conversation selected.")
             return
-        inner.update(_render_turn_chart(conv))
-        # autoscroll to the right so the latest turn is always visible
+        inner.update(_render_turn_chart(conv, stripped_tool_ids, stripped_msg_indices))
         self.scroll_end(animate=False)
 
 
@@ -327,7 +351,9 @@ class TUIApp(App, AppBase):
         ) or (convs[0] if convs else None)
         if selected:
             self._selected_conv_id = selected.id
-        self.query_one("#conv-detail", ConvDetail).show(selected)
+        stripped_tool_ids    = self._optimizer_pipeline.stripped_tool_ids
+        stripped_msg_indices = self._optimizer_pipeline.stripped_msg_indices
+        self.query_one("#conv-detail", ConvDetail).show(selected, stripped_tool_ids, stripped_msg_indices)
         self.query_one("#status-bar", StatusBar).refresh_stats(self)
 
     # ── List selection ───────────────────────────────────────────────
@@ -337,7 +363,11 @@ class TUIApp(App, AppBase):
         if conv_id:
             self._selected_conv_id = conv_id
             conv = self._tracker.conversations.get(conv_id)
-            self.query_one("#conv-detail", ConvDetail).show(conv)
+            self.query_one("#conv-detail", ConvDetail).show(
+                conv,
+                self._optimizer_pipeline.stripped_tool_ids,
+                self._optimizer_pipeline.stripped_msg_indices,
+            )
 
     # ── Actions ─────────────────────────────────────────────────────
 
