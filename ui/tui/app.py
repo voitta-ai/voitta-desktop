@@ -63,68 +63,75 @@ class ConvList(ListView):
             self.append(item)
 
 
-_CHART_HEIGHT = 8   # character rows for bars
-_BLOCKS = " ▁▂▃▄▅▆▇█"
+_BAR_H = 8   # rows per metric section
 
 
-def _bar_col(value: int, max_val: int, color: str) -> str:
-    """Return a single-character bar cell of the right height."""
-    if max_val == 0 or value == 0:
-        return f"[dim]·[/dim]"
-    frac = value / max_val
-    idx = max(1, round(frac * (len(_BLOCKS) - 1)))
-    return f"[{color}]{_BLOCKS[idx]}[/{color}]"
+def _section(turns: list, get_val, color: str, label: str) -> list[str]:
+    """Render one bar-chart section: _BAR_H rows tall, one col per turn."""
+    vals = [get_val(t) for t in turns]
+    mx = max(vals, default=0)
+    rows = []
+    for r in range(_BAR_H):
+        cells = []
+        for v in vals:
+            bar_h = round(v / mx * _BAR_H) if mx else 0
+            if r >= _BAR_H - bar_h:
+                cells.append(f"[{color}]█[/{color}]")
+            else:
+                cells.append("[dim]·[/dim]")
+        prefix = f"[bold {color}]{label}[/bold {color}]│" if r == 0 else f"{'':>{len(label)}}│"
+        rows.append(prefix + "".join(cells))
+    return rows
 
 
 def _render_turn_chart(conv) -> str:
-    """Render a compact 3-row stacked bar chart (in / cr / out per turn).
-
-    Each turn is one character wide.  Colors:
-      blue  = input tokens
-      green = cache-read tokens
-      yellow = output tokens
-
-    A label row shows the turn index every 5 turns.
-    """
     turns = conv.turns
     if not turns:
         return "[dim]no turns yet[/dim]"
 
-    max_in  = max((t.input_tokens for t in turns), default=0)
-    max_cr  = max((t.cache_read_input_tokens for t in turns), default=0)
-    max_out = max((t.output_tokens for t in turns), default=0)
+    label_w = 3  # "in " / "cr " / "out"
 
-    in_row  = "".join(_bar_col(t.input_tokens,              max_in,  "blue")   for t in turns)
-    cr_row  = "".join(_bar_col(t.cache_read_input_tokens,   max_cr,  "green")  for t in turns)
-    out_row = "".join(_bar_col(t.output_tokens,             max_out, "yellow") for t in turns)
+    in_sec  = _section(turns, lambda t: t.input_tokens,            "blue",   "in ")
+    cr_sec  = _section(turns, lambda t: t.cache_read_input_tokens, "green",  "cr ")
+    out_sec = _section(turns, lambda t: t.output_tokens,           "yellow", "out")
 
-    # index label: show turn number every 5, right-aligned to 1 char
-    label_row = "".join(
+    sep = f"{'':>{label_w}}┼" + "─" * len(turns)
+
+    # x-axis: turn number every 5 turns, last-digit only
+    x_axis = f"{'':>{label_w}}│" + "".join(
         str((t.index + 1) % 10) if (t.index + 1) % 5 == 0 else " "
         for t in turns
     )
 
+    # token totals for last turn
+    last = turns[-1]
+    last_stats = (
+        f"  [dim]last turn:[/dim] "
+        f"[blue]in={last.input_tokens:,}[/blue]  "
+        f"[green]cr={last.cache_read_input_tokens:,}[/green]  "
+        f"[yellow]out={last.output_tokens:,}[/yellow]"
+    )
     header = (
         f"[bold]{conv.label}[/bold]  "
-        f"model={conv.model or '?'}  requests={conv.request_count}  "
-        f"turns={len(turns)}"
+        f"model=[italic]{conv.model or '?'}[/italic]  "
+        f"requests={conv.request_count}  turns={len(turns)}"
+        + last_stats
     )
     legend = (
-        "[blue]▇[/blue] in  "
-        "[green]▇[/green] cache-read  "
-        "[yellow]▇[/yellow] out"
+        f"{'':>{label_w}}  "
+        "[blue]█[/blue] input  "
+        "[green]█[/green] cache-read  "
+        "[yellow]█[/yellow] output"
     )
-    separator = "─" * max(len(turns), 20)
 
-    return "\n".join([
-        header,
-        legend,
-        separator,
-        f"[blue]in [/blue] {in_row}",
-        f"[green]cr [/green] {cr_row}",
-        f"[yellow]out[/yellow] {out_row}",
-        f"[dim]   {label_row}[/dim]",
-    ])
+    lines = [header, legend, sep]
+    lines += in_sec
+    lines.append(sep)
+    lines += cr_sec
+    lines.append(sep)
+    lines += out_sec
+    lines += [sep, x_axis]
+    return "\n".join(lines)
 
 
 class ConvDetail(ScrollableContainer):
