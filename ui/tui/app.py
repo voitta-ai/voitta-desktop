@@ -12,16 +12,19 @@ Run via:  python -m voitta_desktop --terminal
 
 from __future__ import annotations
 
+import io
 import logging
+import os
+import sys
 import threading
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal
 from textual.message import Message
-from textual.reactive import reactive
-from textual.widgets import Footer, Header, Label, ListItem, ListView, Static
+from textual.widgets import Footer, Header, Label, ListItem, ListView, RichLog, Static
 
 from app_base import AppBase
 
@@ -53,7 +56,9 @@ class ConvList(ListView):
                 cache_pct = conv.cache_read_input_tokens * 100 // total_in
             cache_str = f" {cache_pct}%" if cache_pct else ""
             label = f"{conv.label[:38]}  [{tok_str}{cache_str}] ×{conv.request_count}"
-            item = ListItem(Label(label), id=f"conv-{conv.id}")
+            # No id= — Textual raises DuplicateIds when rapid updates re-append
+            # items before clear() has fully committed. _conv_id tracks selection.
+            item = ListItem(Label(label))
             item._conv_id = conv.id
             self.append(item)
 
@@ -106,8 +111,49 @@ class StatusBar(Static):
             f"📊 {cache_pct}% cache  "
             f"🔗 {arm}  "
             f"⚙ {backends} backend(s) active  "
-            f"  [dim]^C quit  ^D arm/disarm  ^R refresh tools[/dim]"
+            f"  [dim]^C quit  ^D arm/disarm  ^R refresh  ^L log[/dim]"
         )
+
+
+class LogPanel(RichLog):
+    """Collapsible log panel — shows captured stdout/stderr/logging output."""
+    pass
+
+
+# ── stdout/stderr → log file + optional TUI panel ────────────────────────────
+
+_LOG_PATH = Path.home() / ".voitta-desktop" / "logs" / "desktop.log"
+
+
+class _TUILogHandler(logging.Handler):
+    """Forwards log records to the Textual LogPanel when it's visible."""
+
+    def __init__(self):
+        super().__init__()
+        self._panel: LogPanel | None = None
+
+    def set_panel(self, panel: LogPanel) -> None:
+        self._panel = panel
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if self._panel is None:
+            return
+        try:
+            msg = self.format(record)
+            self._panel.app.call_from_thread(self._panel.write, msg)
+        except Exception:
+            pass
+
+
+_tui_log_handler = _TUILogHandler()
+
+
+def _redirect_stdio(log_path: Path) -> None:
+    """Redirect stdout and stderr to the log file so they don't bleed into the TUI."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_file = open(log_path, "a", buffering=1)
+    sys.stdout = log_file
+    sys.stderr = log_file
 
 
 # ── Main Textual app ─────────────────────────────────────────────────────────
@@ -132,6 +178,15 @@ class TUIApp(App, AppBase):
         background: $surface-darken-1;
         color: $text-muted;
     }
+    LogPanel {
+        height: 12;
+        border-top: solid $warning;
+        background: $surface-darken-2;
+        display: none;
+    }
+    LogPanel.visible {
+        display: block;
+    }
     """
 
     BINDINGS = [
@@ -142,10 +197,12 @@ class TUIApp(App, AppBase):
         # ctrl+r has no multiplexer meaning in this context.
         Binding("ctrl+d", "toggle_arm", "Arm/Disarm"),
         Binding("ctrl+r", "refresh_tools", "Refresh tools"),
+        Binding("ctrl+l", "toggle_log", "Log"),
     ]
 
     def __init__(self):
         App.__init__(self)
+        _redirect_stdio(_LOG_PATH)
         self._init_base()
         self.mcp_proxy_port = self._resolve_port_terminal("MCP proxy", self.mcp_proxy_port)
         self.llm_proxy_port = self._resolve_port_terminal("LLM proxy", self.llm_proxy_port)
@@ -157,6 +214,7 @@ class TUIApp(App, AppBase):
         with Horizontal():
             yield ConvList(id="conv-list")
             yield ConvDetail(id="conv-detail")
+        yield LogPanel(id="log-panel", max_lines=500, markup=False)
         yield StatusBar(id="status-bar")
         yield Footer()
 
@@ -165,6 +223,14 @@ class TUIApp(App, AppBase):
         self.sub_title = (
             f"LLM :{self.llm_proxy_port}  MCP :{self.mcp_proxy_port}"
         )
+        # Wire log handler to the panel
+        panel = self.query_one("#log-panel", LogPanel)
+        _tui_log_handler.set_panel(panel)
+        _tui_log_handler.setFormatter(
+            logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+        )
+        logging.getLogger().addHandler(_tui_log_handler)
+
         threading.Thread(target=self._run_llm_proxy, daemon=True).start()
         threading.Thread(target=self._run_mcp_proxy, daemon=True).start()
         self._refresh_ui()
@@ -220,6 +286,10 @@ class TUIApp(App, AppBase):
             self._config.setdefault("claude_link", {})["armed"] = True
         self._save_config()
         self.query_one("#status-bar", StatusBar).refresh_stats(self)
+
+    def action_toggle_log(self) -> None:
+        panel = self.query_one("#log-panel", LogPanel)
+        panel.toggle_class("visible")
 
     def action_refresh_tools(self) -> None:
         import asyncio
