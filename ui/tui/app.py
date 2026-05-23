@@ -63,24 +63,65 @@ class ConvList(ListView):
             self.append(item)
 
 
-_BAR_H = 6   # rows per section
+_SECTION_H = 4   # character rows per section (× 4 braille dots = 16 levels)
+
+# Braille dot layout: (col 0|1, dot_row 0..3 top→bottom) → bit
+_BDOTS = [
+    [0x01, 0x02, 0x04, 0x08],  # col 0
+    [0x10, 0x20, 0x40, 0x80],  # col 1
+]
+_B0 = 0x2800  # braille base codepoint
 
 
-def _section(vals: list[int | float], color: str, label: str, fmt=None) -> list[str]:
-    """Render one bar section: _BAR_H rows tall, one col per value."""
+def _braille_line(vals: list[int | float], h: int, color: str, label: str) -> list[str]:
+    """Render a single line as a braille chart, h character-rows tall.
+
+    Each braille character is 2 columns × 4 dot-rows.
+    Two consecutive values share one character column-pair.
+    """
+    n = len(vals)
     mx = max(vals, default=0)
+    res = h * 4  # total dot-rows
+
+    # Normalize each value to 0..(res-1), 0=bottom
+    norm = [round(v / mx * (res - 1)) if mx else 0 for v in vals]
+
+    # Build grid: grid[char_row][char_col] = braille bits
+    ncols = (n + 1) // 2
+    grid = [[0] * ncols for _ in range(h)]
+
+    for i, y in enumerate(norm):
+        ci = i // 2          # which braille character column
+        dc = i % 2           # which dot-column within the char (0 or 1)
+        # y=0 → bottom dot, y=res-1 → top dot
+        dot_from_top = (res - 1) - y
+        char_row = dot_from_top // 4
+        dot_row  = dot_from_top % 4
+        if 0 <= char_row < h:
+            grid[char_row][ci] |= _BDOTS[dc][dot_row]
+
+    # Optionally connect adjacent dots in same char with intermediate dots
+    for ci in range(ncols):
+        y0 = norm[ci * 2]     if ci * 2     < n else None
+        y1 = norm[ci * 2 + 1] if ci * 2 + 1 < n else None
+        if y0 is not None and y1 is not None:
+            lo, hi = sorted([y0, y1])
+            for fy in range(lo, hi + 1):
+                dot_from_top = (res - 1) - fy
+                cr = dot_from_top // 4
+                dr = dot_from_top % 4
+                dc = 0 if fy == y0 else 1
+                if 0 <= cr < h:
+                    grid[cr][ci] |= _BDOTS[dc][dr]
+
     lw = len(label)
     rows = []
-    for r in range(_BAR_H):
-        cells = []
-        for v in vals:
-            bar_h = round(v / mx * _BAR_H) if mx else 0
-            cells.append(f"[{color}]█[/{color}]" if r >= _BAR_H - bar_h else "[dim]·[/dim]")
+    for r in range(h):
+        line = "".join(chr(_B0 | grid[r][ci]) for ci in range(ncols))
         prefix = f"[bold {color}]{label}[/bold {color}]│" if r == 0 else f"{'':>{lw}}│"
-        suffix = ""
-        if r == 0 and fmt and mx:
-            suffix = f"  [dim]{fmt(mx)}[/dim]"
-        rows.append(prefix + "".join(cells) + suffix)
+        suffix = f"  [dim]max {mx//1000}k[/dim]" if r == 0 and mx >= 1000 else (
+                 f"  [dim]max {mx}[/dim]" if r == 0 and mx else "")
+        rows.append(f"{prefix}[{color}]{line}[/{color}]{suffix}")
     return rows
 
 
@@ -91,29 +132,28 @@ def _render_turn_chart(conv) -> str:
 
     pre_vals  = [t.input_tokens + t.cache_read_input_tokens + t.stripped_chars for t in turns]
     post_vals = [t.input_tokens + t.cache_read_input_tokens                    for t in turns]
-    cr_vals   = [t.cache_read_input_tokens                                 for t in turns]
-    out_vals  = [t.output_tokens                 for t in turns]
-    # cache hit rate 0–100
+    cr_vals   = [t.cache_read_input_tokens for t in turns]
+    out_vals  = [t.output_tokens           for t in turns]
     hit_vals  = [
         int(t.cache_read_input_tokens * 100 / (t.input_tokens + t.cache_read_input_tokens))
         if (t.input_tokens + t.cache_read_input_tokens) else 0
         for t in turns
     ]
 
-    lw  = 5   # label width: "pre  " / "post " / "cr   " / "out  " / "hit% "
-    sep = f"{'':>{lw}}┼" + "─" * len(turns)
+    n   = len(turns)
+    lw  = 5
+    cw  = (n + 1) // 2   # braille chars wide (2 turns per char)
+    sep = f"{'':>{lw}}┼" + "─" * cw
     x_axis = f"{'':>{lw}}│" + "".join(
-        str((t.index + 1) % 10) if (t.index + 1) % 5 == 0 else " "
-        for t in turns
+        str((i * 2 + 1) % 10) if (i * 2 + 1) % 5 < 2 else " "
+        for i in range(cw)
     )
 
-    def ktok(v): return f"max {v//1000}k" if v >= 1000 else f"max {v}"
-
-    pre_sec  = _section(pre_vals,  "red",    "pre  ", ktok)
-    post_sec = _section(post_vals, "blue",   "post ", ktok)
-    cr_sec   = _section(cr_vals,   "green",  "cr   ", ktok)
-    out_sec  = _section(out_vals,  "yellow", "out  ", ktok)
-    hit_sec  = _section(hit_vals,  "cyan",   "hit% ", lambda v: f"max {v}%")
+    pre_sec  = _braille_line(pre_vals,  _SECTION_H, "red",    "pre  ")
+    post_sec = _braille_line(post_vals, _SECTION_H, "blue",   "post ")
+    cr_sec   = _braille_line(cr_vals,   _SECTION_H, "green",  "cr   ")
+    out_sec  = _braille_line(out_vals,  _SECTION_H, "yellow", "out  ")
+    hit_sec  = _braille_line(hit_vals,  _SECTION_H, "cyan",   "hit% ")
 
     last = turns[-1]
     last_pre = last.input_tokens + last.cache_read_input_tokens + last.stripped_chars
@@ -137,11 +177,11 @@ def _render_turn_chart(conv) -> str:
     )
     legend = (
         f"{'':>{lw}}  "
-        "[red]█[/red] pre-opt  "
-        "[blue]█[/blue] post-opt  "
-        "[green]█[/green] cache-read  "
-        "[yellow]█[/yellow] output  "
-        "[cyan]█[/cyan] cache-hit%"
+        "[red]⠿[/red] pre-opt  "
+        "[blue]⠿[/blue] post-opt  "
+        "[green]⠿[/green] cache-read  "
+        "[yellow]⠿[/yellow] output  "
+        "[cyan]⠿[/cyan] cache-hit%"
     )
 
     lines = [header, last_line, legend, sep]
