@@ -176,6 +176,12 @@ if [ ! -d "$APP_DIR" ]; then
 fi
 
 if [ "$PACKAGE" -eq 1 ]; then
+  # Remove previous DMGs so only the current build remains in dist/.
+  if ls "$ROOT/dist/"*.dmg "$ROOT/dist/"*.dmg.zip 2>/dev/null | grep -q .; then
+    echo "[build_app] cleaning old dist/ artefacts..."
+    rm -f "$ROOT/dist/"*.dmg "$ROOT/dist/"*.dmg.zip
+  fi
+
   if [ -z "$SIGN_IDENTITY" ]; then
     echo "[build_app] briefcase package (DMG, ad-hoc sign)..."
     "$VENV/bin/briefcase" package macOS app --adhoc-sign --no-input
