@@ -18,11 +18,19 @@ CONFIG_PATH = CONFIG_DIR / "apps.json"
 #   description  surfaced to the LLM via the unified instructions block
 #   kind         "http" | "subprocess"
 #   url          (kind=http) HTTP endpoint
-#   subprocess   (kind=subprocess) {template, cwd, env_path, port}
-#                  template ∈ {"google_mcp", "jira_mcp"} — pins the command shape
+#   subprocess   (kind=subprocess) {template, …}
+#                  template ∈ {"google_mcp", "jira_mcp"} — HTTP subprocess, fixed command shape
+#                    fields: cwd, env_path, port
+#                  template ∈ {"npx"} — stdio via NpxStdioTransport; fastmcp owns the process
+#                    fields: package (e.g. "chrome-devtools-mcp@latest"), args (list, optional)
+#                    no port/cwd/env_path needed
+#                  template ∈ {"command"} — stdio via StdioTransport; fastmcp owns the process
+#                    fields: command (list, e.g. ["node", "/path/to/server.js"])
+#                    no port/cwd/env_path needed
 #   auth         {type, …}
 #                  type ∈ {none, bearer, api_key, basic, custom_headers,
 #                          oauth_app, voitta_rag_legacy}
+#                  (stdio servers typically use none)
 
 
 def _default_mcp_servers() -> list[dict]:

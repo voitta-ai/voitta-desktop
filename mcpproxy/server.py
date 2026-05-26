@@ -11,7 +11,7 @@ import httpx
 
 from fastmcp import FastMCP as FastMCPServer
 from fastmcp.server.providers.proxy import ProxyClient
-from fastmcp.client.transports import StreamableHttpTransport
+from fastmcp.client.transports import StreamableHttpTransport, NpxStdioTransport, StdioTransport
 from fastmcp.utilities.types import Image
 
 from optimizers.image import vt_object_store
@@ -22,17 +22,44 @@ logger = logging.getLogger("voitta-desktop.mcp")
 
 # ── Auth-factory builders, one per auth.type ─────────────────────────────────
 #
-# Every factory returns a thunk that builds a fresh ProxyClient on each
-# upstream call. The thunk reads headers from the live app_ref state, so
-# token refreshes and config edits propagate without rebuilding the proxy.
+# HTTP factories return a thunk that builds a fresh ProxyClient on each
+# upstream call so token refreshes propagate without rebuilding the proxy.
+#
+# Stdio factories (npx / command) create the transport ONCE at setup time and
+# close over it. Creating a new NpxStdioTransport per call would spawn a fresh
+# npx process on every tool listing and tool call — a process-per-call leak.
 
 def _server_url(server: dict) -> str:
-    """Return the HTTP endpoint for a server, regardless of kind. For
-    subprocess servers, this is the locally-bound port we'll connect to."""
-    if server.get("kind") == "subprocess":
-        port = server.get("subprocess", {}).get("port", 0)
+    """Return the HTTP endpoint for an http-kind server.
+    Returns "" for stdio subprocess servers (npx/command templates)."""
+    kind = server.get("kind", "http")
+    if kind == "subprocess":
+        template = (server.get("subprocess") or {}).get("template", "")
+        if template in ("npx", "command"):
+            return ""
+        port = (server.get("subprocess") or {}).get("port", 0)
         return f"http://localhost:{port}/mcp"
     return (server.get("url") or "").strip()
+
+
+def _is_stdio_server(server: dict) -> bool:
+    """True for subprocess servers managed via stdio (npx / command templates)."""
+    if server.get("kind") != "subprocess":
+        return False
+    template = (server.get("subprocess") or {}).get("template", "")
+    return template in ("npx", "command")
+
+
+def _stdio_display_url(server: dict) -> str:
+    """Human-readable identifier for a stdio server (used in logs/UI only)."""
+    sp = server.get("subprocess") or {}
+    template = sp.get("template", "")
+    if template == "npx":
+        return f"stdio:npx {sp.get('package', '?')}"
+    if template == "command":
+        cmd = sp.get("command") or []
+        return f"stdio:{' '.join(str(c) for c in cmd[:3])}"
+    return "stdio:?"
 
 
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
@@ -120,8 +147,44 @@ def _make_oauth_app_factory(app_ref, url: str, backend: str, app_type: str):
     return factory
 
 
+def _make_npx_stdio_factory(package: str, args: list):
+    """Stdio factory for npx-based MCP servers (e.g. chrome-devtools-mcp).
+    Transport is created once; ProxyClient wraps the same instance each call."""
+    transport = NpxStdioTransport(package=package, args=list(args or []), keep_alive=True)
+    def factory():
+        return ProxyClient(transport)
+    return factory
+
+
+def _make_command_stdio_factory(command: list):
+    """Stdio factory for arbitrary command-based MCP servers.
+    Transport is created once to avoid spawning a new process per call."""
+    if not command:
+        raise ValueError("command list is empty")
+    transport = StdioTransport(command[0], args=list(command[1:]))
+    def factory():
+        return ProxyClient(transport)
+    return factory
+
+
 def _build_factory(server: dict, app_ref):
-    """Pick the right factory for a server entry based on auth.type."""
+    """Pick the right factory for a server entry based on kind/template/auth."""
+    # Stdio subprocess servers bypass all HTTP auth logic.
+    if _is_stdio_server(server):
+        sp = server.get("subprocess") or {}
+        template = sp.get("template", "")
+        if template == "npx":
+            package = (sp.get("package") or "").strip()
+            if not package:
+                raise ValueError(f"mcp_server {server.get('name')!r}: npx template requires 'package'")
+            args = sp.get("args") or []
+            return _make_npx_stdio_factory(package, args)
+        if template == "command":
+            command = sp.get("command") or []
+            if not command:
+                raise ValueError(f"mcp_server {server.get('name')!r}: command template requires 'command' list")
+            return _make_command_stdio_factory(command)
+
     url = _server_url(server)
     auth = server.get("auth", {}) or {}
     auth_type = auth.get("type", "none")
@@ -421,10 +484,14 @@ def run_mcp_proxy(app_ref, port: int):
             logger.warning("mcp_server skipped: empty prefix (name=%r)", server.get("name"))
             continue
         url = _server_url(server)
-        if not url:
+        if not url and not _is_stdio_server(server):
             logger.warning("mcp_server %r skipped: no URL", server.get("name"))
             continue
-        factory = _build_factory(server, app_ref)
+        try:
+            factory = _build_factory(server, app_ref)
+        except ValueError as exc:
+            logger.warning("mcp_server %r skipped: %s", server.get("name"), exc)
+            continue
         proxy = ResilientFastMCPProxy(
             client_factory=factory,
             name=prefix.replace("_", "-"),
@@ -433,7 +500,8 @@ def run_mcp_proxy(app_ref, port: int):
             app_ref=app_ref, prefix=prefix,
         )
         main_server.mount(proxy, prefix=prefix)
-        proxies.append((server.get("name") or prefix, url, proxy))
+        display_url = url or _stdio_display_url(server)
+        proxies.append((server.get("name") or prefix, display_url, proxy))
 
     # Expose proxies for the menu's "Refresh LLM Tools" popup. URLs are
     # display-only — if the user edits a URL via Settings later, they need

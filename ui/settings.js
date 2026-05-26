@@ -112,8 +112,9 @@ function deleteApp(i) {
 // ── MCP servers ─────────────────────────────────────────────────────────────
 // Each server is a card with: name, prefix, description, kind (http/subprocess),
 // transport-specific fields, and auth selector with conditional auth fields.
-// The subprocess kind exposes a `template` (google_mcp / jira_mcp) — the command
-// shape is fixed by template; only cwd/env_path/port are user-editable.
+// Subprocess templates: google_mcp/jira_mcp (HTTP, cwd/env_path/port fields),
+// npx (stdio via NpxStdioTransport, package+args fields),
+// command (stdio via StdioTransport, command field).
 
 const AUTH_LABELS = {
   none: 'None / open',
@@ -172,26 +173,55 @@ function _renderMcpCard(s, i) {
     card.appendChild(_field('URL', _textInput(s, 'url', 'https://...')));
   } else {
     const sp = s.subprocess || (s.subprocess = {});
-    // Template (read-only in v1 — google_mcp / jira_mcp / custom)
     const tplRow = document.createElement('div');
     tplRow.className = 'field';
     const tplLabel = document.createElement('label'); tplLabel.textContent = 'Template';
     const tplSel = document.createElement('select');
-    ['google_mcp', 'jira_mcp'].forEach(t => {
+    [
+      ['google_mcp', 'google_mcp (HTTP subprocess)'],
+      ['jira_mcp',   'jira_mcp (HTTP subprocess)'],
+      ['npx',        'npx (stdio — e.g. chrome-devtools-mcp)'],
+      ['command',    'command (stdio — arbitrary executable)'],
+    ].forEach(([val, label]) => {
       const opt = document.createElement('option');
-      opt.value = t; opt.textContent = t;
-      if (sp.template === t) opt.selected = true;
+      opt.value = val; opt.textContent = label;
+      if (sp.template === val) opt.selected = true;
       tplSel.appendChild(opt);
     });
-    tplSel.onchange = () => { sp.template = tplSel.value; };
+    tplSel.onchange = () => { sp.template = tplSel.value; renderMcpServers(); };
     tplRow.appendChild(tplLabel); tplRow.appendChild(tplSel);
     card.appendChild(tplRow);
 
-    card.appendChild(_field('Working directory', _textInputObj(sp, 'cwd', '~/DEVEL/...')));
-    card.appendChild(_field('Env file', _textInputObj(sp, 'env_path', '~/.voitta_desktop/...env')));
-    const portInput = _textInputObj(sp, 'port', '18766');
-    portInput.onchange = () => { sp.port = parseInt(portInput.value) || 0; };
-    card.appendChild(_field('Port', portInput));
+    const tpl = sp.template || 'google_mcp';
+    if (tpl === 'npx') {
+      card.appendChild(_field('Package', _textInputObj(sp, 'package', 'chrome-devtools-mcp@latest')));
+      // args stored as space-separated string in UI, array in config
+      const argsVal = Array.isArray(sp.args) ? sp.args.join(' ') : (sp.args || '');
+      const argsInput = document.createElement('input');
+      argsInput.type = 'text';
+      argsInput.value = argsVal;
+      argsInput.placeholder = '--headless --no-usage-statistics';
+      argsInput.onchange = () => {
+        sp.args = argsInput.value.trim() ? argsInput.value.trim().split(/\s+/) : [];
+      };
+      card.appendChild(_field('Args (space-separated)', argsInput));
+    } else if (tpl === 'command') {
+      const cmdVal = Array.isArray(sp.command) ? sp.command.join(' ') : (sp.command || '');
+      const cmdInput = document.createElement('input');
+      cmdInput.type = 'text';
+      cmdInput.value = cmdVal;
+      cmdInput.placeholder = 'node /path/to/server.js';
+      cmdInput.onchange = () => {
+        sp.command = cmdInput.value.trim() ? cmdInput.value.trim().split(/\s+/) : [];
+      };
+      card.appendChild(_field('Command (space-separated)', cmdInput));
+    } else {
+      card.appendChild(_field('Working directory', _textInputObj(sp, 'cwd', '~/DEVEL/...')));
+      card.appendChild(_field('Env file', _textInputObj(sp, 'env_path', '~/.voitta_desktop/...env')));
+      const portInput = _textInputObj(sp, 'port', '18766');
+      portInput.onchange = () => { sp.port = parseInt(portInput.value) || 0; };
+      card.appendChild(_field('Port', portInput));
+    }
   }
 
   // Auth section

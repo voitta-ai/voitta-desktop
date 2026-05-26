@@ -190,6 +190,11 @@ class MCPLifecycleMixin:
                 except Exception as e:
                     logger.warning("Failed to start %s: %s", name, e)
 
+            elif template in ("npx", "command"):
+                # Stdio servers: fastmcp owns the process lifecycle via
+                # NpxStdioTransport / StdioTransport — nothing to launch here.
+                logger.info("subprocess %r: stdio transport, managed by fastmcp", name)
+
             else:
                 logger.warning("subprocess %r: unknown template %r", name, template)
 
