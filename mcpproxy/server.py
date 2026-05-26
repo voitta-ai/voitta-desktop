@@ -4,14 +4,16 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import re
+import shutil
 from urllib.parse import urlparse
 
 import httpx
 
 from fastmcp import FastMCP as FastMCPServer
 from fastmcp.server.providers.proxy import ProxyClient
-from fastmcp.client.transports import StreamableHttpTransport, NpxStdioTransport, StdioTransport
+from fastmcp.client.transports import StreamableHttpTransport, StdioTransport
 from fastmcp.utilities.types import Image
 
 from optimizers.image import vt_object_store
@@ -147,10 +149,58 @@ def _make_oauth_app_factory(app_ref, url: str, backend: str, app_type: str):
     return factory
 
 
+_NODE_SEARCH_PATHS = [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    os.path.expanduser("~/.local/bin"),
+    os.path.expanduser("~/.nvm/versions/node/*/bin"),  # nvm installs
+    "/usr/local/opt/node/bin",                          # homebrew keg-only
+]
+
+
+def _resolve_npx() -> tuple[str, dict[str, str]]:
+    """Find the npx binary, searching well-known Node install locations in
+    addition to the current PATH. Returns (npx_path, augmented_env).
+
+    Raises ValueError if npx cannot be found anywhere.
+    """
+    import glob
+
+    extra_dirs: list[str] = []
+    for pattern in _NODE_SEARCH_PATHS:
+        if "*" in pattern:
+            extra_dirs.extend(glob.glob(pattern))
+        else:
+            extra_dirs.append(pattern)
+
+    # Build a PATH that includes the extra dirs before the system PATH so
+    # Homebrew / nvm installs take precedence over a bare /usr/bin stub.
+    augmented_path = ":".join(extra_dirs + [os.environ.get("PATH", "")])
+    augmented_env = {**os.environ, "PATH": augmented_path}
+
+    # Prefer the version already in PATH; fall back to the extra dirs.
+    npx = shutil.which("npx") or shutil.which("npx", path=augmented_path)
+    if not npx:
+        raise ValueError(
+            f"Command 'npx' not found. Install Node.js (e.g. 'brew install node') "
+            f"and restart Voitta Desktop."
+        )
+    return npx, augmented_env
+
+
 def _make_npx_stdio_factory(package: str, args: list):
     """Stdio factory for npx-based MCP servers (e.g. chrome-devtools-mcp).
-    Transport is created once; ProxyClient wraps the same instance each call."""
-    transport = NpxStdioTransport(package=package, args=list(args or []), keep_alive=True)
+
+    Resolves npx at factory-creation time so startup errors are caught early
+    and logged against the server name. Transport is created once — reusing
+    it avoids spawning a new process per tool call.
+    """
+    npx, env = _resolve_npx()
+    # Build the npx argument list the same way NpxStdioTransport does, but
+    # use StdioTransport directly so we can supply the resolved path + env.
+    npx_args = ["--prefer-offline", package] + list(args or [])
+    transport = StdioTransport(command=npx, args=npx_args, env=env, keep_alive=True)
     def factory():
         return ProxyClient(transport)
     return factory
@@ -161,7 +211,11 @@ def _make_command_stdio_factory(command: list):
     Transport is created once to avoid spawning a new process per call."""
     if not command:
         raise ValueError("command list is empty")
-    transport = StdioTransport(command[0], args=list(command[1:]))
+    # Augment PATH with Node/Homebrew dirs so node-based commands resolve.
+    import glob
+    extra_dirs = [d for p in _NODE_SEARCH_PATHS for d in (glob.glob(p) if "*" in p else [p])]
+    env = {**os.environ, "PATH": ":".join(extra_dirs + [os.environ.get("PATH", "")])}
+    transport = StdioTransport(command=command[0], args=list(command[1:]), env=env, keep_alive=True)
     def factory():
         return ProxyClient(transport)
     return factory
