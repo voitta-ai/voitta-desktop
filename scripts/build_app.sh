@@ -6,6 +6,7 @@
 #
 #   ./scripts/build_app.sh                 # standalone build (~2-4 min)
 #   ./scripts/build_app.sh --clean         # nuke build/ dist/ wheels/ first
+#   ./scripts/build_app.sh --bump          # bump patch version before building
 #   ./scripts/build_app.sh --package       # also produce a .dmg in dist/ (ad-hoc)
 #
 # Code-sign + notarise (one-command frictionless distribution):
@@ -51,6 +52,7 @@ cd "$ROOT"
 VENV="$ROOT/.venv"
 
 CLEAN=0
+BUMP=0
 PACKAGE=0
 SIGN_IDENTITY=""
 NOTARIZE=0
@@ -61,6 +63,7 @@ NOTARY_PROFILE="${VOITTA_NOTARY_PROFILE:-voitta-notary}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --clean)    CLEAN=1; shift ;;
+    --bump)     BUMP=1;  shift ;;
     --package)  PACKAGE=1; shift ;;
     --sign)
       if [ $# -lt 2 ] || [ -z "$2" ]; then
@@ -76,6 +79,40 @@ while [ $# -gt 0 ]; do
       exit 2 ;;
   esac
 done
+
+# ---------------------------------------------------------------------------
+# Version bump + stamp
+# ---------------------------------------------------------------------------
+if [ "$BUMP" -eq 1 ]; then
+  CURRENT_VER=$("$VENV/bin/python" - <<'PYEOF'
+import tomllib
+with open("pyproject.toml", "rb") as f:
+    d = tomllib.load(f)
+print(d["tool"]["briefcase"]["version"])
+PYEOF
+)
+  NEW_VER=$("$VENV/bin/python" - "$CURRENT_VER" <<'PYEOF'
+import sys
+parts = sys.argv[1].split(".")
+parts[-1] = str(int(parts[-1]) + 1)
+print(".".join(parts))
+PYEOF
+)
+  sed -i '' "s/^version = \"$CURRENT_VER\"/version = \"$NEW_VER\"/" pyproject.toml
+  echo "[build_app] version bump: $CURRENT_VER → $NEW_VER"
+fi
+
+VERSION=$("$VENV/bin/python" - <<'PYEOF'
+import tomllib
+with open("pyproject.toml", "rb") as f:
+    d = tomllib.load(f)
+print(d["tool"]["briefcase"]["version"])
+PYEOF
+)
+echo "[build_app] building version $VERSION"
+
+# Stamp version into the package so the frozen .app can read it at runtime.
+echo "__version__ = \"$VERSION\"" > "$ROOT/src/voitta_desktop/_version.py"
 
 if [ "$NOTARIZE" -eq 1 ] && [ -z "$SIGN_IDENTITY" ]; then
   echo "[build_app] --notarize requires --sign \"<Developer ID identity>\" — Apple won't notarise an ad-hoc bundle." >&2

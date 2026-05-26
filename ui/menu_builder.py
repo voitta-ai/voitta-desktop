@@ -9,7 +9,7 @@ titles. Host attributes consumed:
   self._menu_items, self._conv_menus,
   self._is_active, self._deauth_app, self._do_auth, self._set_active,
   self._toggle_optimizer, self._show_llm_tools_status, self.show_settings,
-  self.show_help, self._quit.
+  self.show_about, self.show_help, self._quit.
 
 Sets the host attributes ``self._llm_status``, ``self._optimize_toggle``,
 ``self._status_item``, ``self._conv_header`` while building.
@@ -112,6 +112,7 @@ class MenuBuilderMixin:
         menu_list.append(None)
 
         # ── Bottom ───────────────────────────────────────────────────────────
+        menu_list.append(rumps.MenuItem("About Voitta Desktop", callback=self.show_about))
         menu_list.append(rumps.MenuItem("Settings", callback=self.show_settings))
         menu_list.append(rumps.MenuItem("Help", callback=self.show_help))
         menu_list.append(rumps.MenuItem("Quit", callback=self._quit))

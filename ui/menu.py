@@ -467,6 +467,42 @@ class VoittaDesktopApp(
 
         button.setAttributedTitle_(title)
 
+    # ── About ────────────────────────────────────────────────────────────────
+
+    def show_about(self, _):
+        try:
+            from voitta_desktop._version import __version__
+        except ImportError:
+            __version__ = "dev"
+        from AppKit import NSAlert
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Voitta Desktop")
+        mcp_lines = []
+        for s in self.mcp_servers:
+            name = s.get("name") or s.get("prefix", "?")
+            kind = s.get("kind", "http")
+            if kind == "subprocess":
+                sp = s.get("subprocess") or {}
+                tpl = sp.get("template", "")
+                if tpl == "npx":
+                    mcp_lines.append(f"  {name}  stdio:npx {sp.get('package', '?')}")
+                elif tpl == "command":
+                    cmd = " ".join(str(c) for c in (sp.get("command") or [])[:2])
+                    mcp_lines.append(f"  {name}  stdio:{cmd}")
+                else:
+                    mcp_lines.append(f"  {name}  http://127.0.0.1:{sp.get('port', '?')}/mcp")
+            else:
+                mcp_lines.append(f"  {name}  {s.get('url', '')}")
+        alert.setInformativeText_(
+            f"Version {__version__}\n\n"
+            f"MCP proxy:  http://127.0.0.1:{self.mcp_proxy_port}/mcp\n"
+            f"LLM proxy:  http://127.0.0.1:{self.llm_proxy_port}\n\n"
+            "Connected MCP servers:\n"
+            + ("\n".join(mcp_lines) if mcp_lines else "  (none)")
+        )
+        alert.addButtonWithTitle_("OK")
+        _show_modal(alert)
+
     # ── Help ─────────────────────────────────────────────────────────────────
 
     def show_help(self, _):
