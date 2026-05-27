@@ -283,7 +283,6 @@ class ResilientProxyProvider(ProxyProvider):
             return False, 0, f"timeout after {REFRESH_TIMEOUT_S:.0f}s"
         except Exception as e:
             return False, 0, str(e)
-
         if tools:
             _save_cache(self._backend_name, "tools", tools)
         else:
