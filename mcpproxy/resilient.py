@@ -84,6 +84,9 @@ class ResilientProxyProvider(ProxyProvider):
     # user opens — easily 50+ identical lines per hour.
     _WARN_WINDOW_S = 3600.0
 
+    # Sentinel: capabilities not yet fetched.
+    _CAPS_UNSET = object()
+
     def __init__(self, client_factory, *, backend_name: str = "upstream", cache_listings: bool = False,
                  app_ref=None, prefix: str = ""):
         super().__init__(client_factory)
@@ -92,6 +95,9 @@ class ResilientProxyProvider(ProxyProvider):
         self._app_ref = app_ref
         self._prefix = prefix
         self._warn_state: dict[tuple[str, str], dict] = {}
+        # ServerCapabilities populated on first connection; _CAPS_UNSET until then.
+        self._caps = self._CAPS_UNSET
+        self._caps_task: asyncio.Task | None = None
 
     def _warn_upstream(self, kind: str, exc: Exception):
         """Throttled WARNING for repeated upstream failures.
@@ -117,6 +123,53 @@ class ResilientProxyProvider(ProxyProvider):
         state["suppressed"] = 0
         logger.warning("[%s] Upstream unavailable for %s: %s%s",
                        self._backend_name, kind, exc, suffix)
+
+    async def _ensure_caps(self):
+        """Fetch and cache ServerCapabilities with deduplication.
+
+        Opens a one-shot client solely for the initialize handshake — no
+        listing calls. Subsequent calls are free (cached). Concurrent callers
+        share a single in-flight task so we don't open N connections at once.
+        """
+        if self._caps is not self._CAPS_UNSET:
+            return
+
+        # Deduplicate: if a fetch is already in flight, wait for it.
+        if self._caps_task and not self._caps_task.done():
+            try:
+                await self._caps_task
+            except Exception:
+                pass
+            return
+
+        async def _do_fetch():
+            try:
+                client = self.client_factory()
+                async with client:
+                    ir = getattr(client, "initialize_result", None)
+                    self._caps = getattr(ir, "capabilities", None) if ir else None
+                    logger.debug(
+                        "[%s] server caps: tools=%s prompts=%s resources=%s",
+                        self._backend_name,
+                        self._caps.tools if self._caps else "?",
+                        self._caps.prompts if self._caps else "?",
+                        self._caps.resources if self._caps else "?",
+                    )
+            except Exception as e:
+                logger.debug("[%s] caps fetch failed: %s", self._backend_name, e)
+                self._caps = None  # unknown → be permissive
+
+        self._caps_task = asyncio.create_task(_do_fetch())
+        try:
+            await asyncio.wait_for(asyncio.shield(self._caps_task), timeout=5.0)
+        except (asyncio.TimeoutError, Exception):
+            self._caps = None  # treat unknown as permissive
+
+    def _has_capability(self, cap_name: str) -> bool:
+        """False only when caps are known AND the capability is absent."""
+        if self._caps is self._CAPS_UNSET or self._caps is None:
+            return True  # unknown → allow (be permissive)
+        return getattr(self._caps, cap_name, None) is not None
 
     def _stash_tool_names(self, tools):
         """Mirror the upstream tool list into app_ref._mcp_tools for the gate
@@ -172,6 +225,11 @@ class ResilientProxyProvider(ProxyProvider):
         self._refresh_tasks[kind] = asyncio.create_task(_run())
 
     async def _list_tools(self):
+        # Kick off caps fetch concurrently so it's ready by the time
+        # prompts/resources listings are called in parallel.
+        if self._caps is self._CAPS_UNSET and not self._caps_task:
+            self._caps_task = asyncio.create_task(self._ensure_caps())
+
         # Stale-while-revalidate: if we have cache, serve it immediately and
         # refresh in background. The first listing on a fresh install still
         # blocks; everything after is instant regardless of network.
@@ -237,6 +295,9 @@ class ResilientProxyProvider(ProxyProvider):
         return True, len(tools or []), None
 
     async def _list_resources(self):
+        await self._ensure_caps()
+        if not self._has_capability("resources"):
+            return []
         if self._cache_listings:
             cached = _load_cache(self._backend_name, "resources", mcp.types.Resource)
             if cached is not None:
@@ -255,11 +316,16 @@ class ResilientProxyProvider(ProxyProvider):
             return []
 
     async def _refresh_resources(self):
+        if not self._has_capability("resources"):
+            return
         resources = await super()._list_resources()
         if resources:
             _save_cache(self._backend_name, "resources", resources)
 
     async def _list_resource_templates(self):
+        await self._ensure_caps()
+        if not self._has_capability("resources"):  # templates are part of resources capability
+            return []
         if self._cache_listings:
             cached = _load_cache(self._backend_name, "templates", mcp.types.ResourceTemplate)
             if cached is not None:
@@ -278,11 +344,16 @@ class ResilientProxyProvider(ProxyProvider):
             return []
 
     async def _refresh_templates(self):
+        if not self._has_capability("resources"):
+            return
         templates = await super()._list_resource_templates()
         if templates:
             _save_cache(self._backend_name, "templates", templates)
 
     async def _list_prompts(self):
+        await self._ensure_caps()
+        if not self._has_capability("prompts"):
+            return []
         if self._cache_listings:
             cached = _load_cache(self._backend_name, "prompts", mcp.types.Prompt)
             if cached is not None:
@@ -301,6 +372,8 @@ class ResilientProxyProvider(ProxyProvider):
             return []
 
     async def _refresh_prompts(self):
+        if not self._has_capability("prompts"):
+            return
         prompts = await super()._list_prompts()
         if prompts:
             _save_cache(self._backend_name, "prompts", prompts)
