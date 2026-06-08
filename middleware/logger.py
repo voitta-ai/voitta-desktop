@@ -21,15 +21,95 @@ class RequestLogger(Middleware):
         log_dir: Path = LOG_DIR,
         stale_after_s: int = 60,
         watchdog_interval_s: int = 30,
+        clear_on_start: bool = True,
+        keep_messages: int = 2,
+        max_str: int = 2000,
     ):
         self._log_dir = log_dir
         self._log_dir.mkdir(parents=True, exist_ok=True)
+        if clear_on_start:
+            self._clear_logs()
+        self._keep_messages = keep_messages
+        self._max_str = max_str
         self._pending: dict[int, dict] = {}
         self._stale_after_s = stale_after_s
         self._watchdog_interval_s = watchdog_interval_s
         self._lock = threading.Lock()
         self._watchdog = threading.Thread(target=self._watch_pending, daemon=True)
         self._watchdog.start()
+
+    def _clear_logs(self) -> None:
+        """Delete all request-log JSONL files from a previous run.
+
+        Scoped to the ``*.jsonl`` files this logger owns; the app's own
+        ``desktop.log`` (already size-capped) is left untouched.
+        """
+        freed = 0
+        removed = 0
+        for path in self._log_dir.glob("*.jsonl"):
+            try:
+                freed += path.stat().st_size
+                path.unlink()
+                removed += 1
+            except OSError as e:
+                logger.warning("Failed to remove old log %s: %s", path, e)
+        if removed:
+            logger.info("Cleared %d old request log(s), freed %.1f MB",
+                        removed, freed / 1_000_000)
+
+    def _truncate(self, obj):
+        """Recursively cap long strings; returns a new structure (no mutation)."""
+        if isinstance(obj, str):
+            if len(obj) <= self._max_str:
+                return obj
+            return obj[:self._max_str] + f"...[+{len(obj) - self._max_str} chars]"
+        if isinstance(obj, list):
+            return [self._truncate(x) for x in obj]
+        if isinstance(obj, dict):
+            return {k: self._truncate(v) for k, v in obj.items()}
+        return obj
+
+    def _trim_request_body(self, body):
+        """Build a logging-only copy of the request body, dropping the bulk.
+
+        The expensive part is ``messages`` (the full conversation, re-sent on
+        every call → O(N²) growth) and ``tools`` (identical schemas repeated
+        each call). We keep only the last ``keep_messages`` messages plus a
+        placeholder for the rest, reduce tools to their names, and truncate any
+        remaining long strings. The original ``body`` is never mutated — it is
+        still forwarded upstream untouched.
+        """
+        if not isinstance(body, dict):
+            return self._truncate(body)
+
+        trimmed = dict(body)  # shallow copy; only reassign the heavy keys
+
+        msgs = body.get("messages")
+        if isinstance(msgs, list):
+            keep = self._keep_messages
+            if len(msgs) <= keep:
+                trimmed["messages"] = self._truncate(msgs)
+            else:
+                omitted = len(msgs) - keep
+                placeholder = {
+                    "role": "_omitted",
+                    "content": f"[{omitted} earlier message(s) omitted; "
+                               f"{len(msgs)} total]",
+                }
+                trimmed["messages"] = [placeholder] + self._truncate(msgs[-keep:])
+
+        tools = body.get("tools")
+        if isinstance(tools, list):
+            trimmed["tools"] = {
+                "_count": len(tools),
+                "names": [t.get("name") for t in tools if isinstance(t, dict)],
+            }
+
+        system = body.get("system")
+        if system is not None:
+            trimmed["system"] = self._truncate(system)
+
+        return trimmed
 
     def _log_path(self) -> Path:
         return self._log_dir / f"{time.strftime('%Y-%m-%d')}.jsonl"
@@ -43,7 +123,7 @@ class RequestLogger(Middleware):
             "path": request.path,
             "request_headers": {k: v for k, v in request.headers.items()
                                 if k.lower() not in ("x-api-key", "authorization", "cookie")},
-            "request_body": request_body,
+            "request_body": self._trim_request_body(request_body),
             "started_at": started_at,
             "last_activity_at": started_at,
             "chunk_count": 0,
@@ -127,7 +207,10 @@ class RequestLogger(Middleware):
                         response_body.setdefault("usage", {}).update(delta_usage)
             entry["response_body"] = response_body
         else:
-            entry["response_body"] = json.loads(response_text) if response_text else None
+            try:
+                entry["response_body"] = self._truncate(json.loads(response_text)) if response_text else None
+            except (json.JSONDecodeError, ValueError):
+                entry["response_body"] = response_text[:self._max_str] if response_text else None
 
         entry["duration_ms"] = int((time.time() - entry["timestamp"]) * 1000)
         logger.info(
