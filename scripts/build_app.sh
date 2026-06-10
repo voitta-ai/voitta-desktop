@@ -211,6 +211,28 @@ if [ "$PACKAGE" -eq 1 ]; then
       spctl -a -vv --type install "$DMG" || true
     fi
   fi
+
+  # Guard against silent empty DMGs: briefcase ignores a failed `ditto`
+  # (e.g. com.apple.provenance EPERM when the build host lacks Full Disk
+  # Access) and ships a notarised-but-empty image. Mount and confirm the
+  # .app is actually inside.
+  DMG=$(ls -1 "$ROOT/dist/"*.dmg 2>/dev/null | head -1)
+  if [ -n "$DMG" ]; then
+    MP=$(mktemp -d)
+    if hdiutil attach "$DMG" -mountpoint "$MP" -nobrowse -quiet; then
+      if ls -d "$MP/"*.app >/dev/null 2>&1; then
+        echo "[build_app] verified: .app present inside $DMG"
+        hdiutil detach "$MP" -quiet || true
+      else
+        echo "[build_app] ERROR: $DMG contains no .app — packaging dropped the bundle." >&2
+        echo "[build_app]   Likely cause: build host lacks Full Disk Access (ditto EPERM on com.apple.provenance)." >&2
+        hdiutil detach "$MP" -quiet || true
+        rmdir "$MP" 2>/dev/null || true
+        exit 1
+      fi
+    fi
+    rmdir "$MP" 2>/dev/null || true
+  fi
 fi
 
 echo
