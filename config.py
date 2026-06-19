@@ -208,6 +208,10 @@ def _default_config() -> dict:
             "trim_whitespace": True,
             "strip_progress": False,
             "smart_commands": False,
+            # Past keep_turns, replace tool-call arguments whose serialized size
+            # is >= this many chars with a get_vt_object reference (0 = off).
+            # 500 is the diminishing-returns knee from the cache-study sim.
+            "tool_use_ref_min_chars": 500,
         },
         "time": {
             # Per-optimizer time horizon: how many recent turns to leave

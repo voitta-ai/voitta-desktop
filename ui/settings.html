@@ -591,6 +591,21 @@
     </div>
   </div>
 
+  <h2>Tool-Call Argument Referencing</h2>
+  <div class="card" id="tooluse-card">
+    <div style="font-size:12px; color:var(--text-secondary); margin-bottom:12px; line-height:1.5;">
+      Past the Tool-Results time horizon, large tool-call <em>arguments</em> (Bash
+      commands, MCP payloads) are replaced with a <code>get_vt_object(hash)</code>
+      reference the model can pull back on demand. File tools (Read/Write/Edit) are
+      left untouched. Small calls stay inline. Set to 0 to disable.
+    </div>
+    <div class="field">
+      <label>Reference args ≥</label>
+      <input type="number" id="tool_use_ref_min_chars" min="0" max="20000" step="100" placeholder="500" style="flex:0 0 90px;">
+      <span style="font-size:11px; color:var(--text-secondary);">chars (default 500 — the cache-study knee)</span>
+    </div>
+  </div>
+
 </div>
 
 <!-- ── Time ───────────────────────────────────────────────────────────────── -->

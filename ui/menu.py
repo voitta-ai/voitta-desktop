@@ -43,6 +43,7 @@ from optimizers.bash_compress import BashCompressor
 from optimizers.image import ImageOptimizer
 from optimizers.thinking import ThinkingOptimizer
 from optimizers.tool_result import ToolResultOptimizer
+from optimizers.tool_use import ToolUseOptimizer
 from proxy import AnthropicProxy
 from mcpproxy.server import run_mcp_proxy
 from ui.chart import generate_chart_html
@@ -137,11 +138,18 @@ class VoittaDesktopApp(
             strip_progress=bool(bash_cfg.get("strip_progress", False)),
             smart_commands=bool(bash_cfg.get("smart_commands", False)),
         )
+        self._tool_use_optimizer = ToolUseOptimizer(
+            keep_turns=int(time_cfg.get("tool_result_keep_turns", 5)),
+            min_chars=int(bash_cfg.get("tool_use_ref_min_chars", 500)),
+        )
         opt_cfg = self._config.get("optimizer", {})
         # BashCompressor runs first so other Bash-handling optimizers see
         # already-compressed output (no double accounting).
+        # tool_use (pair-collapser) before tool_result so a long-call /
+        # long-response pair is collapsed once, not referenced twice.
         self._optimizer_pipeline = OptimizerPipeline(
-            [self._bash_compressor, self._tool_result_optimizer, self._image_optimizer, self._thinking_optimizer],
+            [self._bash_compressor, self._tool_use_optimizer, self._tool_result_optimizer,
+             self._image_optimizer, self._thinking_optimizer],
             enabled=bool(opt_cfg.get("enabled", True)),
             haiku_only=bool(opt_cfg.get("haiku_only", False)),
         )

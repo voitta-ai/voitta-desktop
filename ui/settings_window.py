@@ -23,6 +23,8 @@ import asyncio
 import json
 import logging
 import os
+import shlex
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -70,21 +72,63 @@ def _mcp_servers_diff(old: list[dict], new: list[dict]) -> bool:
     return normalise(old) != normalise(new)
 
 
-def _restart_voitta_desktop():
-    """Re-exec the current binary so the new mcp_servers list takes effect.
+def _bundle_path_from_executable() -> str | None:
+    """Return the .app bundle path if we're running inside one, else None.
 
-    Uses os.execv: replaces the current process image with a fresh copy
-    of itself, no new PID created, no double-startup. Works for both
-    `python app.py` (terminal dev) and the bundled .app (briefcase's
-    /usr/bin/python3.X wrapper). Best-effort — if the exec fails for any
-    reason we fall back to a notification asking the user to restart by
-    hand, so the app keeps running rather than dying mid-session.
+    In a briefcase bundle sys.executable is
+    ``…/Voitta Desktop.app/Contents/MacOS/Voitta`` (the stub binary, NOT a
+    Python interpreter). Terminal dev (`python app.py`) has no .app ancestor.
+    """
+    marker = ".app/Contents/MacOS/"
+    exe = sys.executable or ""
+    if marker in exe:
+        return exe.split(marker)[0] + ".app"
+    return None
+
+
+def _restart_voitta_desktop():
+    """Restart Voitta Desktop so the new mcp_servers list takes effect.
+
+    Two paths, because os.execv corrupts a menu-bar GUI app:
+
+    - **Bundled .app** — os.execv replaces the process image in place but the
+      app is already registered with the macOS WindowServer/launchd under this
+      PID; the fresh image never comes back cleanly (the symptom: app quits and
+      stays dead). Instead we spawn a *detached* shell helper that waits for
+      THIS process to fully exit (so the fixed proxy port is released — see
+      _resolve_port) and then `open`s the bundle, and we quit cleanly via
+      rumps.quit_application() so atexit handlers run (claude-link disarm,
+      subprocess teardown).
+    - **Terminal dev** (`python app.py`) — os.execv works fine and keeps the
+      controlling terminal attached.
+
+    Best-effort — on any failure we fall back to a notification asking the user
+    to restart by hand, so the app keeps running rather than dying mid-session.
     """
     try:
-        executable = sys.executable
-        argv = [executable] + sys.argv
-        logger.info("Re-exec for MCP-server change: %s", argv)
-        os.execv(executable, argv)
+        app_path = _bundle_path_from_executable()
+        if app_path:
+            pid = os.getpid()
+            # Wait for this PID to disappear, grace for the OS to release the
+            # bound port, then relaunch. Detached so it outlives our exit.
+            script = (
+                f'while kill -0 {pid} 2>/dev/null; do sleep 0.2; done; '
+                f'sleep 0.5; '
+                f'open {shlex.quote(app_path)}'
+            )
+            logger.info("Relaunch (bundle): waiting on pid %d then open %s",
+                        pid, app_path)
+            subprocess.Popen(
+                ["/bin/sh", "-c", script],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            rumps.quit_application()
+        else:
+            executable = sys.executable
+            argv = [executable] + sys.argv
+            logger.info("Re-exec (dev) for MCP-server change: %s", argv)
+            os.execv(executable, argv)
     except Exception as e:
         logger.error("Auto-restart failed: %s", e)
         _notify("Voitta Desktop",
@@ -310,6 +354,9 @@ class SettingsWindowMixin:
         self._tool_result_optimizer.keep_turns = max(1, int(time_cfg.get("tool_result_keep_turns", 5)))
         self._image_optimizer.keep_turns = max(1, int(time_cfg.get("image_keep_turns", 5)))
         self._thinking_optimizer.keep_turns = max(1, int(time_cfg.get("thinking_keep_turns", 5)))
+        if hasattr(self, "_tool_use_optimizer"):
+            self._tool_use_optimizer.keep_turns = max(1, int(time_cfg.get("tool_result_keep_turns", 5)))
+            self._tool_use_optimizer.min_chars = max(0, int(bash_cfg.get("tool_use_ref_min_chars", 500)))
 
         self._init_active_defaults()
         self._sync_edit_mcp_env()

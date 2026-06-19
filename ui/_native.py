@@ -33,6 +33,24 @@ from auth.jira import fetch_jira_projects
 logger = logging.getLogger("voitta-desktop")
 
 
+def _settings_inject_js(app_ref, gen, js):
+    """Push JS into the still-open settings webview from a worker thread,
+    guarded by generation so a stale thread can't write into a reopened
+    window. Mirrors the inline pattern used by the Jira-projects fetch."""
+    from PyObjCTools import AppHelper
+
+    def _inject():
+        if getattr(app_ref, "_settings_gen", 0) != gen or not app_ref._settings_refs:
+            return
+        wv = app_ref._settings_refs[1]
+        try:
+            wv.evaluateJavaScript_completionHandler_(js, None)
+        except Exception:
+            pass
+
+    AppHelper.callAfter(_inject)
+
+
 def _notify(title, subtitle, message):
     try:
         rumps.notification(title, subtitle, message)
@@ -215,6 +233,66 @@ class _SettingsTitleObserver(NSObject):
                 AppHelper.callAfter(_inject)
 
             threading.Thread(target=_do_fetch, daemon=True).start()
+            return
+
+        if title.startswith("VOITTA_MCP_CTL:"):
+            # Start/stop/restart/status a controllable subprocess MCP server.
+            # Payload: base64(json {"id": "<prefix>", "action": "start|stop|restart|status"}).
+            import base64
+            payload = title.split(":", 1)[1].split("#", 1)[0]
+            obj.evaluateJavaScript_completionHandler_(
+                "document.title = 'Voitta Desktop — Settings'", None
+            )
+            try:
+                req = json.loads(base64.b64decode(payload).decode("utf-8"))
+                sid = req["id"]; action = req["action"]
+            except Exception:
+                return
+            app_ref = self._app
+            gen = self._gen
+
+            def _do_ctl():
+                fn = {
+                    "start": app_ref.start_mcp_server,
+                    "stop": app_ref.stop_mcp_server,
+                    "restart": app_ref.restart_mcp_server,
+                    "status": app_ref.mcp_server_status,
+                }.get(action, app_ref.mcp_server_status)
+                try:
+                    status = fn(sid)
+                except Exception as e:
+                    status = {"id": sid, "state": "unknown", "error": str(e)}
+                _settings_inject_js(app_ref, gen, f"_setMcpServerStatus({json.dumps(status)})")
+
+            threading.Thread(target=_do_ctl, daemon=True).start()
+            return
+
+        if title.startswith("VOITTA_MCP_LOG:"):
+            # Fetch a subprocess MCP server's captured stdout/stderr.
+            # Payload: base64(server id).
+            import base64
+            payload = title.split(":", 1)[1].split("#", 1)[0]
+            obj.evaluateJavaScript_completionHandler_(
+                "document.title = 'Voitta Desktop — Settings'", None
+            )
+            try:
+                sid = base64.b64decode(payload).decode("utf-8")
+            except Exception:
+                return
+            app_ref = self._app
+            gen = self._gen
+
+            def _do_log():
+                try:
+                    text = app_ref.read_mcp_server_log(sid)
+                except Exception as e:
+                    text = f"(could not read log: {e})"
+                _settings_inject_js(
+                    app_ref, gen,
+                    f"_setMcpServerLog({json.dumps({'id': sid, 'text': text})})",
+                )
+
+            threading.Thread(target=_do_log, daemon=True).start()
             return
 
         if title.startswith("VOITTA_CLAUDE_LINK_TOGGLE:"):

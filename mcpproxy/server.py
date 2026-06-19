@@ -579,7 +579,7 @@ def run_mcp_proxy(app_ref, port: int):
             fmt = media_type.split("/")[-1] if "/" in media_type else "png"
             return Image(data=raw, format=fmt)
 
-        if obj["type"] in ("bash", "tool_result"):
+        if obj["type"] in ("bash", "tool_result", "tool_use", "tool_pair"):
             return obj["data"] if isinstance(obj["data"], str) else json.dumps(obj["data"])
 
         return f"Unknown object type: {obj['type']}"

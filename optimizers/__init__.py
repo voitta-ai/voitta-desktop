@@ -115,6 +115,64 @@ def _pick_ttl(body: dict, messages: list, bp_msg_idx: int) -> str:
     return "5m"
 
 
+def validate_tool_pairing(messages: list) -> list[str]:
+    """Check the tool_use/tool_result invariants Anthropic enforces.
+
+    Returns a list of human-readable problems (empty == clean). Detects the
+    failure modes an in-place optimizer can introduce:
+      * orphan tool_use   — a tool_use id with no matching tool_result
+      * orphan tool_result — a tool_result whose tool_use_id has no tool_use
+      * mis-ordered turn  — a tool_result block not at the front of its user
+                            message (a non-tool_result block precedes it)
+
+    Detection only — never mutates. Cheap enough to run on every request.
+    """
+    problems: list[str] = []
+    use_ids: dict[str, int] = {}      # tool_use id -> msg index
+    result_ids: dict[str, int] = {}   # tool_result tool_use_id -> msg index
+
+    for mi, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+
+        if role == "assistant":
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    tid = block.get("id")
+                    if tid:
+                        use_ids[tid] = mi
+        elif role == "user":
+            seen_non_result = False
+            for block in content:
+                if not isinstance(block, dict):
+                    seen_non_result = True
+                    continue
+                if block.get("type") == "tool_result":
+                    tid = block.get("tool_use_id")
+                    if tid:
+                        result_ids[tid] = mi
+                    if seen_non_result:
+                        problems.append(
+                            f"msg[{mi}]: tool_result (id={tid}) is preceded by a "
+                            f"non-tool_result block — tool_results must lead the turn"
+                        )
+                else:
+                    seen_non_result = True
+
+    for tid, mi in use_ids.items():
+        if tid not in result_ids:
+            problems.append(f"orphan tool_use id={tid} at msg[{mi}] — no tool_result")
+    for tid, mi in result_ids.items():
+        if tid not in use_ids:
+            problems.append(f"orphan tool_result id={tid} at msg[{mi}] — no tool_use")
+
+    return problems
+
+
 class BaseOptimizer(Middleware):
     """Base class for context optimizers.
 
@@ -237,10 +295,16 @@ class OptimizerPipeline(Middleware):
 
     @property
     def stripped_tool_ids(self) -> dict[str, int]:
-        """Merged {tool_use_id: chars} across all optimizers from last request."""
+        """Merged {tool_use_id: chars} across all optimizers from last request.
+
+        Summed, not overwritten: a single tool_use_id can have both its result
+        (ToolResultOptimizer) and its arguments (ToolUseOptimizer) stripped, and
+        the chart overlay should reflect the total chars removed for that call.
+        """
         merged: dict[str, int] = {}
         for o in self.optimizers:
-            merged.update(o.last_stripped_ids)
+            for tid, chars in o.last_stripped_ids.items():
+                merged[tid] = merged.get(tid, 0) + chars
         return merged
 
     @property
@@ -342,8 +406,35 @@ class OptimizerPipeline(Middleware):
                 if "haiku" not in model:
                     return request
 
+        # Snapshot pairing health BEFORE we touch anything, so we can tell
+        # whether a broken array was inbound or introduced by our optimizers.
+        pre_body = request.json
+        pre_problems = (
+            validate_tool_pairing(pre_body["messages"])
+            if pre_body and isinstance(pre_body.get("messages"), list)
+            else []
+        )
+
         for o in self.optimizers:
             request = await o.on_request(request)
+
+        # Post-optimization check. If we introduced problems that weren't
+        # there before, that's our bug — log loudly with the diff. This fires
+        # the moment the array goes invalid, before Anthropic 400s it.
+        post_body = request.json
+        if post_body and isinstance(post_body.get("messages"), list):
+            post_problems = validate_tool_pairing(post_body["messages"])
+            new_problems = [p for p in post_problems if p not in pre_problems]
+            if new_problems:
+                logger.error(
+                    "OPTIMIZER BROKE TOOL PAIRING — %d new problem(s) introduced:\n  %s",
+                    len(new_problems), "\n  ".join(new_problems),
+                )
+            elif post_problems:
+                logger.warning(
+                    "tool pairing problems present but inbound (not our doing): %d",
+                    len(post_problems),
+                )
 
         # Stash stripped total on the request so on_response_done can stamp
         # the correct turn (turns are created by the tracker in on_response_done,

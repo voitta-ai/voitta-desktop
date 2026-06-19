@@ -176,11 +176,13 @@ if [ ! -d "$APP_DIR" ]; then
 fi
 
 if [ "$PACKAGE" -eq 1 ]; then
-  # Remove previous DMGs so only the current build remains in dist/.
-  if ls "$ROOT/dist/"*.dmg "$ROOT/dist/"*.dmg.zip 2>/dev/null | grep -q .; then
-    echo "[build_app] cleaning old dist/ artefacts..."
-    rm -f "$ROOT/dist/"*.dmg "$ROOT/dist/"*.dmg.zip
+  # Wipe dist/ entirely so artefacts don't accumulate — only the current
+  # build's output should be present. briefcase recreates dist/ on package.
+  if [ -d "$ROOT/dist" ]; then
+    echo "[build_app] wiping dist/ ..."
+    rm -rf "$ROOT/dist"
   fi
+  mkdir -p "$ROOT/dist"
 
   if [ -z "$SIGN_IDENTITY" ]; then
     echo "[build_app] briefcase package (DMG, ad-hoc sign)..."

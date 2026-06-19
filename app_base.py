@@ -118,6 +118,7 @@ class AppBase:
         from optimizers.image import ImageOptimizer
         from optimizers.thinking import ThinkingOptimizer
         from optimizers.tool_result import ToolResultOptimizer
+        from optimizers.tool_use import ToolUseOptimizer
         from proxy import AnthropicProxy
 
         time_cfg = self._config.get("time", {})
@@ -142,9 +143,17 @@ class AppBase:
             strip_progress=bool(bash_cfg.get("strip_progress", False)),
             smart_commands=bool(bash_cfg.get("smart_commands", False)),
         )
+        self._tool_use_optimizer = ToolUseOptimizer(
+            keep_turns=int(time_cfg.get("tool_result_keep_turns", 5)),
+            min_chars=int(bash_cfg.get("tool_use_ref_min_chars", 500)),
+        )
         self._optimizer_pipeline = OptimizerPipeline(
             [
                 self._bash_compressor,
+                # tool_use (pair-collapser) before tool_result so a long-call /
+                # long-response pair is collapsed once rather than the response
+                # being referenced first.
+                self._tool_use_optimizer,
                 self._tool_result_optimizer,
                 self._image_optimizer,
                 self._thinking_optimizer,

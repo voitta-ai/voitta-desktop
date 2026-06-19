@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import time
+from pathlib import Path
 from urllib.parse import urlparse
 from aiohttp import web, ClientSession, ClientTimeout, TCPConnector
 
@@ -167,6 +168,56 @@ class AnthropicProxy:
                     logger.error("Middleware %s.on_response_done failed for %s: %s",
                                  type(mw).__name__, proxy_req.path, e, exc_info=True)
 
+    def _dump_failure(self, proxy_req: ProxyRequest, status: int, resp_body: bytes) -> None:
+        """Best-effort dump of a rejected /v1/messages request + upstream error.
+
+        Writes the post-optimization request body (what we actually sent
+        upstream) alongside the upstream error JSON, so a tool-use 400 can be
+        diagnosed against the exact messages array that triggered it. Never
+        raises — diagnostics must not take down the proxy path.
+        """
+        try:
+            logs_dir = Path.home() / ".voitta-desktop" / "logs"
+            logs_dir.mkdir(parents=True, exist_ok=True)
+
+            try:
+                req_json = json.loads(proxy_req.body) if proxy_req.body else None
+            except Exception:
+                req_json = None
+
+            try:
+                err_json = json.loads(resp_body) if resp_body else None
+            except Exception:
+                err_json = (resp_body[:4096].decode("utf-8", "replace")
+                            if resp_body else None)
+
+            # Strip credentials from the captured headers.
+            safe_headers = {
+                k: v for k, v in proxy_req.headers.items()
+                if k.lower() not in ("x-api-key", "authorization")
+            }
+
+            record = {
+                "status": status,
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "path": proxy_req.path,
+                "upstream_error": err_json,
+                "request_headers": safe_headers,
+                "request_body": req_json,
+                "request_body_raw": (
+                    None if req_json is not None
+                    else (proxy_req.body[:8192].decode("utf-8", "replace")
+                          if proxy_req.body else None)
+                ),
+            }
+
+            path = logs_dir / f"fail_{status}_{time.strftime('%Y%m%d_%H%M%S')}.json"
+            path.write_text(json.dumps(record, indent=2))
+            logger.error("Upstream %d on %s — dumped rejected request to %s",
+                         status, proxy_req.path.split("?")[0], path)
+        except Exception as e:
+            logger.error("Failed to dump rejected request: %s", e, exc_info=True)
+
     async def _stream_response(
         self, request: web.Request, proxy_req: ProxyRequest,
         proxy_resp: ProxyResponse, upstream_resp, started_at: float
@@ -211,6 +262,13 @@ class AnthropicProxy:
     ) -> web.Response:
         """Read full response body then return."""
         body = await upstream_resp.read()
+
+        # Capture the exact post-optimization request that upstream rejected.
+        # Errors come back buffered (JSON), not as SSE, so this is the only
+        # path a 4xx/5xx on /v1/messages takes. Dump BEFORE response
+        # middleware so we record the raw upstream error, not a rewritten one.
+        if proxy_resp.status >= 400 and "/v1/messages" in proxy_req.path:
+            self._dump_failure(proxy_req, proxy_resp.status, body)
 
         for mw in self.middlewares:
             mw_started_at = time.monotonic()

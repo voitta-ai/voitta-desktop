@@ -113,6 +113,7 @@ function deleteApp(i) {
 // Each server is a card with: name, prefix, description, kind (http/subprocess),
 // transport-specific fields, and auth selector with conditional auth fields.
 // Subprocess templates: google_mcp/jira_mcp (HTTP, cwd/env_path/port fields),
+// http_command (HTTP, arbitrary command + cwd/env_path/port/port_env fields),
 // npx (stdio via NpxStdioTransport, package+args fields),
 // command (stdio via StdioTransport, command field).
 
@@ -178,10 +179,11 @@ function _renderMcpCard(s, i) {
     const tplLabel = document.createElement('label'); tplLabel.textContent = 'Template';
     const tplSel = document.createElement('select');
     [
-      ['google_mcp', 'google_mcp (HTTP subprocess)'],
-      ['jira_mcp',   'jira_mcp (HTTP subprocess)'],
-      ['npx',        'npx (stdio — e.g. chrome-devtools-mcp)'],
-      ['command',    'command (stdio — arbitrary executable)'],
+      ['google_mcp',   'google_mcp (HTTP subprocess)'],
+      ['jira_mcp',     'jira_mcp (HTTP subprocess)'],
+      ['http_command', 'http_command (HTTP subprocess — arbitrary command)'],
+      ['npx',          'npx (stdio — e.g. chrome-devtools-mcp)'],
+      ['command',      'command (stdio — arbitrary executable)'],
     ].forEach(([val, label]) => {
       const opt = document.createElement('option');
       opt.value = val; opt.textContent = label;
@@ -215,6 +217,25 @@ function _renderMcpCard(s, i) {
         sp.command = cmdInput.value.trim() ? cmdInput.value.trim().split(/\s+/) : [];
       };
       card.appendChild(_field('Command (space-separated)', cmdInput));
+    } else if (tpl === 'http_command') {
+      // Generic HTTP subprocess: user-supplied command that serves MCP over
+      // HTTP on `port`. {port}/{env_path} tokens in the command are substituted
+      // at launch; port_env (if set) exports the port as that env var.
+      const cmdVal = Array.isArray(sp.command) ? sp.command.join(' ') : (sp.command || '');
+      const cmdInput = document.createElement('input');
+      cmdInput.type = 'text';
+      cmdInput.value = cmdVal;
+      cmdInput.placeholder = 'python server.py --port {port}';
+      cmdInput.onchange = () => {
+        sp.command = cmdInput.value.trim() ? cmdInput.value.trim().split(/\s+/) : [];
+      };
+      card.appendChild(_field('Command (space-separated; {port}, {env_path} tokens)', cmdInput));
+      card.appendChild(_field('Working directory', _textInputObj(sp, 'cwd', '~/DEVEL/...')));
+      card.appendChild(_field('Env file (optional)', _textInputObj(sp, 'env_path', '~/.voitta_desktop/...env')));
+      const portInput = _textInputObj(sp, 'port', '18766');
+      portInput.onchange = () => { sp.port = parseInt(portInput.value) || 0; };
+      card.appendChild(_field('Port', portInput));
+      card.appendChild(_field('Port env var (optional, e.g. PORT)', _textInputObj(sp, 'port_env', 'PORT')));
     } else {
       card.appendChild(_field('Working directory', _textInputObj(sp, 'cwd', '~/DEVEL/...')));
       card.appendChild(_field('Env file', _textInputObj(sp, 'env_path', '~/.voitta_desktop/...env')));
@@ -244,6 +265,8 @@ function _renderMcpCard(s, i) {
 
   _renderAuthFields(card, s);
 
+  _renderMcpControls(card, s);
+
   // Delete (two-stage: first click arms, second click within 3s deletes)
   const footer = document.createElement('div');
   footer.className = 'card-footer';
@@ -255,6 +278,167 @@ function _renderMcpCard(s, i) {
   card.appendChild(footer);
 
   return card;
+}
+
+// ── Subprocess server controls (start/stop/restart + logs) ─────────────────
+// Only servers whose process the desktop owns can be controlled: subprocess
+// kind with an HTTP-subprocess template. Operations act on the running/saved
+// config — unsaved edits need Save + restart to take effect.
+const _MCP_CONTROLLABLE_TEMPLATES = ['google_mcp', 'jira_mcp', 'http_command'];
+let _mcpNonce = 0;
+
+function _mcpServerId(s) { return (s.prefix || s.name || '').trim(); }
+
+function _b64u(str) { return btoa(unescape(encodeURIComponent(str))); }
+
+// All bridge messages go through a serialized queue: the title-KVO bridge can
+// only carry one message at a time (Python reads then resets document.title),
+// so two writes in the same tick would drop one. The pump spaces sends out so
+// auto-status for N servers + rapid clicks all get delivered.
+const _mcpMsgQueue = [];
+let _mcpPumpRunning = false;
+function _mcpEnqueue(title) {
+  _mcpMsgQueue.push(title);
+  if (_mcpPumpRunning) return;
+  _mcpPumpRunning = true;
+  const pump = () => {
+    if (!_mcpMsgQueue.length) { _mcpPumpRunning = false; return; }
+    document.title = _mcpMsgQueue.shift();
+    setTimeout(pump, 120);
+  };
+  pump();
+}
+
+function _mcpCtl(id, action) {
+  // nonce after '#' so repeated identical actions still re-fire title KVO;
+  // Python strips it before base64-decoding the payload.
+  _mcpEnqueue('VOITTA_MCP_CTL:' + _b64u(JSON.stringify({ id: id, action: action })) + '#' + (_mcpNonce++));
+}
+function _mcpViewLog(id) {
+  _mcpEnqueue('VOITTA_MCP_LOG:' + _b64u(id) + '#' + (_mcpNonce++));
+}
+
+function _renderMcpControls(card, s) {
+  if ((s.kind || 'http') !== 'subprocess') return;
+  const tpl = (s.subprocess || {}).template || '';
+  if (!_MCP_CONTROLLABLE_TEMPLATES.includes(tpl)) return;
+  const id = _mcpServerId(s);
+  if (!id) return;
+
+  const row = document.createElement('div');
+  row.className = 'field';
+  row.style.cssText = 'display:flex; align-items:center; gap:8px; flex-wrap:wrap; border-top:1px solid var(--input-border); padding-top:10px; margin-top:6px;';
+
+  const status = document.createElement('span');
+  status.id = 'mcpstatus-' + id;
+  status.style.cssText = 'font-size:12px; font-weight:600; margin-right:auto;';
+  status.textContent = '● checking…';
+  status.style.color = 'var(--text-secondary)';
+  row.appendChild(status);
+
+  const mkBtn = (label, fn) => {
+    const b = document.createElement('button');
+    b.className = 'btn'; b.textContent = label; b.onclick = fn;
+    return b;
+  };
+  row.appendChild(mkBtn('Start',   () => _mcpCtl(id, 'start')));
+  row.appendChild(mkBtn('Stop',    () => _mcpCtl(id, 'stop')));
+  row.appendChild(mkBtn('Restart', () => _mcpCtl(id, 'restart')));
+  row.appendChild(mkBtn('View logs', () => _mcpViewLog(id)));
+  card.appendChild(row);
+
+  // Ask Python for the current state once the card is in the DOM.
+  setTimeout(() => _mcpCtl(id, 'status'), 0);
+}
+
+// Called by Python (evaluateJavaScript) after a control action / status query.
+function _setMcpServerStatus(st) {
+  if (!st || !st.id) return;
+  const el = document.getElementById('mcpstatus-' + st.id);
+  if (!el) return;
+  const map = {
+    running: ['● running' + (st.pid ? ' (pid ' + st.pid + ')' : ''), '#3fb950'],
+    stopped: ['● stopped' + (st.code != null ? ' (exit ' + st.code + ')' : ''), 'var(--text-secondary)'],
+    crashed: ['● crashed' + (st.code != null ? ' (exit ' + st.code + ')' : ''), '#f85149'],
+    unknown: ['● ' + (st.error || 'unknown'), '#f85149'],
+  };
+  const [text, color] = map[st.state] || map.unknown;
+  el.textContent = text;
+  el.style.color = color;
+}
+
+// Called by Python with the captured stdout/stderr text.
+function _setMcpServerLog(payload) {
+  if (!payload) return;
+  _showMcpLogModal(payload.id || '', payload.text || '');
+}
+
+function _showMcpLogModal(id, text) {
+  let overlay = document.getElementById('mcp-log-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'mcp-log-overlay';
+    overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; z-index:1000;';
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+    const box = document.createElement('div');
+    // resize:both lets the user drag the bottom-right corner to grow/shrink.
+    box.style.cssText = 'background:var(--bg, #1e1e1e); border:1px solid var(--input-border); border-radius:10px; width:80%; height:70%; max-width:95vw; max-height:90vh; min-width:360px; min-height:220px; display:flex; flex-direction:column; overflow:hidden; resize:both;';
+    const head = document.createElement('div');
+    head.style.cssText = 'display:flex; align-items:center; justify-content:space-between; padding:10px 14px; border-bottom:1px solid var(--input-border); flex:0 0 auto;';
+    const title = document.createElement('div');
+    title.id = 'mcp-log-title';
+    title.style.cssText = 'font-weight:600; font-size:13px;';
+    const head_btns = document.createElement('div');
+    head_btns.style.cssText = 'display:flex; gap:8px;';
+    const copy = document.createElement('button');
+    copy.className = 'btn'; copy.textContent = 'Copy';
+    copy.onclick = () => {
+      const t = document.getElementById('mcp-log-body').textContent || '';
+      // navigator.clipboard may be unavailable in the webview; fall back to
+      // selecting the body so ⌘C works.
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(t).then(
+          () => { copy.textContent = 'Copied'; setTimeout(() => copy.textContent = 'Copy', 1200); },
+          () => _selectMcpLogBody());
+      } else {
+        _selectMcpLogBody();
+      }
+    };
+    const refresh = document.createElement('button');
+    refresh.className = 'btn'; refresh.textContent = 'Refresh';
+    refresh.onclick = () => _mcpViewLog(overlay.dataset.serverId || '');
+    const close = document.createElement('button');
+    close.className = 'btn'; close.textContent = 'Close';
+    close.onclick = () => overlay.remove();
+    head_btns.appendChild(copy); head_btns.appendChild(refresh); head_btns.appendChild(close);
+    head.appendChild(title); head.appendChild(head_btns);
+    const pre = document.createElement('pre');
+    pre.id = 'mcp-log-body';
+    // user-select:text overrides the global user-select:none (settings.html);
+    // cursor:text + the selection styling make it behave like a text area.
+    pre.style.cssText = 'margin:0; padding:12px 14px; overflow:auto; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; line-height:1.45; white-space:pre-wrap; word-break:break-word; flex:1 1 auto; -webkit-user-select:text; user-select:text; cursor:text;';
+    box.appendChild(head); box.appendChild(pre);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+  }
+  overlay.dataset.serverId = id;
+  document.getElementById('mcp-log-title').textContent = 'Logs — ' + (id || 'server');
+  const body = document.getElementById('mcp-log-body');
+  const atBottom = body.scrollTop + body.clientHeight >= body.scrollHeight - 4;
+  body.textContent = text;
+  // Only auto-scroll if the user was already at the bottom — don't yank them
+  // away from text they're reading/selecting on Refresh.
+  if (atBottom) body.scrollTop = body.scrollHeight;
+}
+
+function _selectMcpLogBody() {
+  const body = document.getElementById('mcp-log-body');
+  if (!body) return;
+  const range = document.createRange();
+  range.selectNodeContents(body);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
 }
 
 function _renderAuthFields(card, s) {
@@ -433,6 +617,8 @@ function loadProxy() {
   document.getElementById('bash_trim_whitespace').checked = bash.trim_whitespace !== false; // default true
   document.getElementById('bash_strip_progress').checked = !!bash.strip_progress;
   document.getElementById('bash_smart_commands').checked = !!bash.smart_commands;
+  document.getElementById('tool_use_ref_min_chars').value =
+    (bash.tool_use_ref_min_chars === undefined ? 500 : bash.tool_use_ref_min_chars);
 
   var time = config.time || {};
   document.getElementById('tool_result_keep_turns').value = time.tool_result_keep_turns || 5;
@@ -480,6 +666,7 @@ function collectAll() {
     trim_whitespace: document.getElementById('bash_trim_whitespace').checked,
     strip_progress: document.getElementById('bash_strip_progress').checked,
     smart_commands: document.getElementById('bash_smart_commands').checked,
+    tool_use_ref_min_chars: Math.max(0, parseInt(document.getElementById('tool_use_ref_min_chars').value) || 0),
   };
   config.time = {
     tool_result_keep_turns: Math.max(1, parseInt(document.getElementById('tool_result_keep_turns').value) || 5),
