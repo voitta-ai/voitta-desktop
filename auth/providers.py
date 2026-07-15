@@ -175,18 +175,21 @@ def fetch_profile_google(token: str) -> dict | None:
 
 
 def do_refresh_google(app: dict, refresh_token: str) -> dict | None:
-    """Silently refresh a Google token. Returns new token data or None."""
+    """Silently refresh a Google token.
+
+    Returns new token data, or None when the server explicitly rejected the
+    refresh token (revoked/expired — the caller should sign the app out).
+    Network errors propagate so the caller can retry without discarding a
+    still-valid refresh token.
+    """
     client_id = app.get("client_id", "")
     client_secret = app.get("client_secret", "")
-    try:
-        resp = requests.post("https://oauth2.googleapis.com/token", data={
-            "grant_type": "refresh_token",
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "refresh_token": refresh_token,
-        }, timeout=10)
-        if resp.ok:
-            return resp.json()
-    except Exception:
-        pass
+    resp = requests.post("https://oauth2.googleapis.com/token", data={
+        "grant_type": "refresh_token",
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "refresh_token": refresh_token,
+    }, timeout=10)
+    if resp.ok:
+        return resp.json()
     return None

@@ -19,6 +19,8 @@ from __future__ import annotations
 import threading
 
 import rumps
+from Foundation import NSThread
+from PyObjCTools import AppHelper
 
 from config import apps_for_backend
 
@@ -151,7 +153,17 @@ class MenuBuilderMixin:
         return "○  Jira Cloud                  Not configured"
 
     def _update_auth_state(self):
-        """Refresh auth-related menu item titles."""
+        """Refresh auth-related menu item titles.
+
+        Safe to call from any thread: setting a MenuItem title goes straight
+        to NSMenuItem.setTitle_, and AppKit objects must only be touched on
+        the main thread (the token-refresh timers and _do_auth threads used
+        to call this directly, racing the 2-second _refresh_menu timer —
+        an occasional EXC_BAD_ACCESS). Re-dispatch instead of mutating.
+        """
+        if not NSThread.isMainThread():
+            AppHelper.callAfter(self._update_auth_state)
+            return
         for backend in ("rag", "google_workspace"):
             backend_apps = apps_for_backend(self._config, backend)
             by_type = {}

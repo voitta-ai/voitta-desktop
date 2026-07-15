@@ -9,6 +9,7 @@ mechanically cheapest way to extract them while keeping every internal
 """
 from __future__ import annotations
 
+import logging
 import threading
 import traceback
 
@@ -18,6 +19,13 @@ from auth.providers import (
     do_refresh_microsoft, do_refresh_google,
 )
 from ui._native import _notify
+
+logger = logging.getLogger("voitta-desktop")
+
+# When a refresh attempt fails on a network error the token is still valid —
+# retry soon instead of signing out. Fed through _schedule_refresh, which
+# fires `expires_in - 300` seconds out, so 360 ≈ a 60-second retry.
+_RETRY_EXPIRES_IN = 360
 
 
 class AuthFlowsMixin:
@@ -119,7 +127,16 @@ class AuthFlowsMixin:
         app = self._app_by_id(app_id)
         if not app:
             return
-        result = do_refresh_microsoft(state["msal_app"], app, backend)
+        try:
+            result = do_refresh_microsoft(state["msal_app"], app, backend)
+        except Exception as e:
+            # MSAL propagates connection errors from requests. These timer
+            # threads have no other exception handler — an uncaught raise
+            # kills the thread and refresh is never rescheduled.
+            logger.warning("microsoft refresh (%s/%s) network error: %s — retrying in 60s",
+                           app_id, backend, e)
+            self._schedule_refresh(app_id, backend, _RETRY_EXPIRES_IN)
+            return
         if result and "access_token" in result:
             state["token"] = result["access_token"]
             self._schedule_refresh(app_id, backend, result.get("expires_in", 3600))
@@ -135,7 +152,13 @@ class AuthFlowsMixin:
         app = self._app_by_id(app_id)
         if not app:
             return
-        result = do_refresh_google(app, state["refresh_token"])
+        try:
+            result = do_refresh_google(app, state["refresh_token"])
+        except Exception as e:
+            logger.warning("google refresh (%s/%s) network error: %s — retrying in 60s",
+                           app_id, backend, e)
+            self._schedule_refresh(app_id, backend, _RETRY_EXPIRES_IN)
+            return
         if result:
             state["token"] = result["access_token"]
             if "refresh_token" in result:

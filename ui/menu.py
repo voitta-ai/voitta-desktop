@@ -342,11 +342,6 @@ class VoittaDesktopApp(
             return False
         return self._active_app.get((backend, app["type"])) == app_id
 
-    def _has_jira_credentials(self):
-        jira = self._config.get("jira", {})
-        return bool(jira.get("server_url") and jira.get("email")
-                     and jira.get("api_token") and jira.get("project"))
-
     # ── Background servers ───────────────────────────────────────────────────
 
     def _run_llm_proxy(self):
@@ -399,18 +394,10 @@ class VoittaDesktopApp(
         num_convs = sum(1 for c in convs if c.turns)
         alpha = 1.0 if self._proxy_running else 0.4
 
+        # Minimal footprint: conversation count + dog only. Savings and the
+        # M/G/J auth letters live in the menu itself — menu bar space is
+        # scarce. (Auth status is still visible via the dropdown.)
         title = NSMutableAttributedString.alloc().init()
-
-        # ── Left of dog: savings + conversation count ────────────────────────
-
-        savings = self._optimizer_pipeline.total_savings_usd
-        if savings >= 0.0001:
-            savings_str = f"${savings:.2f} " if savings >= 0.01 else f"${savings:.4f} "
-            green = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.19, 0.82, 0.35, alpha)
-            title.appendAttributedString_(
-                NSAttributedString.alloc().initWithString_attributes_(
-                    savings_str, {NSForegroundColorAttributeName: green, NSFontAttributeName: font}
-                ))
 
         if num_convs > 0:
             color = NSColor.colorWithCalibratedWhite_alpha_(base, alpha)
@@ -438,40 +425,6 @@ class VoittaDesktopApp(
                 NSBaselineOffsetAttributeName, baseline_offset, (0, icon_str.length())
             )
             title.appendAttributedString_(icon_str)
-            title.appendAttributedString_(
-                NSAttributedString.alloc().initWithString_attributes_(
-                    "  ", {NSFontAttributeName: font}
-                ))
-
-        # ── Right of dog: auth provider letters ─────────────────────────────
-
-        seen_types = []
-        for app in self._config.get("apps", []):
-            t = app["type"]
-            if t not in seen_types:
-                seen_types.append(t)
-
-        for app_type in seen_types:
-            letter = "M" if app_type == "microsoft" else "G"
-            active = any(
-                state.get("token") is not None
-                for key, state in self._auth.items()
-                if self._app_by_id(key[0]) and self._app_by_id(key[0])["type"] == app_type
-            )
-            letter_alpha = alpha if active else 0.3
-            color = NSColor.colorWithCalibratedWhite_alpha_(base, letter_alpha)
-            title.appendAttributedString_(
-                NSAttributedString.alloc().initWithString_attributes_(
-                    letter + " ", {NSForegroundColorAttributeName: color, NSFontAttributeName: font}
-                ))
-
-        jira_active = self._has_jira_credentials()
-        jira_alpha = alpha if jira_active else 0.3
-        color = NSColor.colorWithCalibratedWhite_alpha_(base, jira_alpha)
-        title.appendAttributedString_(
-            NSAttributedString.alloc().initWithString_attributes_(
-                "J", {NSForegroundColorAttributeName: color, NSFontAttributeName: font}
-            ))
 
         button.setAttributedTitle_(title)
 
