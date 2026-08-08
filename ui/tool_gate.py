@@ -305,6 +305,14 @@ _gate_on_result = None    # callback invoked with the answer, awaited or not
 _gate_waiters: list[tuple] = []   # (loop, event, holder) still awaiting
 _gate_lock = threading.Lock()
 
+# Keeps the webview, KVO observer and notification token alive for as long as
+# the popup is up; without a strong reference Python collects them and the
+# title-change callback never fires. These live here rather than as attributes
+# on the NSWindow because a PyObjC NSWindow rejects arbitrary Python
+# attributes — ``window._gate_refs = ...`` raises AttributeError, which is
+# what silently orphaned the window and left OK/Cancel doing nothing.
+_gate_refs: list = []
+
 
 def gate_is_open() -> bool:
     """True while a popup is up, or about to be."""
@@ -335,6 +343,12 @@ def _finish(result: list[str] | None) -> None:
             window.close()
         except Exception:
             logger.debug("gate window already closed", exc_info=True)
+    else:
+        # The window is on screen but we never got a reference to it, so it
+        # cannot be closed and would sit there ignoring both buttons.
+        logger.error("gate finished with no window reference — popup may be stuck")
+
+    _gate_refs.clear()
 
     # Publish before waking waiters, and even when there are none — caching
     # the answer for the client's retry is the entire point.
@@ -478,6 +492,14 @@ async def show_tool_gate(
         observer = _GateTitleObserver.alloc().initWithWindow_(window)
         webview.addObserver_forKeyPath_options_context_(observer, "title", 1, None)
 
+        # Publish the window and keep the Python objects alive BEFORE anything
+        # that can fail. Everything below can raise, and AppHelper.callAfter
+        # reports exceptions to stderr — which the .app bundle does not
+        # capture. A failure past this point leaves a usable popup rather than
+        # a visible window that _finish has no reference to close.
+        _gate_window = window
+        _gate_refs[:] = [webview, observer, config]
+
         webview.loadHTMLString_baseURL_(html, None)
 
         NSApp.activateIgnoringOtherApps_(True)
@@ -499,13 +521,11 @@ async def show_tool_gate(
                 _finish(None)
 
         from Foundation import NSNotificationCenter
-        NSNotificationCenter.defaultCenter().addObserverForName_object_queue_usingBlock_(
-            "NSWindowWillCloseNotification", window, None, _on_close
+        _gate_refs.append(
+            NSNotificationCenter.defaultCenter().addObserverForName_object_queue_usingBlock_(
+                "NSWindowWillCloseNotification", window, None, _on_close
+            )
         )
-
-        # Store refs to prevent GC
-        window._gate_refs = (webview, observer)
-        _gate_window = window
 
     with _gate_lock:
         already_open = _gate_pending or _gate_window is not None
@@ -520,7 +540,19 @@ async def show_tool_gate(
         logger.info("tool gate: popup already open, attaching to it")
     else:
         from PyObjCTools import AppHelper
-        AppHelper.callAfter(_show)
+
+        def _show_logged():
+            # callAfter sends exceptions to stderr, which the .app bundle does
+            # not capture ("No Python NSLog handler found"), so a failure in
+            # here is otherwise completely silent — no traceback, no log line,
+            # just a popup that misbehaves.
+            try:
+                _show()
+            except Exception:
+                logger.exception("tool gate failed to build its window")
+                _finish(None)
+
+        AppHelper.callAfter(_show_logged)
 
     try:
         await event.wait()
