@@ -243,6 +243,34 @@ if [ "$PACKAGE" -eq 1 ]; then
     fi
     rmdir "$MP" 2>/dev/null || true
   fi
+
+  # A Developer-ID DMG that isn't notarised is rejected by Gatekeeper, so it
+  # is not a shippable artefact. This has to be asserted rather than assumed:
+  # briefcase runs its own notarisation when given a real --identity, and it
+  # exits 0 even when that upload fails ("Submitting app for notarization...
+  # errored"), so `set -e` never fires and the build claims success while
+  # dist/ holds an unnotarised image.
+  if [ -n "$SIGN_IDENTITY" ] && [ -n "$DMG" ]; then
+    echo "[build_app] verifying notarisation..."
+    if ! xcrun stapler validate "$DMG" >/dev/null 2>&1; then
+      echo "[build_app] ERROR: $DMG is signed but has no notarisation ticket." >&2
+      echo "[build_app]   Gatekeeper will reject it on any other machine." >&2
+      echo "[build_app]   An aborted upload often still reaches Apple — check first:" >&2
+      echo "[build_app]     xcrun notarytool history --keychain-profile $NOTARY_PROFILE" >&2
+      echo "[build_app]   then, with the submission id:" >&2
+      echo "[build_app]     xcrun notarytool wait <id> --keychain-profile $NOTARY_PROFILE" >&2
+      echo "[build_app]     xcrun stapler staple \"$DMG\"" >&2
+      echo "[build_app]   or resubmit:" >&2
+      echo "[build_app]     xcrun notarytool submit \"$DMG\" --keychain-profile $NOTARY_PROFILE --wait" >&2
+      exit 1
+    fi
+    if ! spctl -a -t open --context context:primary-signature "$DMG" >/dev/null 2>&1; then
+      echo "[build_app] ERROR: $DMG failed Gatekeeper assessment." >&2
+      spctl -a -t open --context context:primary-signature -vv "$DMG" >&2 || true
+      exit 1
+    fi
+    echo "[build_app] verified: notarised, stapled, Gatekeeper-accepted"
+  fi
 fi
 
 echo
