@@ -345,31 +345,67 @@ from fastmcp.server.middleware import Middleware as FastMCPMiddleware
 class ToolGateMiddleware(FastMCPMiddleware):
     """Shows a tool gate popup on external tools/list requests.
 
-    - First external request: show popup, remember result
-    - Requests within REUSE_WINDOW_S: reuse last result (no popup)
-    - After window expires: show popup again
-    - rearm() clears the remembered result, forcing the next popup
+    - First listing of an MCP session: show the popup, remember the answer
+    - Later listings in that SAME session: reuse it, no popup
+    - A different session prompts again
+    - rearm() forgets everything, so the next listing prompts
 
-    The window is deliberately minutes, not seconds. An MCP client times out
-    a tools/list in about five seconds, so a human never answers in time —
-    the popup stays up past the cancellation and publishes the answer here
-    (see ui/tool_gate.py). The client's retry then has to still find it.
+    Answers are remembered **per session**, which keeps two requirements
+    apart that a single global answer used to conflate:
+
+    * *Retry coalescing.* An MCP client abandons a tools/list after about
+      five seconds — far less than a human takes to read a tool tree — then
+      retries. The popup deliberately outlives that cancellation and
+      publishes its answer here (see ui/tool_gate.py), so the retry has to
+      find it. That needs a window of minutes.
+    * *Fresh sessions prompt.* Gating is per client session; a new session
+      must get its own popup rather than inheriting an older answer.
+
+    A global answer with a minutes-long window satisfies the first and
+    breaks the second — every new session silently inherited whatever the
+    previous one chose. Keying by session satisfies both, so the window can
+    be generous without suppressing anyone's prompt.
     """
 
-    REUSE_WINDOW_S = 300.0
+    # Generous: the session key already isolates callers, so this only bounds
+    # memory and lets a very long-lived session eventually be re-gated.
+    ANSWER_TTL_S = 3600.0
+    MAX_REMEMBERED = 64
+
+    # Sessions that report no id share one slot. That still coalesces a
+    # client's own retries, which is what the slot is for.
+    ANON_KEY = "<no-session>"
 
     def __init__(self, app_ref):
         super().__init__()
         self._app_ref = app_ref
-        self._last_disabled: set[str] | None = None
-        self._last_time: float = 0
+        # session key -> (disabled tool names, answered at)
+        self._answers: dict[str, tuple[set[str], float]] = {}
         self._lock: asyncio.Lock | None = None
 
     def rearm(self) -> None:
-        """Forget the last answer so the next tools/list re-prompts."""
-        self._last_disabled = None
-        self._last_time = 0
-        logger.info("tool_gate: re-armed; next listing will prompt")
+        """Forget every remembered answer so the next listing re-prompts."""
+        count = len(self._answers)
+        self._answers.clear()
+        logger.info("tool_gate: re-armed, dropped %d remembered answer(s); "
+                    "the next listing will prompt", count)
+
+    def _recall(self, key: str) -> tuple[set[str], float] | None:
+        """Return this session's answer, or None if absent or stale."""
+        entry = self._answers.get(key)
+        if entry is None:
+            return None
+        disabled, answered_at = entry
+        if time.time() - answered_at > self.ANSWER_TTL_S:
+            del self._answers[key]
+            return None
+        return disabled, answered_at
+
+    def _remember(self, key: str, disabled: set[str]) -> None:
+        self._answers[key] = (disabled, time.time())
+        if len(self._answers) > self.MAX_REMEMBERED:
+            oldest = min(self._answers, key=lambda k: self._answers[k][1])
+            del self._answers[oldest]
 
     def _get_lock(self) -> asyncio.Lock:
         if self._lock is None:
@@ -409,12 +445,15 @@ class ToolGateMiddleware(FastMCPMiddleware):
 
         # Serialize popup access — second request waits for first popup to finish
         async with self._get_lock():
-            # Reuse recent result within the window
-            if self._last_disabled is not None and (time.time() - self._last_time) < self.REUSE_WINDOW_S:
-                logger.warning("tool_gate: reusing recent result (client=%s, %.1fs ago)",
-                               client_name, time.time() - self._last_time)
+            key = session_id or self.ANON_KEY
+            remembered = self._recall(key)
+            if remembered is not None:
+                disabled, answered_at = remembered
+                logger.info("tool_gate: reusing this session's answer "
+                            "(client=%s, session=%s, %.1fs ago)",
+                            client_name, key, time.time() - answered_at)
                 tools = await call_next(context)
-                return [t for t in tools if t.name not in self._last_disabled]
+                return [t for t in tools if t.name not in disabled]
 
             return await self._show_gate(context, call_next, client_name, session_id)
 
@@ -489,20 +528,21 @@ class ToolGateMiddleware(FastMCPMiddleware):
 
             all_names = {t.name for t in tools}
 
+            key = session_id or self.ANON_KEY
+
             def _publish(result: list[str] | None) -> None:
-                """Cache the user's answer.
+                """Remember the user's answer for this session.
 
                 Called from the AppKit main thread, usually *after* this
                 request has been cancelled — the client's timeout is far
-                shorter than a human's reading time. Caching here is what
-                lets the retry be served without a second popup.
+                shorter than a human's reading time. Remembering it here is
+                what lets the retry be served without a second popup.
 
                 Cancel means no tools allowed, so every name goes on the
                 disabled list. An empty set would mean "filter nothing" and
                 leak the whole toolset back to the LLM.
                 """
-                self._last_disabled = all_names if result is None else set(result)
-                self._last_time = time.time()
+                self._remember(key, all_names if result is None else set(result))
 
             gate_result = await show_tool_gate(
                 tool_groups, disabled, meta, on_result=_publish
@@ -511,7 +551,9 @@ class ToolGateMiddleware(FastMCPMiddleware):
             # _publish already ran on the way here — it is the single writer.
             if gate_result is None:
                 return []
-            return [t for t in tools if t.name not in self._last_disabled]
+            remembered = self._recall(key)
+            disabled_now = remembered[0] if remembered else set(gate_result)
+            return [t for t in tools if t.name not in disabled_now]
         except asyncio.CancelledError:
             # Must re-raise, not return []. The MCP SDK already sent an error
             # response when the client cancelled; returning a value here makes
