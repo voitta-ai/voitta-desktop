@@ -1,5 +1,10 @@
-"""Tool gate popup — shows a tool tree with toggles when an MCP client requests tools/list."""
+"""Tool gate popup — shows a tool tree with toggles when an MCP client requests tools/list.
 
+The popup outlives the request that opens it. See the "Gate state" block
+below for why, and for the cancellation contract callers must honour.
+"""
+
+import asyncio
 import json
 import logging
 import threading
@@ -281,15 +286,79 @@ renderToolTree();
 </html>"""
 
 
-# Module-level state for cross-thread communication
-_gate_result_holder: list[list[str] | None] = [None]
-_gate_loop = None
-_gate_event = None
-_gate_window = None  # reference to keep window alive for cleanup
+# ── Gate state ───────────────────────────────────────────────────────────────
+#
+# The popup deliberately outlives the MCP request that opened it. An MCP
+# client's request timeout is about five seconds, which no human beats while
+# reading a tool list, so the request is cancelled long before the answer
+# arrives. Rather than tearing the window down and re-prompting on every
+# retry, the window stays up and publishes its answer through `on_result`
+# the moment the user clicks — the retry then finds it already cached and
+# is served without a second popup.
+#
+# State lives here rather than in the middleware because the window's
+# lifetime, not the request's, is what has to be tracked.
+
+_gate_window = None       # live NSWindow, or None
+_gate_pending = False     # True from callAfter() until the window exists
+_gate_on_result = None    # callback invoked with the answer, awaited or not
+_gate_waiters: list[tuple] = []   # (loop, event, holder) still awaiting
+_gate_lock = threading.Lock()
+
+
+def gate_is_open() -> bool:
+    """True while a popup is up, or about to be."""
+    with _gate_lock:
+        return _gate_pending or _gate_window is not None
+
+
+def _finish(result: list[str] | None) -> None:
+    """Single terminal path for the popup: publish the answer and clean up.
+
+    Always runs on the AppKit main thread — from the KVO callback, the JS
+    completion handler, or the window-close notification. Re-entrant calls
+    are no-ops, which is what makes closing the window here safe even though
+    that close fires the notification that calls back into this function.
+    """
+    global _gate_window, _gate_pending, _gate_on_result
+
+    with _gate_lock:
+        if not _gate_pending and _gate_window is None:
+            return
+        window, _gate_window = _gate_window, None
+        _gate_pending = False
+        on_result, _gate_on_result = _gate_on_result, None
+        waiters, _gate_waiters[:] = list(_gate_waiters), []
+
+    if window is not None:
+        try:
+            window.close()
+        except Exception:
+            logger.debug("gate window already closed", exc_info=True)
+
+    # Publish before waking waiters, and even when there are none — caching
+    # the answer for the client's retry is the entire point.
+    if on_result is not None:
+        try:
+            on_result(result)
+        except Exception:
+            logger.exception("gate on_result callback failed")
+
+    for loop, event, holder in waiters:
+        holder[0] = result
+        try:
+            loop.call_soon_threadsafe(event.set)
+        except RuntimeError:
+            pass  # that caller's loop is already gone
 
 
 class _GateTitleObserver(NSObject):
-    """KVO observer that watches the webview title for OK/Cancel signals."""
+    """KVO observer that watches the webview title for OK/Cancel signals.
+
+    The popup's HTML signals the user's choice by setting document.title —
+    the cheapest channel out of a WKWebView that needs no message-handler
+    plumbing on the native side.
+    """
 
     def initWithWindow_(self, window):
         self = objc.super(_GateTitleObserver, self).init()
@@ -297,6 +366,23 @@ class _GateTitleObserver(NSObject):
             self._window = window
             self._handled = False
         return self
+
+    def detachFrom_(self, obj) -> bool:
+        """Stop observing. Returns False if someone else already did.
+
+        Named for the Objective-C selector convention (trailing underscore =
+        one argument). PyObjC bridges every method on an NSObject subclass,
+        so a plain ``detach`` would be published as the zero-argument
+        selector ``detach`` and rejected at class-creation time.
+        """
+        if self._handled:
+            return False
+        self._handled = True
+        try:
+            obj.removeObserver_forKeyPath_(self, "title")
+        except Exception:
+            logger.debug("KVO already removed", exc_info=True)
+        return True
 
     def observeValueForKeyPath_ofObject_change_context_(
         self, keyPath, obj, change, context
@@ -311,57 +397,56 @@ class _GateTitleObserver(NSObject):
             return
 
         if title == "GATE_OK":
-            self._handled = True
-            # Remove KVO before fetching data
-            try:
-                obj.removeObserver_forKeyPath_(self, "title")
-            except Exception:
-                pass
+            if not self.detachFrom_(obj):
+                return
 
             def _on_js_result(result, error):
-                global _gate_window
                 if error or not result:
                     logger.warning("Gate JS eval failed: %s", error)
-                    _gate_result_holder[0] = []
-                else:
-                    try:
-                        _gate_result_holder[0] = json.loads(result)
-                        logger.info("Gate: %d tools disabled by user", len(_gate_result_holder[0]))
-                    except Exception as e:
-                        logger.warning("Gate JSON parse failed: %s", e)
-                        _gate_result_holder[0] = []
-                self._window.close()
-                _gate_window = None
-                if _gate_loop and _gate_event:
-                    _gate_loop.call_soon_threadsafe(_gate_event.set)
+                    _finish([])
+                    return
+                try:
+                    disabled = json.loads(result)
+                except Exception as e:
+                    logger.warning("Gate JSON parse failed: %s", e)
+                    _finish([])
+                    return
+                logger.info("Gate: %d tools disabled by user", len(disabled))
+                _finish(disabled)
 
             obj.evaluateJavaScript_completionHandler_("getDisabledTools()", _on_js_result)
         elif title == "GATE_CANCEL":
-            global _gate_window
-            self._handled = True
-            _gate_result_holder[0] = None
-            try:
-                obj.removeObserver_forKeyPath_(self, "title")
-            except Exception:
-                pass
-            self._window.close()
-            _gate_window = None
-            if _gate_loop and _gate_event:
-                _gate_loop.call_soon_threadsafe(_gate_event.set)
+            if self.detachFrom_(obj):
+                _finish(None)
 
 
-async def show_tool_gate(tool_groups: list[dict], disabled_tools: set[str], meta: dict | None = None) -> list[str] | None:
-    """Show the tool gate popup and await user response.
+async def show_tool_gate(
+    tool_groups: list[dict],
+    disabled_tools: set[str],
+    meta: dict | None = None,
+    on_result=None,
+) -> list[str] | None:
+    """Show the tool gate popup and await the user's answer.
 
     Returns the list of disabled tool names (OK), or None (Cancel).
-    Safe to call from an async context — uses asyncio event internally.
-    """
-    import asyncio
-    global _gate_loop, _gate_event
 
-    _gate_loop = asyncio.get_running_loop()
-    _gate_event = asyncio.Event()
-    _gate_result_holder[0] = None
+    ``on_result`` is invoked with that same value from the main thread the
+    moment the user answers — *including* when this coroutine has already
+    been cancelled. Callers should treat it, not the return value, as the
+    authoritative delivery path: MCP clients time out in about five seconds,
+    which no human beats, so in practice the answer usually arrives after
+    the awaiting request is gone.
+
+    Raises ``CancelledError`` if the caller is cancelled, leaving the popup
+    open on purpose. Re-raising matters: the MCP SDK has already sent an
+    error response by then, and only an escaping cancellation stops it
+    responding a second time and asserting. See the module docstring.
+    """
+    global _gate_pending, _gate_on_result
+
+    loop = asyncio.get_running_loop()
+    event = asyncio.Event()
+    holder: list[list[str] | None] = [None]
 
     def _show():
         global _gate_window
@@ -406,19 +491,10 @@ async def show_tool_gate(tool_groups: list[dict], disabled_tools: set[str], meta
         )
         NSRunLoop.mainRunLoop().addTimer_forMode_(timer, "NSDefaultRunLoopMode")
 
-        # Handle window close (red X) — remove KVO and signal cancel
+        # Window closed with the red X — treat as Cancel.
         def _on_close(notification):
-            global _gate_window
-            if not observer._handled:
-                observer._handled = True
-                try:
-                    webview.removeObserver_forKeyPath_(observer, "title")
-                except Exception:
-                    pass
-                _gate_result_holder[0] = None
-                _gate_window = None
-                if _gate_loop and _gate_event:
-                    _gate_loop.call_soon_threadsafe(_gate_event.set)
+            if observer.detachFrom_(webview):
+                _finish(None)
 
         from Foundation import NSNotificationCenter
         NSNotificationCenter.defaultCenter().addObserverForName_object_queue_usingBlock_(
@@ -429,28 +505,42 @@ async def show_tool_gate(tool_groups: list[dict], disabled_tools: set[str], meta
         window._gate_refs = (webview, observer)
         _gate_window = window
 
-    from PyObjCTools import AppHelper
-    AppHelper.callAfter(_show)
+    with _gate_lock:
+        already_open = _gate_pending or _gate_window is not None
+        _gate_waiters.append((loop, event, holder))
+        if not already_open:
+            _gate_pending = True
+            _gate_on_result = on_result
+
+    if already_open:
+        # A popup from an earlier — almost certainly cancelled — request is
+        # still up. Attach to it instead of stacking a second window.
+        logger.info("tool gate: popup already open, attaching to it")
+    else:
+        from PyObjCTools import AppHelper
+        AppHelper.callAfter(_show)
 
     try:
-        await asyncio.shield(_gate_event.wait())
-    except (asyncio.CancelledError, Exception):
-        # Client disconnected — close the gate window from the main thread
-        def _force_close():
-            global _gate_window
-            if _gate_window is not None:
-                refs = getattr(_gate_window, "_gate_refs", None)
-                if refs:
-                    webview, observer = refs
-                    if not observer._handled:
-                        observer._handled = True
-                        try:
-                            webview.removeObserver_forKeyPath_(observer, "title")
-                        except Exception:
-                            pass
-                _gate_window.close()
-                _gate_window = None
-            _gate_result_holder[0] = None
-        AppHelper.callAfter(_force_close)
-        return None
-    return _gate_result_holder[0]
+        await event.wait()
+    except asyncio.CancelledError:
+        # The MCP client gave up waiting. Two things must happen here, and
+        # both are load-bearing:
+        #
+        # 1. Re-raise. The SDK has ALREADY sent an error response via
+        #    RequestResponder.cancel(), and mcp/server/lowlevel/server.py
+        #    only suppresses its own duplicate respond() inside
+        #    `except get_cancelled_exc_class()`. Swallowing the cancellation
+        #    here — which this handler used to do — let the handler return a
+        #    normal value, so the SDK fell through to a second respond() and
+        #    tripped `assert not self._completed`. That AssertionError
+        #    escaped into the anyio TaskGroup and destroyed the whole MCP
+        #    session.
+        #
+        # 2. Leave the popup open. The user is still reading it; their answer
+        #    reaches the middleware through on_result and is waiting in the
+        #    cache by the time the client retries.
+        with _gate_lock:
+            _gate_waiters[:] = [w for w in _gate_waiters if w[1] is not event]
+        logger.info("tool gate: caller cancelled; popup stays open for the retry")
+        raise
+    return holder[0]

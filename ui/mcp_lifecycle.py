@@ -450,18 +450,9 @@ class MCPLifecycleMixin:
         if not self.claude_link_armed:
             return
         try:
-            from claude_link import (
-                load_claude_settings, is_voitta_connected,
-                plan_connect, apply_changes,
-            )
-            cfg = load_claude_settings()
-            if is_voitta_connected(cfg, self.llm_proxy_port):
-                return  # nothing to do — already armed
-            plan = plan_connect(cfg, self.llm_proxy_port, self.llm_upstream_url)
-            if plan.is_noop:
-                return
-            apply_changes(plan)
-            logger.info("claude_link: re-armed on startup")
+            from claude_link import arm_claude_link
+            if arm_claude_link(self.llm_proxy_port, self.llm_upstream_url):
+                logger.info("claude_link: re-armed on startup")
         except Exception as e:
             logger.warning("claude_link: re-arm failed: %s", e)
 
@@ -471,17 +462,8 @@ class MCPLifecycleMixin:
         shutdown). Always runs, regardless of the armed flag, so a user who
         force-quit after toggling Disconnect still gets a clean settings.json."""
         try:
-            from claude_link import (
-                load_claude_settings, is_voitta_connected,
-                plan_disconnect, apply_changes,
-            )
-            cfg = load_claude_settings()
-            if not is_voitta_connected(cfg, self.llm_proxy_port):
-                return  # not wired, nothing to strip
-            plan = plan_disconnect(cfg, self.llm_proxy_port)
-            if plan.is_noop:
-                return
-            apply_changes(plan)
-            logger.info("claude_link: disarmed on quit")
+            from claude_link import disarm_claude_link
+            if disarm_claude_link(self.llm_proxy_port):
+                logger.info("claude_link: disarmed on quit")
         except Exception as e:
             logger.warning("claude_link: disarm failed: %s", e)

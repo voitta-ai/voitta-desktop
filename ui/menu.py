@@ -5,7 +5,6 @@ Two background servers: LLM proxy (aiohttp) and MCP proxy (FastMCP).
 """
 # Main UI module: manages menu bar interactions and background server lifecycle
 
-import asyncio
 import atexit
 import json
 import logging
@@ -32,9 +31,10 @@ from AppKit import (
 )
 from WebKit import WKWebView
 
+from app_base import AppBase
 from config import (
     load_config, save_config, migrate_from_legacy, apps_for_backend,
-    CONFIG_PATH, CONFIG_DIR,
+    claude_link_armed, CONFIG_PATH, CONFIG_DIR,
 )
 from middleware import ConversationTracker, RequestLogger
 from middleware.cache_sim import CacheSimulator
@@ -45,7 +45,6 @@ from optimizers.thinking import ThinkingOptimizer
 from optimizers.tool_result import ToolResultOptimizer
 from optimizers.tool_use import ToolUseOptimizer
 from proxy import AnthropicProxy
-from mcpproxy.server import run_mcp_proxy
 from ui.chart import generate_chart_html
 from ui._native import (
     _notify, _FocusTrigger, _InfoTicker, _is_port_free, _grab_free_port,
@@ -69,8 +68,14 @@ ICON_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 
 class VoittaDesktopApp(
     AuthFlowsMixin, MCPLifecycleMixin, ConvMenuMixin, MenuBuilderMixin,
-    SettingsWindowMixin, rumps.App,
+    SettingsWindowMixin, rumps.App, AppBase,
 ):
+    """The macOS menu bar driver.
+
+    AppBase comes last so this class's own definitions (notify_update,
+    _load_or_migrate_config, _resolve_port) win the MRO; what it inherits is
+    the shared background-server lifecycle, start_background_servers().
+    """
     def __init__(self):
         super().__init__("VoittaDesktop", title=None, quit_button=None)
 
@@ -105,8 +110,7 @@ class VoittaDesktopApp(
         self.disabled_tools = set(self._config.get("disabled_tools", []))
         tools_cfg = self._config.get("tools", {})
         self.suppress_codex_popup = bool(tools_cfg.get("suppress_codex_popup", True))
-        link_cfg = self._config.get("claude_link", {})
-        self.claude_link_armed = bool(link_cfg.get("armed", False))
+        self.claude_link_armed = claude_link_armed(self._config)
         self._mcp_tools = {}
         self._mcp_upstream_instructions: dict[str, str] = {}
 
@@ -170,9 +174,14 @@ class VoittaDesktopApp(
         self._update_auth_state()
         self._install_edit_shortcuts()
 
-        # Start background servers
-        threading.Thread(target=self._run_llm_proxy, daemon=True).start()
-        threading.Thread(target=self._run_mcp_proxy, daemon=True).start()
+        # Start background servers — both proxies and the request watchdog
+        # are coroutines on the one shared loop. See runtime.py.
+        self.start_background_servers()
+
+        # Sign-ins survive a restart: reload stored refresh tokens and let
+        # each app come back online without a browser round-trip. Needs the
+        # runtime up, since each refresh is scheduled on it.
+        self.restore_refresh_tokens()
 
         # Claude link lifecycle: re-arm now if user intent says so; register
         # the disarm hook for graceful shutdown (atexit) AND for force-quit
@@ -342,25 +351,8 @@ class VoittaDesktopApp(
             return False
         return self._active_app.get((backend, app["type"])) == app_id
 
-    # ── Background servers ───────────────────────────────────────────────────
-
-    def _run_llm_proxy(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(self._proxy.start())
-            self._proxy_running = True
-            logger.info("LLM proxy started on port %d", self.llm_proxy_port)
-            loop.run_forever()
-        except Exception as e:
-            logger.error("LLM proxy failed to start: %s", e)
-            self._proxy_running = False
-
-    def _run_mcp_proxy(self):
-        try:
-            run_mcp_proxy(self, self.mcp_proxy_port)
-        except BaseException as e:
-            logger.error("MCP proxy failed: %s", e, exc_info=True)
+    # Background servers live in AppBase.start_background_servers(); this
+    # class no longer owns loops or threads of its own.
 
     def notify_update(self) -> None:
         """No-op — Mac UI polls on a 2-second timer instead."""

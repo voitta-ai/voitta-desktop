@@ -7,7 +7,7 @@
 [tool.briefcase]
 project_name = "Voitta Desktop"
 bundle = "ai.voitta"
-version = "0.1.8"
+version = "0.1.9"
 url = "https://voitta.ai"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
@@ -40,6 +40,11 @@ sources = [
     "app.py",
     "config.py",
     "claude_link.py",
+    # Root modules are listed one by one, not globbed — a new one that isn't
+    # added here is simply absent from the bundle and the app dies on import.
+    "paths.py",
+    "runtime.py",
+    "lifecycle.py",
     "auth",
     "mcpproxy",
     "middleware",

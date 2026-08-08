@@ -25,7 +25,7 @@ LISTING_TIMEOUT_S = 6.0
 LISTING_FIRST_FILL_TIMEOUT_S = 15.0
 REFRESH_TIMEOUT_S = 30.0
 
-TOOL_CACHE_DIR = Path.home() / ".voitta_desktop_cache"
+from paths import TOOL_CACHE_DIR
 
 
 def _cache_path(backend_name: str, kind: str) -> Path:
@@ -47,7 +47,7 @@ def _proxy_tool_to_mcp_dict(item) -> dict:
 
 def _save_cache(backend_name: str, kind: str, items):
     try:
-        TOOL_CACHE_DIR.mkdir(exist_ok=True)
+        TOOL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         data = [_proxy_tool_to_mcp_dict(item) if kind == "tools" else item.model_dump()
                 for item in items]
         _cache_path(backend_name, kind).write_text(

@@ -19,7 +19,6 @@ from __future__ import annotations
 import json
 import logging
 import socket
-import threading
 
 import objc
 import rumps
@@ -29,26 +28,26 @@ from AppKit import (
 from Foundation import NSObject, NSTimer, NSRunLoop
 
 from auth.jira import fetch_jira_projects
+from runtime import runtime
+from ui.main_thread import on_main_thread
 
 logger = logging.getLogger("voitta-desktop")
 
 
+@on_main_thread
 def _settings_inject_js(app_ref, gen, js):
-    """Push JS into the still-open settings webview from a worker thread,
-    guarded by generation so a stale thread can't write into a reopened
-    window. Mirrors the inline pattern used by the Jira-projects fetch."""
-    from PyObjCTools import AppHelper
+    """Push JS into the still-open settings webview from a worker thread.
 
-    def _inject():
-        if getattr(app_ref, "_settings_gen", 0) != gen or not app_ref._settings_refs:
-            return
-        wv = app_ref._settings_refs[1]
-        try:
-            wv.evaluateJavaScript_completionHandler_(js, None)
-        except Exception:
-            pass
-
-    AppHelper.callAfter(_inject)
+    The generation guard stops a slow worker writing into a window that was
+    closed and reopened underneath it.
+    """
+    if getattr(app_ref, "_settings_gen", 0) != gen or not app_ref._settings_refs:
+        return
+    wv = app_ref._settings_refs[1]
+    try:
+        wv.evaluateJavaScript_completionHandler_(js, None)
+    except Exception:
+        logger.debug("settings JS injection failed", exc_info=True)
 
 
 def _notify(title, subtitle, message):
@@ -221,18 +220,9 @@ class _SettingsTitleObserver(NSObject):
                     js = f"_setJiraProjects({projects_json})"
                 except Exception as e:
                     js = f"_setJiraProjectsError({json.dumps(str(e))})"
-                from PyObjCTools import AppHelper
-                def _inject():
-                    if getattr(app_ref, "_settings_gen", 0) != gen or not app_ref._settings_refs:
-                        return
-                    wv = app_ref._settings_refs[1]
-                    try:
-                        wv.evaluateJavaScript_completionHandler_(js, None)
-                    except Exception:
-                        pass
-                AppHelper.callAfter(_inject)
+                _settings_inject_js(app_ref, gen, js)
 
-            threading.Thread(target=_do_fetch, daemon=True).start()
+            runtime.run_blocking(_do_fetch)
             return
 
         if title.startswith("VOITTA_MCP_CTL:"):
@@ -264,7 +254,7 @@ class _SettingsTitleObserver(NSObject):
                     status = {"id": sid, "state": "unknown", "error": str(e)}
                 _settings_inject_js(app_ref, gen, f"_setMcpServerStatus({json.dumps(status)})")
 
-            threading.Thread(target=_do_ctl, daemon=True).start()
+            runtime.run_blocking(_do_ctl)
             return
 
         if title.startswith("VOITTA_MCP_LOG:"):
@@ -292,7 +282,7 @@ class _SettingsTitleObserver(NSObject):
                     f"_setMcpServerLog({json.dumps({'id': sid, 'text': text})})",
                 )
 
-            threading.Thread(target=_do_log, daemon=True).start()
+            runtime.run_blocking(_do_log)
             return
 
         if title.startswith("VOITTA_CLAUDE_LINK_TOGGLE:"):
@@ -337,7 +327,7 @@ class _SettingsTitleObserver(NSObject):
                     app_ref._apply_settings(data)
                 except Exception as e:
                     logger.error("Settings apply error: %s", e)
-            threading.Thread(target=_apply, daemon=True).start()
+            runtime.run_blocking(_apply)
 
     def _deferClose(self):
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(

@@ -5,8 +5,21 @@ import os
 import uuid
 from pathlib import Path
 
-CONFIG_DIR = Path.home() / ".voitta_desktop"
-CONFIG_PATH = CONFIG_DIR / "apps.json"
+from paths import CONFIG_PATH, ROOT as CONFIG_DIR  # noqa: F401  (re-exported)
+
+# Whether Voitta rewrites ~/.claude/settings.json to point at our proxy.
+#
+# Default False: arming edits a file outside our own tree, so it is opt-in.
+# This constant exists because the default was previously written out at
+# three call sites and two of them disagreed with the third, which meant the
+# effective value depended on which code path happened to load the config.
+CLAUDE_LINK_ARMED_DEFAULT = False
+
+
+def claude_link_armed(cfg: dict) -> bool:
+    """Read the claude_link.armed intent out of a config dict."""
+    link_cfg = cfg.get("claude_link") or {}
+    return bool(link_cfg.get("armed", CLAUDE_LINK_ARMED_DEFAULT))
 
 
 # ── MCP servers (the new editable list) ──────────────────────────────────────

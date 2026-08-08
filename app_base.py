@@ -8,11 +8,14 @@ to its UI.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 from pathlib import Path
 
-from config import load_config, save_config, CONFIG_DIR, CONFIG_PATH
+from config import (
+    load_config, save_config, claude_link_armed, CONFIG_DIR, CONFIG_PATH,
+)
 
 logger = logging.getLogger("voitta-desktop")
 
@@ -51,8 +54,7 @@ class AppBase:
         self.suppress_codex_popup: bool = bool(
             tools_cfg.get("suppress_codex_popup", True)
         )
-        link_cfg = self._config.get("claude_link", {})
-        self.claude_link_armed: bool = bool(link_cfg.get("armed", True))
+        self.claude_link_armed: bool = claude_link_armed(self._config)
 
         self._mcp_tools: dict[str, list[str]] = {}
         self._mcp_upstream_instructions: dict[str, str] = {}
@@ -175,22 +177,39 @@ class AppBase:
         )
         self._proxy_running = False
 
-    def _run_llm_proxy(self) -> None:
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(self._proxy.start())
-            self._proxy_running = True
-            logger.info("LLM proxy started on port %d", self.llm_proxy_port)
-            loop.run_forever()
-        except Exception as e:
-            logger.error("LLM proxy failed to start: %s", e, exc_info=True)
-            self._proxy_running = False
+    # ── Background servers ───────────────────────────────────────────────
+    #
+    # Both proxies, and the request-logger watchdog, are coroutines on the
+    # one shared loop. They used to be a thread each, with their own loops.
 
-    def _run_mcp_proxy(self) -> None:
-        from mcpproxy.server import run_mcp_proxy
+    def start_background_servers(self) -> None:
+        """Bring the runtime up and start everything that runs on it."""
+        import atexit
+
+        from runtime import runtime
+
+        runtime.start()
+        atexit.register(runtime.shutdown)
+
+        runtime.spawn(self._serve_llm_proxy(), name="llm-proxy")
+        runtime.spawn(self._serve_mcp_proxy(), name="mcp-proxy")
+        runtime.spawn(self._request_logger._watch_pending(), name="request-watchdog")
+
+    async def _serve_llm_proxy(self) -> None:
         try:
-            run_mcp_proxy(self, self.mcp_proxy_port)
+            await self._proxy.start()
+        except Exception as e:
+            self._proxy_running = False
+            logger.error("LLM proxy failed to start: %s", e, exc_info=True)
+            return
+        self._proxy_running = True
+        logger.info("LLM proxy started on port %d", self.llm_proxy_port)
+
+    async def _serve_mcp_proxy(self) -> None:
+        from mcpproxy.server import serve_mcp_proxy
+        try:
+            await serve_mcp_proxy(self, self.mcp_proxy_port)
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error("MCP proxy crashed: %s", e, exc_info=True)

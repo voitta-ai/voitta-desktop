@@ -12,6 +12,8 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+import paths
+
 
 def _wire_ca_bundle() -> None:
     """Point Python's SSL machinery at certifi's CA bundle.
@@ -59,6 +61,13 @@ def _configure_logging(log_dir: Path) -> None:
     logging.getLogger("fastmcp.server.providers.aggregate").setLevel(logging.DEBUG)
     logging.getLogger("voitta-desktop.tracker").setLevel(logging.DEBUG)
     logging.getLogger("voitta-desktop.proxy").setLevel(logging.DEBUG)
+    # Root sits at WARNING, so these would otherwise drop their INFO lines —
+    # including "clean exit", which is exactly what distinguishes a normal
+    # quit from a silent kill when reading back a crash.
+    logging.getLogger("voitta-desktop.lifecycle").setLevel(logging.DEBUG)
+    logging.getLogger("voitta-desktop.runtime").setLevel(logging.DEBUG)
+    logging.getLogger("voitta-desktop.object_store").setLevel(logging.INFO)
+    logging.getLogger("voitta-desktop.paths").setLevel(logging.INFO)
     # Silence MCP SDK post-cancellation SSE spam.
     logging.getLogger("mcp.client.streamable_http").setLevel(logging.CRITICAL)
 
@@ -84,8 +93,15 @@ def main() -> None:
     from dotenv import load_dotenv
     load_dotenv()
 
-    log_dir = Path.home() / ".voitta-desktop" / "logs"
-    _configure_logging(log_dir)
+    # Unify the on-disk tree before anything reads config or writes a log.
+    paths.migrate_legacy_dirs()
+    _configure_logging(paths.LOG_DIR)
+
+    # Install crash diagnostics immediately after logging is up, so an early
+    # failure still gets recorded. See lifecycle.py for why both a signal
+    # handler and an on-disk marker are needed.
+    import lifecycle
+    lifecycle.install()
 
     if args.terminal:
         from ui.tui.app import TUIApp

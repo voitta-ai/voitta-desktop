@@ -16,7 +16,6 @@ import io
 import logging
 import os
 import sys
-import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -458,8 +457,7 @@ class TUIApp(App, AppBase):
         )
         logging.getLogger().addHandler(_tui_log_handler)
 
-        threading.Thread(target=self._run_llm_proxy, daemon=True).start()
-        threading.Thread(target=self._run_mcp_proxy, daemon=True).start()
+        self.start_background_servers()
         self._refresh_ui()
 
     # ── Incoming event from proxy threads ───────────────────────────
@@ -504,13 +502,12 @@ class TUIApp(App, AppBase):
     def action_toggle_arm(self) -> None:
         from claude_link import arm_claude_link, disarm_claude_link
         if self.claude_link_armed:
-            disarm_claude_link()
+            disarm_claude_link(self.llm_proxy_port)
             self.claude_link_armed = False
-            self._config.setdefault("claude_link", {})["armed"] = False
         else:
-            arm_claude_link(self.llm_proxy_port)
+            arm_claude_link(self.llm_proxy_port, self.llm_upstream_url)
             self.claude_link_armed = True
-            self._config.setdefault("claude_link", {})["armed"] = True
+        self._config.setdefault("claude_link", {})["armed"] = self.claude_link_armed
         self._save_config()
         self.query_one("#status-bar", StatusBar).refresh_stats(self)
 

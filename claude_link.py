@@ -297,3 +297,40 @@ def apply_changes(plan: Plan) -> None:
     # Trailing newline for git-friendliness; 2-space indent matches the
     # convention Claude Code uses in its own examples.
     CLAUDE_SETTINGS_PATH.write_text(json.dumps(cfg, indent=2) + "\n")
+
+
+# ── Convenience wrappers ─────────────────────────────────────────────────────
+#
+# The load → check → plan → apply sequence was open-coded in three places
+# (the TUI's toggle, the menu app's startup re-arm, and its quit handler),
+# which is how the TUI ended up importing two functions that did not exist.
+# One definition, three callers.
+
+def arm_claude_link(our_port: int, voitta_upstream: str) -> bool:
+    """Point ~/.claude/settings.json at our proxy. Returns True if it changed.
+
+    Idempotent: already-connected settings are left alone.
+    """
+    cfg = load_claude_settings()
+    if is_voitta_connected(cfg, our_port):
+        return False
+    plan = plan_connect(cfg, our_port, voitta_upstream)
+    if plan.is_noop:
+        return False
+    apply_changes(plan)
+    return True
+
+
+def disarm_claude_link(our_port: int) -> bool:
+    """Strip our proxy from ~/.claude/settings.json. Returns True if it changed.
+
+    Idempotent: settings that aren't wired to us are left alone.
+    """
+    cfg = load_claude_settings()
+    if not is_voitta_connected(cfg, our_port):
+        return False
+    plan = plan_disconnect(cfg, our_port)
+    if plan.is_noop:
+        return False
+    apply_changes(plan)
+    return True

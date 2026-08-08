@@ -26,7 +26,6 @@ import os
 import shlex
 import subprocess
 import sys
-import threading
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -38,7 +37,8 @@ from AppKit import (
 from Foundation import NSMakeRect, NSTimer, NSRunLoop
 from WebKit import WKWebView
 
-from config import save_config
+from config import save_config, claude_link_armed
+from ui.main_thread import on_main_thread
 from optimizers import model_family  # used by _collect_info_state
 from ui.chart import _safe_json
 from ui._native import (
@@ -297,9 +297,7 @@ class SettingsWindowMixin:
 
     def _apply_settings(self, new_config):
         """Apply new settings. Safe to call from any thread — UI updates
-        are dispatched to the main thread via AppHelper.callAfter."""
-        from PyObjCTools import AppHelper
-
+        are dispatched to the main thread via the on_main_thread decorator."""
         # Detect changes that need a process restart to take effect. The
         # FastMCP proxy mounts each MCP server at startup with a closed-over
         # client factory; we don't currently support live add/remove. Diff
@@ -337,8 +335,7 @@ class SettingsWindowMixin:
         self.disabled_tools = set(new_config.get("disabled_tools", []))
         tools_cfg = new_config.get("tools", {})
         self.suppress_codex_popup = bool(tools_cfg.get("suppress_codex_popup", True))
-        link_cfg = new_config.get("claude_link", {})
-        self.claude_link_armed = bool(link_cfg.get("armed", False))
+        self.claude_link_armed = claude_link_armed(new_config)
 
         opt_cfg = new_config.get("optimizer", {})
         self._optimizer_pipeline.enabled = bool(opt_cfg.get("enabled", True))
@@ -362,13 +359,13 @@ class SettingsWindowMixin:
         self._sync_edit_mcp_env()
         self._sync_jira_mcp_env()
 
-        # UI mutations must happen on the main thread
+        @on_main_thread
         def _update_ui():
             self._rebuild_menu()
             self._update_auth_state()
             if mcp_servers_changed:
                 self._prompt_restart_for_mcp_changes()
-        AppHelper.callAfter(_update_ui)
+        _update_ui()
 
     def _prompt_restart_for_mcp_changes(self):
         """Show a restart prompt after the user changed mcp_servers.
@@ -553,15 +550,15 @@ class SettingsWindowMixin:
             refs = getattr(self, "_settings_refs", None)
             if refs is not None:
                 wv = refs[1]
-                from PyObjCTools import AppHelper
+                @on_main_thread
                 def _flip():
                     try:
                         wv.evaluateJavaScript_completionHandler_(
                             f"_setClaudeLinkState({json.dumps(new_state)})", None
                         )
                     except Exception:
-                        pass
-                AppHelper.callAfter(_flip)
+                        logger.debug("claude-link state flip failed", exc_info=True)
+                _flip()
 
             verb = "Connected" if plan.target == "connect" else "Disconnected"
             _notify("Voitta Desktop", verb + " Claude Code", "~/.claude/settings.json")
@@ -606,45 +603,14 @@ class SettingsWindowMixin:
         popup = StatusPopup()
         self._status_popup = popup
 
-        # Worker-loop state, populated once the loop thread is up.
-        self._status_loop: asyncio.AbstractEventLoop | None = None
+        # Refresh work runs on the app-wide loop, which is already up by the
+        # time any window can be opened — so there is no worker thread to
+        # start here and no startup race for the first click to lose.
+        from runtime import runtime
+
+        self._status_loop = runtime.loop
         self._status_tasks: dict[int, asyncio.Task] = {}
         self._status_cancelled: set[int] = set()
-
-        loop_ready = threading.Event()
-
-        def _worker():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            self._status_loop = loop
-            loop_ready.set()
-            try:
-                loop.run_forever()
-            finally:
-                # Best-effort drain of any tasks left mid-flight before close.
-                try:
-                    pending = asyncio.all_tasks(loop)
-                    for t in pending:
-                        t.cancel()
-                    if pending:
-                        loop.run_until_complete(
-                            asyncio.gather(*pending, return_exceptions=True)
-                        )
-                except Exception:
-                    pass
-                try:
-                    loop.close()
-                except Exception:
-                    pass
-                self._status_loop = None
-                self._status_tasks = {}
-                self._status_cancelled = set()
-
-        threading.Thread(target=_worker, daemon=True).start()
-        # Wait briefly for the loop to be ready so the first user click
-        # doesn't race against worker startup. 1s is generous; if it
-        # somehow doesn't come up, handlers degrade to no-ops.
-        loop_ready.wait(timeout=1.0)
 
         async def _refresh_one(idx: int, label: str, proxy):
             import time
@@ -705,10 +671,16 @@ class SettingsWindowMixin:
                 loop.call_soon_threadsafe(task.cancel)
 
         def _on_close():
+            # Cancel this popup's in-flight refreshes only. The loop is now
+            # shared with both proxies, so stopping it — which is what this
+            # did when it owned a private worker loop — would take the whole
+            # app down with the window.
             loop = self._status_loop
-            if loop is not None:
-                # Stops run_forever; finally-block in _worker drains pending tasks.
-                loop.call_soon_threadsafe(loop.stop)
+            for idx, task in list(self._status_tasks.items()):
+                if loop is not None and not task.done():
+                    loop.call_soon_threadsafe(task.cancel)
+            self._status_tasks = {}
+            self._status_cancelled = set()
             self._status_popup = None
 
         popup.set_refresh_handler(_start_one)

@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import shutil
+import time
 from urllib.parse import urlparse
 
 import httpx
@@ -347,10 +348,15 @@ class ToolGateMiddleware(FastMCPMiddleware):
     - First external request: show popup, remember result
     - Requests within REUSE_WINDOW_S: reuse last result (no popup)
     - After window expires: show popup again
-    - Menu "MCP tool gate" re-arms for immediate popup
+    - rearm() clears the remembered result, forcing the next popup
+
+    The window is deliberately minutes, not seconds. An MCP client times out
+    a tools/list in about five seconds, so a human never answers in time —
+    the popup stays up past the cancellation and publishes the answer here
+    (see ui/tool_gate.py). The client's retry then has to still find it.
     """
 
-    REUSE_WINDOW_S = 1.0
+    REUSE_WINDOW_S = 300.0
 
     def __init__(self, app_ref):
         super().__init__()
@@ -359,6 +365,12 @@ class ToolGateMiddleware(FastMCPMiddleware):
         self._last_time: float = 0
         self._lock: asyncio.Lock | None = None
 
+    def rearm(self) -> None:
+        """Forget the last answer so the next tools/list re-prompts."""
+        self._last_disabled = None
+        self._last_time = 0
+        logger.info("tool_gate: re-armed; next listing will prompt")
+
     def _get_lock(self) -> asyncio.Lock:
         if self._lock is None:
             import asyncio
@@ -366,8 +378,6 @@ class ToolGateMiddleware(FastMCPMiddleware):
         return self._lock
 
     async def on_list_tools(self, context, call_next):
-        import time
-
         # Terminal mode: no interactive popup — apply stored disabled_tools
         # silently, identical to the Codex fast path.
         if getattr(self._app_ref, "terminal_mode", False):
@@ -476,32 +486,47 @@ class ToolGateMiddleware(FastMCPMiddleware):
                 pass
 
             from ui.tool_gate import show_tool_gate
-            gate_result = await show_tool_gate(tool_groups, disabled, meta)
 
-            import time
-            if gate_result is None:
-                # Cancel = no tools allowed. Disable ALL of them so any
-                # reuse-window calls also block. (An empty set would mean
-                # "filter nothing" and leak every tool back to the LLM.)
-                self._last_disabled = {t.name for t in tools}
+            all_names = {t.name for t in tools}
+
+            def _publish(result: list[str] | None) -> None:
+                """Cache the user's answer.
+
+                Called from the AppKit main thread, usually *after* this
+                request has been cancelled — the client's timeout is far
+                shorter than a human's reading time. Caching here is what
+                lets the retry be served without a second popup.
+
+                Cancel means no tools allowed, so every name goes on the
+                disabled list. An empty set would mean "filter nothing" and
+                leak the whole toolset back to the LLM.
+                """
+                self._last_disabled = all_names if result is None else set(result)
                 self._last_time = time.time()
-                return []
 
-            self._last_disabled = set(gate_result)
-            self._last_time = time.time()
+            gate_result = await show_tool_gate(
+                tool_groups, disabled, meta, on_result=_publish
+            )
+
+            # _publish already ran on the way here — it is the single writer.
+            if gate_result is None:
+                return []
             return [t for t in tools if t.name not in self._last_disabled]
         except asyncio.CancelledError:
-            logger.warning("tool_gate: client disconnected, returning empty tools")
-            return []
+            # Must re-raise, not return []. The MCP SDK already sent an error
+            # response when the client cancelled; returning a value here makes
+            # it respond a second time and assert. See ui/tool_gate.py.
+            logger.warning("tool_gate: client cancelled while the popup was open")
+            raise
         except Exception as e:
             logger.error("tool_gate: popup error: %s", e, exc_info=True)
             raise
 
 
-def run_mcp_proxy(app_ref, port: int):
-    """Run unified FastMCP proxy server mounting every entry in
-    ``app_ref.mcp_servers``. Blocks forever."""
-    logger.info("run_mcp_proxy starting (port=%d)", port)
+def build_mcp_proxy(app_ref, port: int):
+    """Assemble the unified FastMCP proxy mounting every entry in
+    ``app_ref.mcp_servers``. Returns the server; does not start it."""
+    logger.info("building MCP proxy (port=%d)", port)
     gate = ToolGateMiddleware(app_ref)
     app_ref._tool_gate = gate
 
@@ -612,8 +637,10 @@ def run_mcp_proxy(app_ref, port: int):
         if not _primed["done"]:
             _primed["done"] = True
             try:
-                asyncio.get_event_loop().create_task(_prime_upstream_instructions())
-            except Exception as e:
+                # Called from inside a request handler, so a running loop is
+                # guaranteed; get_event_loop() here would be deprecated.
+                asyncio.get_running_loop().create_task(_prime_upstream_instructions())
+            except RuntimeError as e:
                 logger.debug("could not schedule upstream-instructions prime: %s", e)
         try:
             low.instructions = build_instructions(app_ref, list(app_ref.mcp_servers))
@@ -629,4 +656,26 @@ def run_mcp_proxy(app_ref, port: int):
     logger.info("FastMCP proxy on http://127.0.0.1:%d/mcp", port)
     for name, url, _ in proxies:
         logger.info("  %s -> %s", name, url)
-    main_server.run(transport="streamable-http", host="127.0.0.1", port=port)
+    return main_server
+
+
+async def serve_mcp_proxy(app_ref, port: int) -> None:
+    """Build the proxy and serve it on the caller's event loop.
+
+    ``FastMCP.run()`` creates and owns an event loop, which is why this used
+    to need a thread of its own. ``run_http_async`` is the same server
+    without that — it awaits on whatever loop is already running, so the MCP
+    proxy shares the one in runtime.py with everything else.
+    """
+    main_server = build_mcp_proxy(app_ref, port)
+    await main_server.run_http_async(
+        transport="streamable-http",
+        host="127.0.0.1",
+        port=port,
+        show_banner=False,
+    )
+
+
+def run_mcp_proxy(app_ref, port: int) -> None:
+    """Blocking entry point, kept for the terminal driver and for tests."""
+    asyncio.run(serve_mcp_proxy(app_ref, port))

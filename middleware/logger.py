@@ -1,16 +1,17 @@
 """Request logger middleware — writes every request/response to JSONL."""
 
+import asyncio
 import json
 import logging
 import threading
 import time
 from pathlib import Path
 
+from paths import LOG_DIR
+
 from .base import Middleware, ProxyRequest, ProxyResponse, decompress
 
 logger = logging.getLogger("voitta-desktop.logger")
-
-LOG_DIR = Path.home() / ".voitta-desktop" / "logs"
 
 
 class RequestLogger(Middleware):
@@ -24,6 +25,7 @@ class RequestLogger(Middleware):
         clear_on_start: bool = True,
         keep_messages: int = 2,
         max_str: int = 2000,
+        rss_log_step_mb: float = 250.0,
     ):
         self._log_dir = log_dir
         self._log_dir.mkdir(parents=True, exist_ok=True)
@@ -34,9 +36,11 @@ class RequestLogger(Middleware):
         self._pending: dict[int, dict] = {}
         self._stale_after_s = stale_after_s
         self._watchdog_interval_s = watchdog_interval_s
+        self._rss_log_step_mb = rss_log_step_mb
+        self._last_logged_rss_mb = 0.0
         self._lock = threading.Lock()
-        self._watchdog = threading.Thread(target=self._watch_pending, daemon=True)
-        self._watchdog.start()
+        # The watchdog is a coroutine, spawned by AppBase on the shared
+        # runtime — see runtime.py. It used to be its own thread.
 
     def _clear_logs(self) -> None:
         """Delete all request-log JSONL files from a previous run.
@@ -226,13 +230,29 @@ class RequestLogger(Middleware):
         with open(self._log_path(), "a") as f:
             f.write(json.dumps(entry, default=str) + "\n")
 
-    def _watch_pending(self):
-        """Periodically log requests that appear stuck or unusually long-lived."""
+    async def _watch_pending(self):
+        """Periodically log requests that appear stuck or unusually long-lived,
+        and refresh the run marker so a silent kill leaves a recent RSS reading.
+        """
+        import lifecycle
+
         while True:
-            time.sleep(self._watchdog_interval_s)
+            await asyncio.sleep(self._watchdog_interval_s)
             now = time.time()
             with self._lock:
                 pending_items = list(self._pending.values())
+
+            # Memory trend. A jetsam (out-of-memory) kill leaves no crash
+            # report and no traceback, so the only evidence is RSS climbing
+            # in the log right up to the moment the process vanishes.
+            rss_mb = lifecycle.peak_rss_mb()
+            if rss_mb - self._last_logged_rss_mb >= self._rss_log_step_mb:
+                self._last_logged_rss_mb = rss_mb
+                logger.warning(
+                    "peak RSS now %.0f MB (%d request(s) in flight)",
+                    rss_mb, len(pending_items),
+                )
+            lifecycle.heartbeat()
 
             for entry in pending_items:
                 age_s = now - entry.get("started_at", now)

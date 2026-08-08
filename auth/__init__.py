@@ -6,7 +6,7 @@ from .providers import (
     fetch_profile_microsoft, fetch_profile_google,
     do_refresh_microsoft, do_refresh_google,
 )
-from .callback import OAuthCallbackHandler, wait_for_callback
+from .callback import wait_for_callback, wait_for_callback_async
 from .jira import parse_jira_url, fetch_jira_projects
 
 __all__ = [
@@ -14,6 +14,6 @@ __all__ = [
     "do_auth_microsoft", "do_auth_google",
     "fetch_profile_microsoft", "fetch_profile_google",
     "do_refresh_microsoft", "do_refresh_google",
-    "OAuthCallbackHandler", "wait_for_callback",
+    "wait_for_callback", "wait_for_callback_async",
     "parse_jira_url", "fetch_jira_projects",
 ]

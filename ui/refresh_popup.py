@@ -33,6 +33,8 @@ from AppKit import (
 from Foundation import NSMakeRect, NSObject, NSNotificationCenter
 from WebKit import WKWebView, WKWebViewConfiguration, WKWebsiteDataStore
 
+from ui.main_thread import on_main_thread
+
 logger = logging.getLogger("voitta-desktop.tools_status")
 
 
@@ -352,9 +354,9 @@ class StatusPopup:
         """Push a status change for row `idx`. Safe from any thread."""
         if self._closed:
             return
-        from PyObjCTools import AppHelper
         js = f"_setBackend({idx}, {json.dumps(state)}, {json.dumps(label)});"
 
+        @on_main_thread
         def _do():
             if self._closed or self.webview is None:
                 return
@@ -363,7 +365,7 @@ class StatusPopup:
             except Exception as e:
                 logger.debug("popup update failed: %s", e)
 
-        AppHelper.callAfter(_do)
+        _do()
 
     def close(self):
         """Close the window (call from main thread). Idempotent."""

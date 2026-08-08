@@ -24,10 +24,41 @@ class ConversationTracker(Middleware):
         self._pending: dict[int, dict] = {}
 
     def _session_id(self, request: ProxyRequest, body: dict) -> str:
+        """Identify the conversation this request belongs to.
+
+        Claude Code sends X-Claude-Code-Session-Id, but the proxy is a plain
+        Anthropic endpoint and any other client may not. Raising here turned
+        a missing header into a 502 for the caller — the proxy refusing to
+        forward a request it could have forwarded fine, just without grouping.
+
+        Fall back to the first user message, whose text is stable for the
+        life of a conversation because every turn re-sends the full history.
+        Clients that send neither share one bucket, which costs accurate
+        grouping in the UI and nothing else.
+        """
         session_id = request.headers.get("X-Claude-Code-Session-Id", "")
         if session_id:
             return session_id
-        raise ValueError("Missing X-Claude-Code-Session-Id on /v1/messages request")
+
+        for message in body.get("messages") or []:
+            if message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if isinstance(content, str):
+                seed = content
+            elif isinstance(content, list):
+                seed = "".join(
+                    block.get("text", "")
+                    for block in content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                )
+            else:
+                continue
+            if seed:
+                digest = hashlib.sha256(seed[:4096].encode()).hexdigest()[:16]
+                return f"anon-{digest}"
+
+        return "anon-unknown"
 
     async def on_request(self, request: ProxyRequest) -> ProxyRequest:
         path = request.path.split("?")[0]

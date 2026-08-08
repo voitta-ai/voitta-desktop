@@ -10,7 +10,6 @@ mechanically cheapest way to extract them while keeping every internal
 from __future__ import annotations
 
 import logging
-import threading
 import traceback
 
 from auth.providers import (
@@ -18,6 +17,7 @@ from auth.providers import (
     fetch_profile_microsoft, fetch_profile_google,
     do_refresh_microsoft, do_refresh_google,
 )
+from auth.token_store import load_refresh_token, save_refresh_token
 from ui._native import _notify
 
 logger = logging.getLogger("voitta-desktop")
@@ -34,6 +34,40 @@ class AuthFlowsMixin:
     Provides ``_rebuild_msal_for_app``, the ``_do_auth*`` dispatchers,
     the token-refresh scheduler/handlers, and ``_deauth_app``.
     """
+
+    # ── Refresh-token persistence ────────────────────────────────────────────
+
+    def _set_refresh_token(self, app_id, backend, token) -> None:
+        """Update the in-memory refresh token and mirror it to the Keychain.
+
+        Single writer, so in-memory state and stored state cannot drift.
+        """
+        state = self._auth.get((app_id, backend))
+        if state is not None:
+            state["refresh_token"] = token
+        save_refresh_token(app_id, backend, token)
+
+    def restore_refresh_tokens(self) -> None:
+        """Reload stored refresh tokens and kick off a refresh for each.
+
+        Called once at startup. Without this the app forgot every sign-in on
+        every restart and made the user re-authenticate each connected app
+        through the browser — the most visible piece of friction there was.
+        Access tokens are not stored, so the first refresh is what actually
+        brings each app back online.
+        """
+        restored = 0
+        for (app_id, backend), state in self._auth.items():
+            token = load_refresh_token(app_id, backend)
+            if not token:
+                continue
+            state["refresh_token"] = token
+            restored += 1
+            # Refresh immediately rather than on a timer: we have no access
+            # token yet, so the app is signed out until this completes.
+            self._schedule_refresh(app_id, backend, expires_in=360)
+        if restored:
+            logger.info("restored %d refresh token(s) from the Keychain", restored)
 
     # ── MSAL ─────────────────────────────────────────────────────────────────
 
@@ -89,7 +123,7 @@ class AuthFlowsMixin:
             return
         state = self._auth[(app["id"], backend)]
         state["token"] = result["access_token"]
-        state["refresh_token"] = result.get("refresh_token")
+        self._set_refresh_token(app["id"], backend, result.get("refresh_token"))
         state["profile"] = fetch_profile_google(state["token"])
         self._schedule_refresh(app["id"], backend, result.get("expires_in", 3600))
         name = (state["profile"] or {}).get("name", "Unknown")
@@ -110,15 +144,17 @@ class AuthFlowsMixin:
             return
 
         if app["type"] == "microsoft":
-            timer = threading.Timer(refresh_in, self._do_refresh_microsoft, args=(app_id, backend))
+            refresh = self._do_refresh_microsoft
         elif app["type"] == "google":
-            timer = threading.Timer(refresh_in, self._do_refresh_google, args=(app_id, backend))
+            refresh = self._do_refresh_google
         else:
             return
 
-        timer.daemon = True
-        timer.start()
-        state["refresh_timer"] = timer
+        # A scheduled task on the shared runtime rather than a thread per
+        # token. The returned future keeps Timer's .cancel() interface, so
+        # the reschedule path above is unchanged.
+        from runtime import runtime
+        state["refresh_timer"] = runtime.call_later(refresh_in, refresh, app_id, backend)
 
     def _do_refresh_microsoft(self, app_id, backend):
         state = self._auth.get((app_id, backend))
@@ -162,11 +198,11 @@ class AuthFlowsMixin:
         if result:
             state["token"] = result["access_token"]
             if "refresh_token" in result:
-                state["refresh_token"] = result["refresh_token"]
+                self._set_refresh_token(app_id, backend, result["refresh_token"])
             self._schedule_refresh(app_id, backend, result.get("expires_in", 3600))
         else:
             state["token"] = None
-            state["refresh_token"] = None
+            self._set_refresh_token(app_id, backend, None)
             state["profile"] = None
             self._update_auth_state()
 
@@ -187,7 +223,7 @@ class AuthFlowsMixin:
                 for account in state["msal_app"].get_accounts():
                     state["msal_app"].remove_account(account)
             state["token"] = None
-            state["refresh_token"] = None
+            self._set_refresh_token(app_id, b, None)
             state["profile"] = None
         _notify("Voitta Desktop", name, "Signed out.")
         self._update_auth_state()

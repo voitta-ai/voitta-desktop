@@ -16,13 +16,11 @@ Sets the host attributes ``self._llm_status``, ``self._optimize_toggle``,
 """
 from __future__ import annotations
 
-import threading
-
 import rumps
-from Foundation import NSThread
-from PyObjCTools import AppHelper
 
 from config import apps_for_backend
+from runtime import runtime
+from ui.main_thread import on_main_thread
 
 
 class MenuBuilderMixin:
@@ -152,18 +150,16 @@ class MenuBuilderMixin:
             return f"{dot}  Jira Cloud                  {email}"
         return "○  Jira Cloud                  Not configured"
 
+    @on_main_thread
     def _update_auth_state(self):
         """Refresh auth-related menu item titles.
 
-        Safe to call from any thread: setting a MenuItem title goes straight
-        to NSMenuItem.setTitle_, and AppKit objects must only be touched on
-        the main thread (the token-refresh timers and _do_auth threads used
-        to call this directly, racing the 2-second _refresh_menu timer —
-        an occasional EXC_BAD_ACCESS). Re-dispatch instead of mutating.
+        Safe to call from any thread — the decorator handles the crossing.
+        Setting a MenuItem title goes straight to NSMenuItem.setTitle_, and
+        AppKit objects must only be touched on the main thread; token
+        refreshes and sign-in work both call this from off it, racing the
+        2-second _refresh_menu timer, which is an occasional EXC_BAD_ACCESS.
         """
-        if not NSThread.isMainThread():
-            AppHelper.callAfter(self._update_auth_state)
-            return
         for backend in ("rag", "google_workspace"):
             backend_apps = apps_for_backend(self._config, backend)
             by_type = {}
@@ -199,9 +195,7 @@ class MenuBuilderMixin:
             if state.get("token"):
                 self._deauth_app(app_id, backend)
             else:
-                threading.Thread(
-                    target=self._do_auth, args=(app_id, backend), daemon=True
-                ).start()
+                runtime.run_blocking(self._do_auth, app_id, backend)
         return callback
 
     def _make_app_activate(self, backend, app_id):
@@ -209,7 +203,5 @@ class MenuBuilderMixin:
             self._set_active(backend, app_id)
             state = self._auth.get((app_id, backend), {})
             if not state.get("token"):
-                threading.Thread(
-                    target=self._do_auth, args=(app_id, backend), daemon=True
-                ).start()
+                runtime.run_blocking(self._do_auth, app_id, backend)
         return callback

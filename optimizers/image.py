@@ -8,7 +8,12 @@ IMAGE_KEEP_TURNS = 5
 
 # Global hash→object store shared with the MCP get_vt_object tool.
 # Each entry: {"type": "image"|..., "data": <original content block>}
-vt_object_store: dict[str, dict] = {}
+#
+# Backed by SQLite: the get_vt_object references the optimizers leave in a
+# conversation outlive this process, so the store has to as well.
+from .object_store import PersistentObjectStore
+
+vt_object_store = PersistentObjectStore()
 
 
 def _image_hash(item: dict) -> str:

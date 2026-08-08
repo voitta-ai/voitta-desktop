@@ -125,50 +125,85 @@ flowchart TB
 
 ## 2. Process & thread model
 
-Everything runs in **one process**, across four-plus threads and three
-asyncio loops.
+Everything runs in **one process**, across **two concurrency contexts**.
+That is the whole model — there is no third place for work to happen.
 
-| Thread | What runs on it | Event loop? |
-|---|---|---|
-| **main** | rumps/AppKit run loop (Mac) or Textual (TUI); all menu/window updates; `@rumps.timer` callbacks | NSRunLoop / Textual loop |
-| **LLM proxy** (daemon) | `AnthropicProxy` — aiohttp server + upstream client | own `asyncio` loop, `run_forever()` |
-| **MCP proxy** (daemon) | `run_mcp_proxy` → FastMCP → uvicorn | uvicorn's own loop |
-| **RequestLogger watchdog** (daemon) | stale in-flight request warnings ([middleware/logger.py](../middleware/logger.py)) | no |
-| **OAuth flow** (per sign-in, daemon) | browser round-trip + blocking one-shot `HTTPServer` on :53214 | no |
-| **token-refresh timers** (`threading.Timer`, daemon) | `_do_refresh_microsoft` / `_do_refresh_google` | no |
-| **status-popup worker** (per popup) | on-demand `force_refresh()` of backend listings | short-lived loop |
+| Context | What runs on it |
+|---|---|
+| **AppKit main thread** | rumps/AppKit run loop (Mac) or Textual (TUI); every menu, window and status-item mutation; `@rumps.timer` callbacks |
+| **The runtime** ([runtime.py](../runtime.py)) | one asyncio loop on one thread — LLM proxy, MCP proxy, token-refresh timers, OAuth callback, request watchdog — plus a small bounded pool for blocking calls (MSAL, `requests`, subprocess probes) |
 
 ```mermaid
 flowchart LR
-    subgraph main["main thread — AppKit"]
+    subgraph main["AppKit main thread"]
         RUMPS["rumps run loop"]
         T2["@rumps.timer(2)<br/>_refresh_menu: title + conversations"]
-        UAS["_update_auth_state<br/>(menu titles)"]
+        UAS["@on_main_thread<br/>_update_auth_state"]
     end
 
-    subgraph bg["background threads"]
-        LLMT["LLM proxy loop<br/>(aiohttp)"]
-        MCPT["MCP proxy loop<br/>(uvicorn)"]
-        REF["threading.Timer<br/>token refresh"]
-        AUTHT["OAuth sign-in thread"]
+    subgraph rt["AsyncRuntime — one loop, one thread"]
+        LLM["LLM proxy (aiohttp)"]
+        MCP["MCP proxy (uvicorn ASGI)"]
+        REF["call_later<br/>token refresh"]
+        CB["OAuth callback site<br/>:53214, one-shot"]
+        WD["request watchdog<br/>+ RSS heartbeat"]
     end
 
-    REF -->|"AppHelper.callAfter"| UAS
-    AUTHT -->|"AppHelper.callAfter"| UAS
-    MCPT -->|"AppHelper.callAfter<br/>(tool gate window)"| RUMPS
-    LLMT -.->|"no push — polled by T2"| T2
+    subgraph pool["blocking pool (bounded)"]
+        AUTH["MSAL / requests<br/>sign-in"]
+        CTL["MCP subprocess control"]
+    end
+
+    REF --> pool
+    pool -->|"@on_main_thread"| UAS
+    MCP -->|"@on_main_thread<br/>(tool gate window)"| RUMPS
+    LLM -.->|"no push — polled by T2"| T2
 ```
 
-AppKit objects (menu items, windows, status item) are touched **only on the
-main thread**. Background threads marshal through `AppHelper.callAfter`.
-`_update_auth_state` ([ui/menu_builder.py](../ui/menu_builder.py)) enforces
-this itself: if called off-main it re-dispatches and returns. (The
-token-refresh and sign-in threads previously called it directly, which raced
-the 2-second menu poll and caused intermittent `EXC_BAD_ACCESS` crashes.)
+### Why it is shaped this way
 
-The tracker never pushes to the Mac UI at all: `notify_update()` is a no-op
-and the menu **polls** every 2 s. The TUI instead receives a posted
+There used to be **four event loops and nine ad-hoc threads**: a loop for
+the LLM proxy, another created inside the menu, a third inside the settings
+window, a fourth owned by FastMCP's blocking `run()`, plus a
+`threading.Timer` per OAuth token, a blocking `HTTPServer` for the OAuth
+redirect, a watchdog thread, and a fresh `threading.Thread` per settings
+click. Nothing coordinated them, so "which loop is this on?" and "is this
+attribute safe to touch from here?" had to be re-answered by hand at every
+call site. Wrong answers surfaced as intermittent, unattributable failures.
+
+Two mechanical changes collapsed that:
+
+- `FastMCP.run()` creates and owns a loop, which is why the MCP proxy needed
+  a thread. `run_http_async()` is the same server without that — it awaits
+  on whatever loop is already running, so it shares ours.
+- `threading.Thread(target=...)` became `runtime.run_blocking(...)`: bounded,
+  named, and with failures logged rather than silently killing an anonymous
+  thread.
+
+### The main-thread rule
+
+AppKit objects must be touched **only** on the main thread; violating that
+gives `EXC_BAD_ACCESS` — a hard crash with no Python traceback. That rule
+used to be enforced by remembering to write `AppHelper.callAfter` at each of
+eight scattered call sites, and a rule with no enforcement is one that
+eventually gets missed.
+
+It is now a single decorator, [`@on_main_thread`](../ui/main_thread.py).
+Called from the main thread it runs inline and returns normally; called from
+anywhere else it queues via `callAfter` and returns `None` — so never use it
+for a value the caller needs.
+
+The tracker never pushes to the Mac UI: `notify_update()` is a no-op and the
+menu **polls** every 2 s. The TUI instead receives a posted
 `ConversationsUpdated` message.
+
+### Shutdown
+
+`runtime.shutdown()` is registered with `atexit`: it stops the loop, drains
+and cancels pending tasks, and shuts the pool down. Because orphaned MCP
+subprocesses on the next boot are the tell-tale that `atexit` never ran, a
+clean quit and a hard kill are now distinguishable — see
+[§14](#14-ports-paths--logging).
 
 ---
 
@@ -183,17 +218,20 @@ flowchart TB
     M["app.py main()"] --> CA["_wire_ca_bundle()<br/>SSL_CERT_FILE → certifi<br/>(bundle Python has no system CAs)"]
     CA --> ARGS{"--terminal?"}
     ARGS -->|"yes"| TUI["TUIApp (Textual)"]
-    ARGS -->|"no (macOS)"| LOGS["logging → ~/.voitta-desktop/logs/desktop.log<br/>(rotating 5 MB × 3)"]
-    LOGS --> INIT["VoittaDesktopApp.__init__"]
+    ARGS -->|"no (macOS)"| MIG["paths.migrate_legacy_dirs()<br/>consolidate the three old roots"]
+    MIG --> LOGS["logging → ~/.voitta-desktop/logs/desktop.log<br/>(rotating 5 MB × 3)"]
+    LOGS --> DIAG["lifecycle.install()<br/>signals · excepthooks · run marker<br/>reports how the LAST run ended"]
+    DIAG --> INIT["VoittaDesktopApp.__init__"]
 
-    INIT --> CFG["load_config()<br/>~/.voitta_desktop/apps.json<br/>+ legacy migration + backfill"]
+    INIT --> CFG["load_config()<br/>~/.voitta-desktop/apps.json<br/>+ legacy migration + backfill"]
     CFG --> PORTS["_resolve_port × 2<br/>busy? → alert: new port / quit"]
     PORTS --> ENVS["sync managed .env files<br/>(google_mcp, jira_mcp)"]
     ENVS --> SUB["_start_mcp_subprocesses()<br/>reclaim port → Popen → log capture"]
     SUB --> STACK["build proxy stack:<br/>tracker · logger · optimizers ·<br/>cache sim · AnthropicProxy"]
     STACK --> MENU["_build_menu() + auth state"]
-    MENU --> THREADS["start daemon threads:<br/>_run_llm_proxy · _run_mcp_proxy"]
-    THREADS --> ARM["_rearm_claude_link_if_intended()<br/>atexit: disarm + stop subprocesses"]
+    MENU --> THREADS["start_background_servers()<br/>runtime.start() then spawn:<br/>llm-proxy · mcp-proxy · watchdog"]
+    THREADS --> TOK["restore_refresh_tokens()<br/>Keychain → refresh, no browser"]
+    TOK --> ARM["_rearm_claude_link_if_intended()<br/>atexit: disarm · stop subprocesses · runtime.shutdown"]
     ARM --> RUN["rumps App.run() — menu bar loop"]
 ```
 
@@ -295,7 +333,8 @@ One JSONL file per day: `~/.voitta-desktop/logs/YYYY-MM-DD.jsonl`, **wiped on
 every app start** (`*.jsonl` only — `desktop.log` survives). Bodies are
 trimmed: last 2 messages kept + `[N omitted]` placeholder, tools reduced to a
 name list, strings truncated at 2000 chars, credentials removed. A watchdog
-thread warns when a request has been in flight > 60 s.
+task on the shared runtime warns when a request has been in flight > 60 s,
+and doubles as the RSS heartbeat (see [§14](#14-ports-paths--logging)).
 
 ### CacheSimulator ([middleware/cache_sim.py](../middleware/cache_sim.py))
 
@@ -366,7 +405,7 @@ Before and after the pipeline, `validate_tool_pairing` checks for orphaned
 ```mermaid
 sequenceDiagram
     participant OZ as Optimizer (LLM proxy)
-    participant ST as vt_object_store (in-memory)
+    participant ST as vt_object_store (SQLite-backed)
     participant M as Model
     participant MCP as MCP proxy
 
@@ -377,9 +416,22 @@ sequenceDiagram
     ST-->>M: original text / image
 ```
 
-The store is a module-level dict shared by both proxies — same process, no
-IPC. Restarting Voitta empties it while old placeholders may still be in a
-live Claude session ([§16](#16-appendix-known-issues)).
+The store is shared by both proxies — same process, no IPC — and is backed
+by SQLite at `~/.voitta-desktop/state/objects.db`
+([optimizers/object_store.py](../optimizers/object_store.py)).
+
+Persistence is not an optimisation here, it is correctness. The placeholders
+live in the conversation transcript, which outlives the process; when the
+store was a bare in-memory dict, every restart silently orphaned every
+reference already in flight, and the model would ask for a hash and be told
+it did not exist.
+
+It subclasses `dict`, so the optimizers' `store[h] = obj` and `store.get(h)`
+are unchanged. Writes go through to disk; reads fall back to disk on a miss
+and promote the row into memory, so RAM holds only what this session touched
+rather than the entire history. A 512 MB budget evicts least-recently-read
+rows — images dominate. If the database cannot be opened the store degrades
+to memory-only and logs it, rather than taking the optimizers down.
 
 ### Savings accounting
 
@@ -393,7 +445,7 @@ pipeline to Haiku-model requests (cheap experimentation mode).
 
 ## 7. MCP proxy: aggregation, auth injection, resilience
 
-[mcpproxy/server.py](../mcpproxy/server.py) `run_mcp_proxy` builds one
+[mcpproxy/server.py](../mcpproxy/server.py) `build_mcp_proxy` assembles one
 FastMCP aggregate server and mounts each configured backend under its
 `prefix`:
 
@@ -438,7 +490,7 @@ keeps an unreachable backend from blocking or erroring client requests:
 sequenceDiagram
     participant C as MCP client
     participant R as ResilientProxy
-    participant D as disk cache<br/>~/.voitta_desktop_cache/
+    participant D as disk cache<br/>~/.voitta-desktop/cache/tools/
     participant U as upstream backend
 
     C->>R: tools/list
@@ -483,19 +535,52 @@ flowchart TB
     REQ["tools/list from client"] --> WHO{"who's asking?"}
     WHO -->|"settings UI / no session"| PASS["full list, no filter"]
     WHO -->|"TUI mode or<br/>Codex + suppress_codex_popup"| SILENT["silently drop disabled_tools"]
-    WHO -->|"interactive client<br/>(e.g. Claude Code)"| RECENT{"gate shown<br/>< 1 s ago?"}
-    RECENT -->|yes| REUSE["reuse previous answer"]
+    WHO -->|"interactive client<br/>(e.g. Claude Code)"| RECENT{"answered<br/>< REUSE_WINDOW_S ago?"}
+    RECENT -->|yes| REUSE["reuse the cached answer"]
     RECENT -->|no| POPUP["WKWebView popup:<br/>collapsible tool tree +<br/>client metadata panel"]
-    POPUP -->|OK| APPLY["persist disabled_tools,<br/>return filtered list"]
-    POPUP -->|Cancel / closed| NONE["return [] — all tools off"]
+    POPUP -->|OK| APPLY["cache + return filtered list"]
+    POPUP -->|Cancel / closed| NONE["cache 'all disabled', return []"]
 ```
 
-The popup ([ui/tool_gate.py](../ui/tool_gate.py)) is shown from the MCP
-proxy's uvicorn thread via `AppHelper.callAfter` and awaited on an
-`asyncio.Event`; the webview communicates back by setting `document.title`
-to `GATE_OK`/`GATE_CANCEL` (the same title-KVO bridge the Settings window
-uses — see [§12](#12-ui-surfaces)). The 1-second reuse window exists because
-Claude Code fires several `tools/list` calls in quick succession on connect.
+The popup ([ui/tool_gate.py](../ui/tool_gate.py)) is opened from the MCP
+proxy via `@on_main_thread` and awaited on an `asyncio.Event`; the webview
+communicates back by setting `document.title` to `GATE_OK`/`GATE_CANCEL`
+(the same title-KVO bridge the Settings window uses — see
+[§12](#12-ui-surfaces)).
+
+### The popup deliberately outlives the request that opened it
+
+An MCP client times out a `tools/list` in about **five seconds**. No human
+reads a tool list and clicks in five seconds, so in practice the request is
+**always** cancelled before the answer arrives. Two consequences are wired
+into the design, and both are load-bearing:
+
+**1. The cancellation must escape.** When the client gives up it sends
+`notifications/cancelled`; the SDK calls `RequestResponder.cancel()`, which
+has *already sent an error response* and set `_completed`. The SDK's guard
+against responding twice lives inside
+`except get_cancelled_exc_class()` in `mcp/server/lowlevel/server.py` — so
+it only fires if `CancelledError` propagates out of our handler.
+
+`show_tool_gate` used to catch `(CancelledError, Exception)` and return
+`None`. The handler therefore returned a normal value, the SDK fell through
+to a second `respond()`, tripped `assert not self._completed`, and that
+`AssertionError` escaped into the anyio TaskGroup and **destroyed the entire
+streamable-http session**. Both `show_tool_gate` and `_show_gate` now
+re-raise. Regression tests:
+[tests/test_tool_gate_cancellation.py](../tests/test_tool_gate_cancellation.py).
+
+**2. The window stays open and publishes anyway.** Tearing it down on
+cancellation would just re-prompt on the retry, forever. Instead the popup
+survives, and when the user finally clicks, the answer goes to the
+middleware through the `on_result` callback — *not* the return value — and
+lands in the cache. The client's retry hits `REUSE_WINDOW_S` and is served
+with no second popup. A retry that arrives while the popup is still up
+attaches to it rather than stacking a second window.
+
+`REUSE_WINDOW_S` is therefore minutes, not seconds: it has to outlast a
+human reading a tool list. `rearm()` clears the cached answer to force a
+fresh prompt.
 
 ---
 
@@ -567,9 +652,10 @@ Google Workspace adds Sheets/Docs/Slides/Drive.
 
 ### Refresh timers
 
-Each token gets a `threading.Timer` scheduled at `expires_in − 300 s`. The
-failure handling distinguishes a network error from a rejected refresh
-token:
+Each token gets a `runtime.call_later` task scheduled at `expires_in − 300 s`
+(a `threading.Timer` per token, before the runtime existed; the returned
+future keeps the same `.cancel()` interface). The failure handling
+distinguishes a network error from a rejected refresh token:
 
 ```mermaid
 stateDiagram-v2
@@ -591,6 +677,27 @@ the user out.)
 Tokens flow to backends at MCP-call time via the auth factories
 ([§7](#7-mcp-proxy-aggregation-auth-injection-resilience)) — nothing is
 pushed on refresh.
+
+### Sign-ins survive a restart
+
+Refresh tokens are stored in the **macOS Keychain**
+([auth/token_store.py](../auth/token_store.py), service
+`ai.voitta.voitta-desktop`). Access tokens are short-lived and deliberately
+not persisted, so `restore_refresh_tokens()` at startup reloads each refresh
+token and schedules an immediate refresh — that first refresh is what brings
+each app back online. Without this the app forgot every sign-in on every
+launch and demanded a fresh browser round-trip per connected app.
+
+The Keychain rather than a file in our own tree: these are long-lived
+credentials for the user's Google and Microsoft accounts, and `security(1)`
+is always present with nothing to bundle. Every operation degrades to a
+no-op if the Keychain is unavailable, costing a re-login and nothing worse.
+
+The OAuth redirect listener ([auth/callback.py](../auth/callback.py)) is now
+a one-shot aiohttp site on the shared runtime rather than a blocking
+`HTTPServer` holding a thread for up to two minutes. The **port is
+unchanged** — it appears in the redirect URI registered with Google and
+Microsoft, so moving it would mean editing those app registrations.
 
 ---
 
@@ -683,7 +790,7 @@ as braille bar charts. Runs on Linux.
 
 ## 13. Configuration: apps.json
 
-`~/.voitta_desktop/apps.json` ([config.py](../config.py)). `load_config()`
+`~/.voitta-desktop/apps.json` ([config.py](../config.py)). `load_config()`
 migrates legacy shapes (`proxy` → `mcp_proxy`, `mcp_subprocess` →
 `mcp_servers`, `~/.voitta_auth*`) and deep-backfills missing keys from
 defaults — saved values always win.
@@ -722,13 +829,55 @@ from the auth state).
 | 53214 | OAuth redirect callback (one-shot) |
 | others | per-backend defaults in config (e.g. FreeCAD 50005) |
 
-### Directories — note the two spellings
+### Directories
+
+Everything lives under **one** root, `~/.voitta-desktop/`, resolved once in
+[paths.py](../paths.py). Set `VOITTA_DESKTOP_HOME` to relocate the whole
+tree (the test suite does).
 
 | Path | Contents |
 |---|---|
-| `~/.voitta_desktop/` (underscore) | `apps.json` (config), `jira.env` |
-| `~/.voitta_desktop_cache/` | per-backend MCP listing caches (`<name>_tools.json` …) |
-| `~/.voitta-desktop/logs/` (hyphen) | everything below |
+| `~/.voitta-desktop/apps.json` | config |
+| `~/.voitta-desktop/logs/` | `desktop.log`, request JSONL, conversation dumps |
+| `~/.voitta-desktop/state/` | `objects.db` (object store), `last_run.json` (exit marker) |
+| `~/.voitta-desktop/cache/tools/` | per-backend MCP listing caches |
+
+Before consolidation this was three unrelated roots with two spellings of
+the same name — `~/.voitta_desktop` (config), `~/.voitta-desktop` (logs) and
+`~/.voitta_desktop_cache` (tool cache). `migrate_legacy_dirs()` copies the
+old locations forward on startup. It **copies rather than moves** and never
+overwrites an existing target, so downgrading to an older build still finds
+its config where it expects it.
+
+### Knowing why the app exited
+
+A clean quit and a hard kill used to look identical in the log: no
+traceback, no shutdown line, just a gap. [lifecycle.py](../lifecycle.py)
+closes that with two mechanisms, because they cover different failures.
+
+*Handlers* — signal, `sys.excepthook`, `threading.excepthook` and the
+asyncio exception handler — log before the process goes away. They cover
+everything the process can observe about its own death.
+
+*A run marker* (`state/last_run.json`) is rewritten on start, on heartbeat
+and on exit. If a run starts and finds the previous marker still in state
+`running`, the previous process died without executing **any** handler:
+SIGKILL, a jetsam (out-of-memory) kill, or a panic. Nothing in-process can
+observe those, so the marker is the only way to see them. It carries the
+last known peak RSS, which is what separates an OOM kill from the rest.
+
+```
+CRITICAL: PREVIOUS RUN DIED SILENTLY — no signal, no exception, no clean
+exit. pid=73820 last_seen=2026-08-08 12:38:10 peak_rss=17.3 MB. This is
+SIGKILL, an out-of-memory (jetsam) kill, or a panic.
+```
+
+The request watchdog also logs peak RSS each time it crosses a 250 MB step,
+so a memory trend is visible in the log right up to the moment a process
+vanishes. Note that Python only runs signal handlers on the main thread
+between bytecodes, so while that thread sits inside AppKit's `[NSApp run]`
+delivery can be delayed — the marker is the reliable half, the handlers are
+the informative half.
 
 ### Log files
 
@@ -777,25 +926,47 @@ copy of the sources — repo changes do not affect it until it is rebuilt.
 
 ## 16. Appendix: known issues
 
-- **`vt_object_store` is process-local and in-memory.** Restarting Voitta
-  orphans every `get_vt_object` placeholder in still-running Claude sessions;
-  recovery calls then fail until those turns age out.
-- **OAuth state is memory-only** — every restart requires re-auth (Microsoft
-  can silently re-acquire from MSAL's account cache on next sign-in click,
-  Google cannot).
-- **Tracker requires `X-Claude-Code-Session-Id`.** Requests without it (a
-  non-Claude-Code client pointed at :18900) fail the middleware chain → 502.
-- **TUI arm/disarm is broken**: [ui/tui/app.py](../ui/tui/app.py) imports
-  `arm_claude_link`/`disarm_claude_link`, which don't exist in
-  [claude_link.py](../claude_link.py) (only `plan_*`/`apply_changes`);
-  Ctrl-D raises `ImportError`.
-- **`claude_link.armed` default disagrees** between
-  [app_base.py](../app_base.py) (`True`) and [ui/menu.py](../ui/menu.py) /
-  [config.py](../config.py) (`False`); the TUI arms by default, the Mac app
-  doesn't.
-- **Three dotfile directories with two spellings** (`.voitta_desktop`,
-  `.voitta_desktop_cache`, `.voitta-desktop`) — see
-  [§14](#14-ports-paths--logging).
-- **Test coverage** is a single file
-  ([tests/test_tool_use_optimizer.py](../tests/test_tool_use_optimizer.py));
-  the middleware chain and MCP proxy have no tests.
+### Resolved
+
+Each of these was a real, observed failure; the fix and its test are named
+so the reasoning is recoverable.
+
+| Was | Now |
+|---|---|
+| **MCP sessions destroyed under flaky network.** A cancelled `tools/list` made the SDK respond twice and assert; the `AssertionError` unwound the anyio TaskGroup and killed the session. | Cancellation propagates out of the gate so the SDK's own guard fires. [§8](#8-the-tool-gate), [tests](../tests/test_tool_gate_cancellation.py) |
+| **The gate re-prompted forever.** No human answers inside a client's ~5 s timeout. | The popup outlives the request and publishes through `on_result`; the retry is served from cache. [§8](#8-the-tool-gate) |
+| **`vt_object_store` was in-memory.** Restarting orphaned every `get_vt_object` placeholder in live sessions. | SQLite-backed, with disk fallback on read. [§6](#6-the-optimizer-pipeline), [tests](../tests/test_object_store.py) |
+| **OAuth state was memory-only** — re-auth on every restart. | Refresh tokens in the Keychain, restored and refreshed at startup. [§10](#10-oauth-sign-in-and-token-refresh) |
+| **Tracker required `X-Claude-Code-Session-Id`** and 502'd without it. | Falls back to a hash of the first user message. [tests](../tests/test_tracker_session_id.py) |
+| **TUI arm/disarm raised `ImportError`** — it imported functions that did not exist. | `arm_claude_link`/`disarm_claude_link` added; the three open-coded copies of that sequence now call them. [tests](../tests/test_claude_link_and_config.py) |
+| **`claude_link.armed` default disagreed** across three files. | One constant in [config.py](../config.py), default `False` (it edits a file we don't own). |
+| **Three dotfile dirs, two spellings.** | One root, [paths.py](../paths.py), with non-destructive migration. [§14](#14-ports-paths--logging), [tests](../tests/test_paths_migration.py) |
+| **A clean quit and a hard kill looked identical** in the log. | Signal/exception handlers plus an on-disk run marker. [§14](#14-ports-paths--logging) |
+| **Four event loops, nine ad-hoc threads.** | One runtime. [§2](#2-process--thread-model), [tests](../tests/test_runtime.py) |
+| **Eight hand-written `AppHelper.callAfter` sites** enforcing the main-thread rule. | One [`@on_main_thread`](../ui/main_thread.py) decorator. |
+
+### Open
+
+- **Why the process sometimes dies is not yet explained.** The MCP session
+  crash above is fixed and proven, but it did not kill the *process* — and
+  the process was also dying, silently, leaving orphaned subprocesses. The
+  instrumentation in [§14](#14-ports-paths--logging) exists to attribute
+  that; it needs a recurrence to report. Check `state/last_run.json` and
+  grep `desktop.log` for `shutdown` or `DIED SILENTLY` after any unexpected
+  restart. If peak RSS is climbing into the GBs, suspect the optimizer
+  `json.loads`-ing multi-MB request bodies whole.
+- **Live MCP add/remove** still needs a restart: the proxy mounts each
+  server at startup with a closed-over client factory. Settings prompts for
+  the restart rather than reloading.
+- **`ENABLE_TOOL_SEARCH` is not removed on disarm.** Deliberate — we don't
+  track whether we added it, and `true` is harmless when disconnected — but
+  it does mean disarm is not a byte-exact undo.
+- **The bundle is not signed or notarized.** The hardened-runtime
+  entitlements in [pyproject.toml](../pyproject.toml) are not enforced.
+- **MCP backends are not self-contained**: `uvx` (Homebrew) for Jira, `npx`
+  (Node) for stdio servers, and a Google Workspace checkout whose default
+  path is a developer's home directory.
+- **Test coverage is now real but partial**: the runtime, object store,
+  paths, tracker id, claude-link and gate cancellation are covered; the
+  optimizer pipeline has its original cache-stability suite; the MCP proxy's
+  mounting and auth injection remain untested.
