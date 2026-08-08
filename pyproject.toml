@@ -42,6 +42,8 @@ sources = [
     "claude_link.py",
     # Root modules are listed one by one, not globbed — a new one that isn't
     # added here is simply absent from the bundle and the app dies on import.
+    # Keep this list equal to `ls *.py`; scripts/check_bundle.py enforces it.
+    "app_base.py",
     "paths.py",
     "runtime.py",
     "lifecycle.py",

@@ -175,6 +175,14 @@ if [ ! -d "$APP_DIR" ]; then
   exit 1
 fi
 
+# Prove the bundle can import itself before we spend minutes signing and
+# notarising it. `sources` enumerates root modules by hand with no glob, so
+# a new one that isn't listed is missing from the bundle — and neither the
+# tests nor `python app.py` notice, because both run from the repo where the
+# file exists. Shipped twice already; now it fails the build instead.
+echo "[build_app] verifying the bundle imports itself..."
+"$VENV/bin/python" "$ROOT/scripts/check_bundle.py" "$APP_DIR"
+
 if [ "$PACKAGE" -eq 1 ]; then
   # Wipe dist/ entirely so artefacts don't accumulate — only the current
   # build's output should be present. briefcase recreates dist/ on package.
