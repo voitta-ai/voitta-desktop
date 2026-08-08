@@ -417,6 +417,7 @@ class _GateTitleObserver(NSObject):
             obj.evaluateJavaScript_completionHandler_("getDisabledTools()", _on_js_result)
         elif title == "GATE_CANCEL":
             if self.detachFrom_(obj):
+                logger.info("Gate: cancelled by user — all tools withheld")
                 _finish(None)
 
 
@@ -494,6 +495,7 @@ async def show_tool_gate(
         # Window closed with the red X — treat as Cancel.
         def _on_close(notification):
             if observer.detachFrom_(webview):
+                logger.info("Gate: window closed without an answer — all tools withheld")
                 _finish(None)
 
         from Foundation import NSNotificationCenter

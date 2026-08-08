@@ -20,6 +20,7 @@ import rumps
 
 from config import apps_for_backend
 from runtime import runtime
+from ui._native import _notify
 from ui.main_thread import on_main_thread
 
 
@@ -100,6 +101,13 @@ class MenuBuilderMixin:
         self._status_item = rumps.MenuItem("  LLM Tools Status", callback=self._show_llm_tools_status)
         menu_list.append(self._status_item)
 
+        # Recovery path for the tool gate. Its answer is cached for
+        # REUSE_WINDOW_S so a client's retry (after its ~5s timeout) is served
+        # without a second popup — but that also means a mistaken Cancel, which
+        # disables every tool, would stick for the whole window with no way
+        # back. This puts the next listing back to prompting immediately.
+        menu_list.append(rumps.MenuItem("  Reset tool gate", callback=self._reset_tool_gate))
+
         menu_list.append(None)
 
         # ── Conversations section ────────────────────────────────────────────
@@ -149,6 +157,17 @@ class MenuBuilderMixin:
                 return f"{dot}  Jira Cloud                  {project} ({email})"
             return f"{dot}  Jira Cloud                  {email}"
         return "○  Jira Cloud                  Not configured"
+
+    def _reset_tool_gate(self, _):
+        """Forget the cached gate answer so the next tools/list re-prompts."""
+        gate = getattr(self, "_tool_gate", None)
+        if gate is None:
+            _notify("Voitta Desktop", "Tool gate",
+                    "The MCP proxy has not started yet.")
+            return
+        gate.rearm()
+        _notify("Voitta Desktop", "Tool gate",
+                "Reset — the next tool listing will prompt again.")
 
     @on_main_thread
     def _update_auth_state(self):

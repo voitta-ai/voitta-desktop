@@ -68,6 +68,11 @@ def _configure_logging(log_dir: Path) -> None:
     logging.getLogger("voitta-desktop.runtime").setLevel(logging.DEBUG)
     logging.getLogger("voitta-desktop.object_store").setLevel(logging.INFO)
     logging.getLogger("voitta-desktop.paths").setLevel(logging.INFO)
+    # The gate's own decisions were invisible at WARNING: an OK that disabled
+    # nothing, a JS failure that fell back to disabling nothing, and a silent
+    # Cancel were indistinguishable in the log — while all three lead to very
+    # different tool exposure.
+    logging.getLogger("voitta-desktop.tool_gate").setLevel(logging.INFO)
     # Silence MCP SDK post-cancellation SSE spam.
     logging.getLogger("mcp.client.streamable_http").setLevel(logging.CRITICAL)
 
