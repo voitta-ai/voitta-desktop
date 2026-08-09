@@ -137,3 +137,106 @@ def test_explicit_config_wins():
 def test_malformed_config_falls_back_to_the_default():
     assert claude_link_armed({"claude_link": None}) is CLAUDE_LINK_ARMED_DEFAULT
     assert claude_link_armed({"claude_link": {}}) is CLAUDE_LINK_ARMED_DEFAULT
+
+
+# ── Port drift must not poison the saved original ────────────────────────────
+#
+# Our port is not stable: _resolve_port falls back to an OS-assigned one when
+# the configured port is busy, so the app can arm as :18900 and later as
+# :18901. Connect used to read the older Voitta URL, decide it must be the
+# user's own upstream, and file it under VOITTA_ANTHROPIC_BASE_URL. Disconnect
+# then "restored" a Voitta URL for a port nothing listens on — Claude Code kept
+# failing after the app was gone, which is the opposite of disarming.
+#
+# Observed live: both keys held http://127.0.0.1:18901.
+
+def test_port_drift_does_not_save_our_own_url(settings):
+    claude_link.arm_claude_link(18900, UPSTREAM)
+    claude_link.arm_claude_link(18901, UPSTREAM)   # port moved
+
+    env = json.loads(settings.read_text())["env"]
+    assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:18901"
+    assert "VOITTA_ANTHROPIC_BASE_URL" not in env
+
+
+def test_disarm_after_port_drift_removes_the_url(settings):
+    claude_link.arm_claude_link(18900, UPSTREAM)
+    claude_link.arm_claude_link(18901, UPSTREAM)
+
+    claude_link.disarm_claude_link(18901)
+
+    env = json.loads(settings.read_text()).get("env", {})
+    assert "ANTHROPIC_BASE_URL" not in env
+    assert "VOITTA_ANTHROPIC_BASE_URL" not in env
+
+
+def test_disarm_heals_an_already_poisoned_file(settings):
+    """The state a user is already in gets cleaned up, not carried forward."""
+    settings.write_text(json.dumps({"env": {
+        "ANTHROPIC_BASE_URL": "http://127.0.0.1:18901",
+        "VOITTA_ANTHROPIC_BASE_URL": "http://127.0.0.1:18901",
+        "ENABLE_TOOL_SEARCH": "true",
+    }}))
+
+    claude_link.disarm_claude_link(18901)
+
+    env = json.loads(settings.read_text()).get("env", {})
+    assert "ANTHROPIC_BASE_URL" not in env
+    assert "VOITTA_ANTHROPIC_BASE_URL" not in env
+    assert env["ENABLE_TOOL_SEARCH"] == "true"
+
+
+def test_arm_heals_a_poisoned_file_when_it_re_arms(settings):
+    """Arming on a new port clears a stale saved value instead of keeping it."""
+    settings.write_text(json.dumps({"env": {
+        "ANTHROPIC_BASE_URL": "http://127.0.0.1:18901",
+        "VOITTA_ANTHROPIC_BASE_URL": "http://127.0.0.1:18902",
+    }}))
+
+    claude_link.arm_claude_link(18903, UPSTREAM)   # port moved again
+
+    env = json.loads(settings.read_text())["env"]
+    assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:18903"
+    assert "VOITTA_ANTHROPIC_BASE_URL" not in env
+
+
+def test_arm_is_still_a_no_op_when_already_connected(settings):
+    """Idempotence matters more than healing here — startup re-arms every run.
+
+    A poisoned file is only harmful at disarm time, and disarm heals it.
+    """
+    settings.write_text(json.dumps({"env": {
+        "ANTHROPIC_BASE_URL": "http://127.0.0.1:18901",
+        "VOITTA_ANTHROPIC_BASE_URL": "http://127.0.0.1:18902",
+    }}))
+    before = settings.read_text()
+
+    assert claude_link.arm_claude_link(18901, UPSTREAM) is False
+    assert settings.read_text() == before
+
+
+def test_a_real_remote_upstream_still_round_trips(settings):
+    """The feature this machinery exists for must keep working."""
+    settings.write_text(json.dumps({
+        "env": {"ANTHROPIC_BASE_URL": "https://gateway.corp.example"}
+    }))
+
+    claude_link.arm_claude_link(18901, UPSTREAM)
+    assert json.loads(settings.read_text())["env"][
+        "VOITTA_ANTHROPIC_BASE_URL"] == "https://gateway.corp.example"
+
+    claude_link.disarm_claude_link(18901)
+    assert json.loads(settings.read_text())["env"][
+        "ANTHROPIC_BASE_URL"] == "https://gateway.corp.example"
+
+
+def test_url_shape_detection():
+    ours = claude_link._is_one_of_our_urls
+    assert ours("http://127.0.0.1:18900")
+    assert ours("http://localhost:18901")
+    assert ours("http://127.0.0.1:9999/")
+    assert not ours("https://api.anthropic.com")
+    assert not ours("https://gateway.corp.example")
+    assert not ours("http://127.0.0.1:4000/v1")   # has a path — not our shape
+    assert not ours(None)
+    assert not ours("")

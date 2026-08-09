@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
 CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 # `claude mcp add` writes here, not to settings.json. Claude Code merges both.
@@ -162,6 +163,41 @@ def _our_url(our_port: int) -> str:
     return f"http://127.0.0.1:{our_port}"
 
 
+def _is_one_of_our_urls(url: str | None) -> bool:
+    """True if ``url`` has the shape this module arms with, on ANY port.
+
+    Comparing against the *current* port is not enough. Our port is not
+    stable — ``_resolve_port`` falls back to an OS-assigned one whenever the
+    configured port is busy (a stale instance, a second copy during an
+    upgrade), so the app can arm as :18900 today and :18901 tomorrow.
+
+    Without this check, the next arm sees an ANTHROPIC_BASE_URL that isn't
+    the current URL, concludes it must be the user's own upstream, and files
+    it under VOITTA_ANTHROPIC_BASE_URL as the value to restore. Disconnect
+    then faithfully "restores" a Voitta URL for a port nothing is listening
+    on, so Claude Code keeps failing after the app is gone — the exact
+    opposite of what disarming is for. This module cannot ever hand back one
+    of its own URLs as the user's original.
+
+    Tradeoff: someone whose real upstream is a bare loopback HTTP endpoint
+    (a local LiteLLM, say) has it dropped on connect rather than preserved.
+    That is visible and one setting to redo, whereas the alternative leaves
+    Claude Code silently pointed at a dead port with no clue why.
+    """
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "http"
+        and parsed.hostname in ("127.0.0.1", "localhost")
+        and not parsed.path.strip("/")
+        and not parsed.query
+    )
+
+
 def _our_mcp_url(mcp_port: int) -> str:
     return f"http://127.0.0.1:{mcp_port}/mcp"
 
@@ -201,11 +237,18 @@ def plan_connect(cfg: dict, our_port: int, voitta_upstream: str) -> Plan:
     # Determine what (if anything) to preserve as the "original" for restore.
     # Trust an existing VOITTA_ value if present (dirty recovery); otherwise
     # use the current ANTHROPIC_BASE_URL if it's not already pointing at us.
-    if existing_voitta_saved is not None:
+    # A previously-saved value is only trustworthy if it isn't one of ours —
+    # an earlier run on a different port could have stored its own URL there.
+    if existing_voitta_saved is not None and not _is_one_of_our_urls(existing_voitta_saved):
         original = existing_voitta_saved
-    elif existing_base is not None and existing_base != our_url:
+    elif existing_base is not None and not _is_one_of_our_urls(existing_base):
         original = existing_base
         changes.append(Change("env.VOITTA_ANTHROPIC_BASE_URL", None, original))
+    elif existing_voitta_saved is not None:
+        # Poisoned by an earlier port change: drop it rather than carry a
+        # dead URL forward as if it were the user's own.
+        original = None
+        changes.append(Change("env.VOITTA_ANTHROPIC_BASE_URL", existing_voitta_saved, None))
     else:
         original = None  # nothing to preserve, clean install
 
@@ -250,12 +293,18 @@ def plan_disconnect(cfg: dict, our_port: int) -> Plan:
     voitta_saved = env.get("VOITTA_ANTHROPIC_BASE_URL")
     current_base = env.get("ANTHROPIC_BASE_URL")
 
-    if voitta_saved is not None:
+    if voitta_saved is not None and not _is_one_of_our_urls(voitta_saved):
         if current_base != voitta_saved:
             changes.append(Change("env.ANTHROPIC_BASE_URL", current_base, voitta_saved))
         changes.append(Change("env.VOITTA_ANTHROPIC_BASE_URL", voitta_saved, None))
-    elif current_base is not None:
-        changes.append(Change("env.ANTHROPIC_BASE_URL", current_base, None))
+    else:
+        # Either nothing was saved, or what was saved is one of our own URLs
+        # from an earlier port. Restoring that would point Claude Code at a
+        # dead port; removing the key is what actually disconnects.
+        if voitta_saved is not None:
+            changes.append(Change("env.VOITTA_ANTHROPIC_BASE_URL", voitta_saved, None))
+        if current_base is not None:
+            changes.append(Change("env.ANTHROPIC_BASE_URL", current_base, None))
 
     return Plan(target="disconnect", claude_changes=changes)
 
