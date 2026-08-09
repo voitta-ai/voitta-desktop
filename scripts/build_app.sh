@@ -255,13 +255,13 @@ if [ "$PACKAGE" -eq 1 ]; then
     if ! xcrun stapler validate "$DMG" >/dev/null 2>&1; then
       echo "[build_app] ERROR: $DMG is signed but has no notarisation ticket." >&2
       echo "[build_app]   Gatekeeper will reject it on any other machine." >&2
-      echo "[build_app]   An aborted upload often still reaches Apple — check first:" >&2
-      echo "[build_app]     xcrun notarytool history --keychain-profile $NOTARY_PROFILE" >&2
-      echo "[build_app]   then, with the submission id:" >&2
-      echo "[build_app]     xcrun notarytool wait <id> --keychain-profile $NOTARY_PROFILE" >&2
-      echo "[build_app]     xcrun stapler staple \"$DMG\"" >&2
-      echo "[build_app]   or resubmit:" >&2
+      echo "[build_app]   RESUBMIT — do not wait on an existing submission." >&2
+      echo "[build_app]   An aborted upload (\"abortedUpload ... Connection reset by peer\")" >&2
+      echo "[build_app]   still registers a submission id, but Apple never receives the" >&2
+      echo "[build_app]   complete artefact, so that id sits at 'In Progress' indefinitely" >&2
+      echo "[build_app]   — observed at 10+ hours. Only a clean upload reaches 'Accepted'." >&2
       echo "[build_app]     xcrun notarytool submit \"$DMG\" --keychain-profile $NOTARY_PROFILE --wait" >&2
+      echo "[build_app]     xcrun stapler staple \"$DMG\"" >&2
       exit 1
     fi
     if ! spctl -a -t open --context context:primary-signature "$DMG" >/dev/null 2>&1; then
