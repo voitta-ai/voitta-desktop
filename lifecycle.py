@@ -97,11 +97,19 @@ def _report_previous_run() -> None:
     when = prev.get("at_human", "?")
 
     if status == "running":
+        # Deliberately does NOT say "no signal". It used to, and that was
+        # actively misleading: a signal we do not handle (SIGPIPE, SIGKILL)
+        # kills the process before any handler runs, so this marker looks
+        # identical either way. The kernel is the authority, so point at it.
         logger.critical(
-            "PREVIOUS RUN DIED SILENTLY — no signal, no exception, no clean exit. "
-            "pid=%s last_seen=%s peak_rss=%s MB. This is SIGKILL, an out-of-memory "
-            "(jetsam) kill, or a panic. Compare peak_rss against available RAM.",
-            prev.get("pid"), when, rss,
+            "PREVIOUS RUN DIED without running any shutdown handler. "
+            "pid=%s last_seen=%s peak_rss=%s MB. Cause is NOT visible from "
+            "in-process state — an unhandled signal, SIGKILL or an OOM kill "
+            "all look like this. Ask the kernel:\n"
+            "    log show --last 1h --predicate 'eventMessage CONTAINS \"%s\" "
+            "AND eventMessage CONTAINS \"termination reported\"' --style compact\n"
+            "  status (2, 13, 13) = SIGPIPE, (2, 9, 9) = SIGKILL, (0, 0, 0) = clean exit.",
+            prev.get("pid"), when, rss, prev.get("pid"),
         )
     elif status == "clean":
         logger.info("previous run exited cleanly at %s (peak_rss=%s MB)", when, rss)
@@ -202,6 +210,53 @@ def heartbeat() -> None:
     _write_marker("running", "heartbeat")
 
 
+def _ignore_sigpipe() -> None:
+    """Stop a dead peer from killing the process.
+
+    This is the bug that made the app "crash when the internet is flaky".
+
+    Writing to a socket whose peer has gone away raises SIGPIPE, whose
+    default disposition is to terminate the process immediately — no
+    traceback, no atexit, and no crash report, because the kernel only
+    writes those for SIGSEGV/SIGBUS/SIGILL/SIGABRT. Any dropped connection
+    mid-stream could take the whole app down, leaving its MCP subprocesses
+    orphaned. That is exactly the reported symptom, and the kernel log
+    confirms it: two independent deaths reported as
+    ``termination reported by launchd (2, 13, 13)`` — domain signal, code 13.
+
+    Normally CPython does this for us: ``Py_InitializeFromConfig`` sets
+    SIGPIPE to SIG_IGN when ``install_signal_handlers`` is on. Briefcase's
+    launcher builds its config with ``PyConfig_InitIsolatedConfig()`` (the
+    stub binary announces "Configuring isolated Python"), and the isolated
+    config turns that flag OFF. So the disposition stays at the OS default
+    and every socket write becomes a potential kill — in the packaged app
+    only. Running ``python app.py`` from a terminal inherits SIG_IGN and
+    never shows the bug, which is why it only ever bit the shipped build.
+
+    With SIGPIPE ignored, the write returns EPIPE and Python raises
+    BrokenPipeError, which aiohttp already handles as a normal client
+    disconnect.
+    """
+    try:
+        previous = signal.getsignal(signal.SIGPIPE)
+    except (OSError, ValueError, AttributeError):
+        return
+    if previous == signal.SIG_IGN:
+        logger.debug("SIGPIPE already ignored")
+        return
+    try:
+        signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+    except (OSError, ValueError) as e:
+        logger.error("could not ignore SIGPIPE (%s); a dropped connection "
+                     "can still kill this process", e)
+        return
+    logger.warning(
+        "SIGPIPE was %s (lethal) — now ignored. Without this a dropped "
+        "connection terminates the app with no traceback.",
+        "SIG_DFL" if previous == signal.SIG_DFL else previous,
+    )
+
+
 def _install_signal_handlers() -> None:
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT):
         try:
@@ -286,6 +341,7 @@ def install() -> None:
     ensure_dirs()
     _report_previous_run()
     _write_marker("running", "startup")
+    _ignore_sigpipe()          # before any socket is opened
     _install_signal_handlers()
     _install_exception_hooks()
 

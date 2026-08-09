@@ -133,3 +133,67 @@ def test_appkit_terminate_runs_cleanups(tmp_path):
     )
     marker = json.loads((home / "state" / "last_run.json").read_text())
     assert marker["status"] == "clean"
+
+
+# ── SIGPIPE: the crash that looked like "the network is flaky" ───────────────
+#
+# Writing to a socket whose peer has gone away raises SIGPIPE, and its default
+# disposition terminates the process instantly — no traceback, no atexit, and
+# no crash report (the kernel only writes those for SIGSEGV/SIGBUS/SIGILL/
+# SIGABRT). CPython normally sets SIGPIPE to SIG_IGN during
+# Py_InitializeFromConfig, but briefcase's launcher uses
+# PyConfig_InitIsolatedConfig(), which disables install_signal_handlers — so
+# the packaged app kept the lethal default while `python app.py` did not.
+#
+# Confirmed in the kernel log: two independent deaths of the main app process
+# reported as "termination reported by launchd (2, 13, 13)".
+
+def test_sigpipe_is_ignored_after_install():
+    import signal
+    lifecycle._ignore_sigpipe()
+    assert signal.getsignal(signal.SIGPIPE) == signal.SIG_IGN
+
+
+def test_ignoring_sigpipe_twice_is_harmless():
+    import signal
+    lifecycle._ignore_sigpipe()
+    lifecycle._ignore_sigpipe()
+    assert signal.getsignal(signal.SIGPIPE) == signal.SIG_IGN
+
+
+def test_a_dead_peer_kills_an_unprotected_process():
+    """The negative control. Without this the fix below proves nothing."""
+    assert _write_to_dead_peer(protected=False) == "killed:SIGPIPE"
+
+
+def test_a_dead_peer_cannot_kill_a_protected_process():
+    """The fix: the write raises instead of terminating the process."""
+    assert _write_to_dead_peer(protected=True) == "BrokenPipeError"
+
+
+def _write_to_dead_peer(protected: bool) -> str:
+    """Write to a closed socket in a subprocess; report how it ended."""
+    import signal
+    prog = textwrap.dedent(f"""
+        import signal, socket, sys, os
+        if {protected!r}:
+            sys.path.insert(0, {str(REPO)!r})
+            os.environ["VOITTA_DESKTOP_HOME"] = "/tmp/vd-sigpipe-test"
+            import lifecycle
+            lifecycle._ignore_sigpipe()
+        else:
+            signal.signal(signal.SIGPIPE, signal.SIG_DFL)   # the bundle's state
+        a, b = socket.socketpair()
+        b.close()
+        try:
+            for _ in range(200):
+                a.send(b"x" * 65536)
+        except BrokenPipeError:
+            print("BrokenPipeError")
+        sys.exit(0)
+    """)
+    proc = subprocess.run([sys.executable, "-c", prog],
+                          capture_output=True, text=True, timeout=60)
+    if proc.returncode < 0:
+        return f"killed:{signal.Signals(-proc.returncode).name}"
+    return proc.stdout.strip()
