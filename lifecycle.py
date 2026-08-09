@@ -49,6 +49,12 @@ _RSS_SCALE = 1 if platform.system() == "Darwin" else 1024
 _marker_lock = threading.Lock()
 _installed = False
 
+# Shutdown cleanups, and a latch so they run exactly once no matter which
+# exit path fires first. See run_cleanups() for why there are two paths.
+_cleanups: list[tuple[str, object]] = []
+_cleanups_ran = False
+_cleanup_lock = threading.Lock()
+
 
 def peak_rss_mb() -> float:
     """Peak resident set size in MB, for this process, since start.
@@ -104,6 +110,87 @@ def _report_previous_run() -> None:
             "previous run ended: status=%s detail=%s at=%s peak_rss=%s MB",
             status, prev.get("detail"), when, rss,
         )
+
+
+def register_cleanup(fn, name: str | None = None) -> None:
+    """Register shutdown work that must run however the app exits.
+
+    Use this instead of ``atexit.register`` for anything that has to happen
+    on the way out. In a packaged menu-bar app, ``atexit`` is not enough —
+    see :func:`install_appkit_termination_observer`.
+    """
+    _cleanups.append((name or getattr(fn, "__qualname__", repr(fn)), fn))
+
+
+def run_cleanups(reason: str) -> None:
+    """Run every registered cleanup once, then mark the exit clean.
+
+    Reached from two directions — ``atexit`` (terminal runs) and
+    AppKit's will-terminate notification (the packaged app) — so it latches
+    and is safe to call from both. Cleanups run in reverse registration
+    order, matching ``atexit`` semantics, and one that raises does not stop
+    the rest: a failed claude-link disarm must not leave subprocesses alive.
+    """
+    global _cleanups_ran
+    with _cleanup_lock:
+        if _cleanups_ran:
+            return
+        _cleanups_ran = True
+
+    for name, fn in reversed(_cleanups):
+        try:
+            fn()
+        except Exception:
+            logger.exception("shutdown cleanup %s failed", name)
+
+    _write_marker("clean", reason)
+    logger.info("--- shutdown: clean exit via %s (peak_rss=%.1f MB) ---",
+                reason, peak_rss_mb())
+
+
+def install_appkit_termination_observer() -> None:
+    """Run the cleanups when AppKit terminates the app.
+
+    ``-[NSApplication terminate:]`` — which is what the Quit menu item, Cmd-Q
+    and an AppleScript quit all reach through ``rumps.quit_application()`` —
+    ends the process with a C ``exit()``. That never drives
+    ``Py_FinalizeEx``, so **Python's atexit handlers do not run at all**.
+
+    Measured, not assumed: a PyObjC process that registers an atexit handler
+    and then calls ``NSApp.terminate_(None)`` leaves the handler unexecuted.
+
+    Everything the app did on the way out was registered with ``atexit``, so
+    on every ordinary quit it silently skipped subprocess teardown (hence
+    "reclaiming port N from orphan pid" on literally every startup) and the
+    claude-link disarm (which had never once run — ``claude_link: disarmed on
+    quit`` appears zero times in any log). It also left this module's run
+    marker at ``running``, so the next launch mistook a clean quit for a
+    silent kill.
+
+    ``NSApplicationWillTerminateNotification`` is delivered before that
+    ``exit()``, on the main thread, which is where the cleanups belong.
+    """
+    try:
+        from AppKit import NSApplicationWillTerminateNotification
+        from Foundation import NSNotificationCenter
+    except ImportError:
+        return  # terminal mode — atexit is sufficient there
+
+    def _on_terminate(_notification):
+        run_cleanups("NSApplicationWillTerminate")
+
+    # The token must outlive this call or the observer is collected.
+    global _termination_token
+    _termination_token = (
+        NSNotificationCenter.defaultCenter()
+        .addObserverForName_object_queue_usingBlock_(
+            NSApplicationWillTerminateNotification, None, None, _on_terminate
+        )
+    )
+    logger.info("AppKit termination observer installed")
+
+
+_termination_token = None
 
 
 def heartbeat() -> None:
@@ -202,9 +289,8 @@ def install() -> None:
     _install_signal_handlers()
     _install_exception_hooks()
 
-    @atexit.register
-    def _mark_clean() -> None:
-        _write_marker("clean", "atexit")
-        logger.info("--- shutdown: clean exit (peak_rss=%.1f MB) ---", peak_rss_mb())
+    # Covers terminal runs, where the interpreter shuts down normally. The
+    # packaged app needs install_appkit_termination_observer() as well.
+    atexit.register(run_cleanups, "atexit")
 
     logger.info("crash diagnostics installed (marker=%s)", RUN_MARKER_PATH)

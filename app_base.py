@@ -184,12 +184,13 @@ class AppBase:
 
     def start_background_servers(self) -> None:
         """Bring the runtime up and start everything that runs on it."""
-        import atexit
-
+        import lifecycle
         from runtime import runtime
 
         runtime.start()
-        atexit.register(runtime.shutdown)
+        # Not atexit: AppKit's terminate: skips it entirely. See
+        # lifecycle.install_appkit_termination_observer().
+        lifecycle.register_cleanup(runtime.shutdown, "runtime.shutdown")
 
         runtime.spawn(self._serve_llm_proxy(), name="llm-proxy")
         runtime.spawn(self._serve_mcp_proxy(), name="mcp-proxy")

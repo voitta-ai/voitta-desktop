@@ -334,7 +334,11 @@ class MCPLifecycleMixin:
             if server.get("kind") != "subprocess":
                 continue
             self._launch_one_subprocess(server)
-        atexit.register(self._stop_mcp_subprocesses)
+        # Not atexit — AppKit's terminate: never runs those, which is why
+        # every startup used to reclaim ports from orphaned subprocesses.
+        import lifecycle
+        lifecycle.register_cleanup(self._stop_mcp_subprocesses,
+                                   "stop_mcp_subprocesses")
 
     def _stop_mcp_subprocesses(self):
         for entry in list(getattr(self, "_subprocesses", {}).values()):

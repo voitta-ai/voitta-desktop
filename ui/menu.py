@@ -183,12 +183,21 @@ class VoittaDesktopApp(
         # runtime up, since each refresh is scheduled on it.
         self.restore_refresh_tokens()
 
-        # Claude link lifecycle: re-arm now if user intent says so; register
-        # the disarm hook for graceful shutdown (atexit) AND for force-quit
-        # via the dock/Cmd-Q path (NSApplicationWillTerminate is delivered
-        # synchronously to atexit handlers by rumps.quit_application).
+        # Claude link lifecycle: re-arm now if user intent says so, and disarm
+        # on the way out.
+        #
+        # The disarm used to be an atexit handler, on the stated assumption
+        # that rumps.quit_application delivers NSApplicationWillTerminate to
+        # atexit handlers. It does not: terminate: ends the process with a C
+        # exit() that never runs Python's atexit at all, so this had never
+        # executed once — ~/.claude/settings.json was left pointing at the
+        # proxy after every quit. Observing the notification directly is what
+        # actually works.
+        import lifecycle
         self._rearm_claude_link_if_intended()
-        atexit.register(self._disarm_claude_link_on_quit)
+        lifecycle.register_cleanup(self._disarm_claude_link_on_quit,
+                                   "disarm_claude_link")
+        lifecycle.install_appkit_termination_observer()
 
     def _resolve_port(self, label: str, port: int) -> int:
         """If `port` is taken, ask the user whether to switch to an
