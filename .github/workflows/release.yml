@@ -8,9 +8,9 @@
 #     the GitHub Release with that DMG attached — all in this one job.
 #     (A GITHUB_TOKEN-created tag does not fire `on: push: tags`, so the
 #     build can't live in a separate tag-triggered job the way it used to.)
-#   - workflow_dispatch re-runs the same release job against whatever ref
-#     you pick in the UI — the fix for a build/notarize/publish failure on
-#     a version that's already merged, without needing a new bump.
+#   - workflow_dispatch re-runs the same release job, restricted to master,
+#     for retrying a build/notarize/publish failure on a version that's
+#     already merged, without needing a new bump.
 #
 # Reuses scripts/build_app.sh as-is — the only thing CI sets up that the
 # script can't is the `voitta-notary` keychain profile (locally created via
@@ -44,9 +44,18 @@ jobs:
         env:
           BASE: ${{ github.base_ref }}
         run: |
+          set -euo pipefail
           git fetch --no-tags --depth=1 origin "$BASE"
-          old=$(git show "FETCH_HEAD:$VERSION_FILE" | grep -m1 -E '^version = ' | sed -E 's/^version = "([^"]+)"/\1/')
-          new=$(grep -m1 -E '^version = ' "$VERSION_FILE" | sed -E 's/^version = "([^"]+)"/\1/')
+          old=$(git show "FETCH_HEAD:$VERSION_FILE" 2>/dev/null | grep -m1 -E '^version = ' | sed -E 's/^version = "([^"]+)"/\1/' || true)
+          if [ -z "$old" ]; then
+            echo "::error::Could not read a version from $VERSION_FILE at $BASE (file missing or unparsable there)."
+            exit 1
+          fi
+          new=$(grep -m1 -E '^version = ' "$VERSION_FILE" | sed -E 's/^version = "([^"]+)"/\1/' || true)
+          if [ -z "$new" ]; then
+            echo "::error::Could not read a version from $VERSION_FILE on this branch."
+            exit 1
+          fi
           if [ "$old" = "$new" ]; then
             echo "::error::$VERSION_FILE version is still $old - bump it."
             exit 1
@@ -62,24 +71,49 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 45
     permissions:
-      contents: write  # gh release create needs this
+      contents: write  # gh release create/upload needs this
     steps:
       - uses: actions/checkout@v4
+
+      - name: Restrict release job to master
+        # workflow_dispatch lets a maintainer pick any ref in the UI; push
+        # is already filtered to master by the trigger above, so this is a
+        # no-op there. Without this, a stale/recovery branch could get
+        # signed, notarized, and published as a public release.
+        run: |
+          set -euo pipefail
+          if [ "${{ github.ref }}" != "refs/heads/master" ]; then
+            echo "::error::release job only runs against refs/heads/master (got ${{ github.ref }}). Re-dispatch from master."
+            exit 1
+          fi
 
       - name: Resolve version and tag
         id: ver
         run: |
-          version=$(grep -m1 -E '^version = ' "$VERSION_FILE" | sed -E 's/^version = "([^"]+)"/\1/')
+          set -euo pipefail
+          version=$(grep -m1 -E '^version = ' "$VERSION_FILE" | sed -E 's/^version = "([^"]+)"/\1/' || true)
+          if [ -z "$version" ]; then
+            echo "::error::Could not read a version from $VERSION_FILE."
+            exit 1
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
 
-      - name: Skip if already released
+      - name: Skip only if the release already has its DMG
+        # Distinguish "fully released" from "release exists but the DMG
+        # upload never completed" (e.g. a prior run died between creating
+        # the release and attaching the asset). Only the former skips the
+        # build; the latter falls through and re-runs it, then the publish
+        # step below uploads onto the existing release instead of trying
+        # (and failing) to create it again.
         id: gate
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "${{ steps.ver.outputs.tag }}" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "${{ steps.ver.outputs.tag }} is already released; nothing to do."
+          set -euo pipefail
+          TAG="${{ steps.ver.outputs.tag }}"
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null | grep -q '\.dmg$'; then
+            echo "$TAG already has a DMG asset; nothing to do."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -97,6 +131,7 @@ jobs:
           CERT_P12_PASSWORD: ${{ secrets.MACOS_CERT_P12_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
         run: |
+          set -euo pipefail
           KEYCHAIN="$RUNNER_TEMP/build.keychain"
           CERT_PATH="$RUNNER_TEMP/cert.p12"
           echo "$CERT_P12_BASE64" | base64 --decode > "$CERT_PATH"
@@ -124,6 +159,7 @@ jobs:
           SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
           KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
         run: |
+          set -euo pipefail
           KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
           echo "$API_KEY_P8_BASE64" | base64 --decode > "$KEY_PATH"
           # Two profiles needed:
@@ -146,6 +182,7 @@ jobs:
       - name: Setup venv
         if: steps.gate.outputs.skip != 'true'
         run: |
+          set -euo pipefail
           python -m venv .venv
           .venv/bin/pip install -q -r requirements.txt briefcase
 
@@ -154,6 +191,7 @@ jobs:
         env:
           VOITTA_NOTARY_PROFILE: voitta-notary
         run: |
+          set -euo pipefail
           ./scripts/build_app.sh --package \
             --sign "${{ secrets.MACOS_SIGN_IDENTITY }}" \
             --notarize
@@ -162,21 +200,32 @@ jobs:
         if: steps.gate.outputs.skip != 'true'
         id: dmg
         run: |
+          set -euo pipefail
           DMG=$(ls -1 dist/*.dmg | head -1)
           test -n "$DMG"
           echo "path=$DMG" >> "$GITHUB_OUTPUT"
 
       - name: Verify Gatekeeper acceptance
         if: steps.gate.outputs.skip != 'true'
-        run: spctl -a -vv --type install "${{ steps.dmg.outputs.path }}"
+        run: |
+          set -euo pipefail
+          spctl -a -vv --type install "${{ steps.dmg.outputs.path }}"
 
       - name: Tag and publish GitHub Release
         if: steps.gate.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ steps.ver.outputs.tag }}" \
-            --title "Voitta Desktop ${{ steps.ver.outputs.tag }}" \
-            --generate-notes \
-            --target "$GITHUB_SHA" \
-            "${{ steps.dmg.outputs.path }}"
+          set -euo pipefail
+          TAG="${{ steps.ver.outputs.tag }}"
+          DMG="${{ steps.dmg.outputs.path }}"
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$TAG exists without its DMG; uploading onto it."
+            gh release upload "$TAG" "$DMG" --clobber -R "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" \
+              --title "Voitta Desktop $TAG" \
+              --generate-notes \
+              --target "$GITHUB_SHA" \
+              "$DMG"
+          fi
