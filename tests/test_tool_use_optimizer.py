@@ -1,10 +1,10 @@
-"""Tests for the tool_use pair-collapser — focused on the two things that can
-silently break it in production:
+"""Tests for the tool_use argument truncator — focused on the two things that
+can silently break it in production:
 
-  1. CONTEXT CORRUPTION — collapsing a tool_use must never orphan its
-     tool_result (or vice versa), never leave a fake-schema tool_use, never drop
-     a message or lose human text, and must stay reconstructable via the stored
-     reference.
+  1. CONTEXT CORRUPTION — truncating a call must keep the tool_use block (real
+     name, id, field names), never orphan a tool_result, never put proxy prose
+     in an assistant text block (the model imitates it), never drop a message
+     or lose human text, and must stay reconstructable via the stored hash.
 
   2. CACHE BEHAVIOR — Claude Code's context is append-only and the proxy
      re-derives the optimized view from scratch every turn. For the Anthropic
@@ -31,9 +31,8 @@ from optimizers.bash_compress import BashCompressor
 from optimizers.image import ImageOptimizer, vt_object_store
 from optimizers.thinking import ThinkingOptimizer
 from optimizers.tool_result import ToolResultOptimizer
-from optimizers.tool_use import PLACEHOLDER_TAG, ToolUseOptimizer
+from optimizers.tool_use import PLACEHOLDER_TAG, ToolUseOptimizer, truncation_marker
 
-NOTE = OptimizerPipeline.PROXY_SYSTEM_NOTE
 KEEP = 5
 MIN_CHARS = 500
 SID = "test-session"
@@ -262,8 +261,8 @@ def test_idempotent():
 
 
 def test_roundtrip_recoverable():
-    """Every collapsed pair leaves a hash that resolves to the original
-    {tool_use, tool_result} in vt_object_store — nothing is destroyed."""
+    """Every truncated call leaves a hash that resolves to the original
+    tool_use block in vt_object_store — nothing is destroyed."""
     vt_object_store.clear()
     c = Conversation().human("start")
     originals = []
@@ -274,21 +273,14 @@ def test_roundtrip_recoverable():
         originals.append((cmd, res))
         c.human(f"q{i}")
     body = optimize(c.body())
-    # collect hashes from collapsed text blocks
-    import re
-    hashes = []
-    for _, _, _, b in iter_blocks(body):
-        if b.get("type") == "text":
-            m = re.search(r'get_vt_object\(hash="([0-9a-f]+)"\)', b.get("text", ""))
-            if m:
-                hashes.append(m.group(1))
-    assert hashes, "no collapsed-pair references found"
+    hashes = [h for _, _, _, b in iter_blocks(body) if b.get("type") == "tool_use"
+              for h in _hashes_in(json.dumps(b["input"]))]
+    assert hashes, "no truncated-call references found"
     recovered_cmds = set()
     for h in set(hashes):
         obj = vt_object_store.get(h)
-        assert obj and obj["type"] == "tool_pair", f"hash {h} missing/wrong type"
-        tu = obj["data"]["tool_use"]
-        recovered_cmds.add(tu["input"]["command"])
+        assert obj and obj["type"] == "tool_use", f"hash {h} missing/wrong type"
+        recovered_cmds.add(obj["data"]["input"]["command"])
     for cmd, _ in originals[: -KEEP - 1]:  # the settled ones
         assert cmd in recovered_cmds, f"original call not recoverable: {cmd[:30]}"
 
@@ -323,7 +315,7 @@ def test_human_text_untouched():
 
 
 def test_message_count_preserved():
-    """Collapsing converts blocks in place; it must not drop or add messages."""
+    """Truncation edits blocks in place; it must not drop or add messages."""
     c = Conversation().human("start")
     for i in range(10):
         c.tool_call("Bash", "echo " + "H" * 900, "r" * 500)
@@ -351,9 +343,9 @@ def test_parallel_tool_calls_paired_correctly():
 
 def test_tool_results_lead_their_turn():
     """Anthropic requires every tool_result to be the FIRST block(s) of its user
-    turn. A mixed parallel turn — one long call (collapses to text) beside a short
-    call (stays a tool_result) — must not leave the text ref ahead of the surviving
-    tool_result. This is the production 400 ('tool_results must lead the turn')."""
+    turn. Nothing here converts a tool_result into text any more, but the
+    invariant is the production 400 ('tool_results must lead the turn'), so
+    keep asserting it on a mixed parallel turn."""
     c = Conversation().human("start")
     for i in range(8):
         # long call (will collapse -> text) + short sibling (stays tool_result)
@@ -403,118 +395,84 @@ def test_file_tools_never_collapsed():
              if b.get("type") == "tool_use" and b.get("name") == "Edit"]
     assert len(edits) == 10, f"Edit calls were wrongly collapsed: {len(edits)}/10 survive"
 
+def _hashes_in(text):
+    import re
+    return re.findall(r'get_vt_object\(hash=\\?"([0-9a-f]+)\\?"\)', text)
 
-def _placeholder_texts(body):
-    return [b["text"] for _, _, _, b in iter_blocks(body)
-            if b.get("type") == "text" and b["text"].startswith(PLACEHOLDER_TAG)]
+def _aged(c):
+    """Push everything so far past the keep window."""
+    for t in range(KEEP + 1):
+        c.assistant_text(f"ok {t}")
+        c.human(f"q{t}")
+    return optimize(c.body())
 
-def _note_blocks(body):
-    system = body.get("system")
-    if isinstance(system, str):
-        return [system] if system == NOTE else []
-    return [b for b in (system or []) if isinstance(b, dict) and b.get("text") == NOTE]
+def test_truncated_call_keeps_block_and_schema():
+    """An old long call stays a tool_use with its real name, id and field
+    names; only the long string is cut to a prefix plus the marker."""
+    c = Conversation().human("start")
+    cmd = "grep -n saveThread src/app/api/chat/route.ts && " + "X" * 900
+    c.tool_call("Bash", cmd, "res")
+    body = _aged(c)
+    calls = [b for _, _, _, b in iter_blocks(body) if b.get("type") == "tool_use"]
+    assert len(calls) == 1
+    b = calls[0]
+    assert b["name"] == "Bash" and b["id"] == "toolu_0001"
+    assert list(b["input"].keys()) == ["command"]
+    v = b["input"]["command"]
+    assert v.startswith(cmd[:120]), v
+    hs = _hashes_in(v)
+    assert len(hs) == 1 and v.endswith(truncation_marker(hs[0])), v
+    assert len(v) < 300, len(v)
+    assert vt_object_store[hs[0]]["data"]["input"]["command"] == cmd
 
-def test_placeholder_wording_names_proxy_and_forbids_copying():
-    """The assistant-side placeholder must say the proxy wrote it and tell the
-    model not to imitate it — that text sits where the model's own tool call
-    used to be, and models pattern-complete it as prose."""
+def test_no_proxy_text_in_any_assistant_text_block():
+    """The point of the design: proxy prose never appears as assistant text,
+    where the model would imitate it. It lives only inside tool_use strings."""
     c = Conversation().human("start")
     for i in range(8):
-        c.tool_call("Bash", f"cmd {i} " + "D" * 900, f"res {i}")
+        c.tool_call("Bash", f"cmd {i} " + "D" * 900, f"res {i} " + "E" * 3000,
+                    parallel=[("Bash", "ls", "tiny")])
         c.human(f"q{i}")
     body = optimize(c.body())
-    texts = _placeholder_texts(body)
-    assistant_texts = [b["text"] for _, _, role, b in iter_blocks(body)
-                       if role == "assistant" and b.get("type") == "text"
-                       and b["text"].startswith(PLACEHOLDER_TAG)]
-    assert assistant_texts, "no assistant-side placeholder produced"
-    for t in assistant_texts:
-        assert "Do not write text like this" in t, t
-        assert "get_vt_object(hash=" in t, t
-        assert len(t) < 220, f"placeholder too long ({len(t)}): {t}"
-    assert all(t.startswith(PLACEHOLDER_TAG) for t in texts)
+    for _, _, role, b in iter_blocks(body):
+        if b.get("type") == "text":
+            assert PLACEHOLDER_TAG not in b["text"] or role == "user", b
+        if role == "assistant":
+            assert b.get("type") != "text" or PLACEHOLDER_TAG not in b["text"]
+    # and the long results were still referenced by ToolResultOptimizer
+    settled_results = [b for mi, _, _, b in iter_blocks(body)
+                       if b.get("type") == "tool_result" and mi < 4]
+    assert any(isinstance(b.get("content"), str) and "get_vt_object" in b["content"]
+               for b in settled_results), "long results not referenced"
 
-def test_system_note_only_when_placeholders_present():
-    """The proxy note is appended to the system prompt iff this request
-    carries a tool call/result placeholder."""
-    # Below threshold: nothing collapsed -> no note.
+def test_nested_and_short_strings():
+    """Strings are cut wherever they sit in the input; short strings and
+    non-string values are untouched; a call whose bulk is not in strings is
+    left whole rather than mangled."""
     c = Conversation().human("start")
-    for i in range(2):
-        c.tool_call("Bash", f"cmd {i} " + "D" * 900, f"res {i}")
-        c.human(f"q{i}")
-    body = optimize(c.body())
-    assert not _placeholder_texts(body)
-    assert not _note_blocks(body), "note injected without any placeholder"
-    assert body["system"] == [{"type": "text", "text": "You are a coding agent."}]
+    big = {"items": [{"id": i, "note": "n" * 700} for i in range(2)],
+           "opts": {"flag": True, "label": "short", "depth": 3}}
+    c.tool_call("mcp__x__do", big, "ok")
+    c.tool_call("mcp__x__list", {"ids": list(range(400))}, "ok")     # no strings
+    body = _aged(c)
+    calls = {b["name"]: b for _, _, _, b in iter_blocks(body) if b.get("type") == "tool_use"}
+    do = calls["mcp__x__do"]["input"]
+    assert do["opts"] == big["opts"]
+    assert [it["id"] for it in do["items"]] == [0, 1]
+    assert all(len(it["note"]) < 300 and PLACEHOLDER_TAG in it["note"] for it in do["items"])
+    assert calls["mcp__x__list"]["input"] == {"ids": list(range(400))}
 
-    # Above threshold: collapsed -> exactly one note, appended last.
-    for i in range(2, 9):
-        c.tool_call("Bash", f"cmd {i} " + "D" * 900, f"res {i}")
-        c.human(f"q{i}")
-    body = optimize(c.body())
-    assert _placeholder_texts(body)
-    assert len(_note_blocks(body)) == 1
-    assert body["system"][-1]["text"] == NOTE
-    assert "cache_control" not in body["system"][-1]
-    assert body["system"][0] == {"type": "text", "text": "You are a coding agent."}
-
-    # Only short calls with long results: ToolResultOptimizer places its own
-    # (user-side) placeholder, and that also warrants the note.
-    c2 = Conversation().human("start")
-    for i in range(9):
-        c2.tool_call("Bash", f"short {i}", f"res {i} " + "E" * 3000)
-        c2.human(f"q{i}")
-    body = optimize(c2.body())
-    assert len(_note_blocks(body)) == 1
-
-    # Pipeline disabled: system untouched even on a long conversation.
-    off = make_pipeline()
-    off.enabled = False
-    body = optimize(c.body(), pipeline=off)
-    assert not _note_blocks(body)
-
-def test_system_note_preserves_client_cache_markers_and_string_system():
-    """Client cache_control on system blocks must survive, and a string
-    system prompt must be promoted to blocks with the note last."""
+def test_savings_recorded_per_call():
     c = Conversation().human("start")
-    for i in range(9):
-        c.tool_call("Bash", f"cmd {i} " + "D" * 900, f"res {i}")
-        c.human(f"q{i}")
-    raw = c.body()
-    raw["system"] = [
-        {"type": "text", "text": "A"},
-        {"type": "text", "text": "B", "cache_control": {"type": "ephemeral"}},
-    ]
-    body = optimize(raw)
-    assert body["system"][:2] == raw["system"]
-    assert body["system"][2] == {"type": "text", "text": NOTE}
+    c.tool_call("Bash", "a " + "D" * 900, "r")
+    _aged(c)
+    p = make_pipeline()
+    body = optimize(c.body(), p)
+    tu = next(o for o in p.optimizers if isinstance(o, ToolUseOptimizer))
+    assert set(tu.last_stripped_ids) == {"toolu_0001"}
+    assert 600 < tu.last_stripped_ids["toolu_0001"] < 900
 
-    raw = c.body()
-    raw["system"] = "plain string prompt"
-    body = optimize(raw)
-    assert body["system"] == [{"type": "text", "text": "plain string prompt"},
-                              {"type": "text", "text": NOTE}]
 
-    raw = c.body()
-    del raw["system"]
-    body = optimize(raw)
-    assert body["system"] == [{"type": "text", "text": NOTE}]
-
-def test_system_note_byte_frozen_across_turns():
-    """Once present, the system prompt (note included) must be byte-identical
-    turn over turn — it sits inside the cached prefix."""
-    c = Conversation().human("start")
-    seen = []
-    for t in range(16):
-        c.tool_call("Bash", f"run {t} " + "Z" * 900, f"res {t}")
-        c.human(f"t{t}")
-        body = optimize(c.body())
-        if _note_blocks(body):
-            seen.append(json.dumps(_strip_cc(body["system"]), sort_keys=True))
-    assert len(seen) >= 8, "note never appeared"
-    assert len(set(seen)) == 1, "system prompt drifted after the note appeared"
-
-# ───────────────────────────────── runner ─────────────────────────────────
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = failed = 0

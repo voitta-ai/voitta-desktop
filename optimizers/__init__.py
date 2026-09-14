@@ -315,23 +315,6 @@ class OptimizerPipeline(Middleware):
             merged.update(o.last_stripped_msg_indices)
         return merged
 
-    # Appended to the system prompt only on requests where a tool call/result
-    # pair was actually replaced by placeholder text. Without it, models learn
-    # the placeholder from the assistant turns and start *writing* it instead
-    # of issuing tool calls (seen with Fable 5.1 in long sessions: the model
-    # emitted "[Referenced tool call: Write …]" as prose and ended its turn).
-    # Byte-stable on purpose — it sits inside the cached prefix.
-    PROXY_SYSTEM_NOTE = (
-        "This request passes through the Voitta context-optimizing proxy. In older "
-        "turns, some tool calls and their results have been replaced by bracketed "
-        "text blocks that start with \"[voitta-proxy:\". The proxy wrote those, not "
-        "you. Never write text like that yourself: when you need a tool, always "
-        "issue a real tool call and wait for its result. If you need a replaced "
-        "call or result, retrieve it with get_vt_object and the hash shown."
-    )
-    # Optimizers whose placeholders the note describes.
-    _PLACEHOLDER_CHART_KEYS = frozenset({"tool_use", "tool_result"})
-
     # Minimum turns before we inject a cache breakpoint
     CACHE_BP_MIN_TURNS = 4
     # Anthropic's hard limit on cache_control blocks per request. Claude Code
@@ -492,47 +475,8 @@ class OptimizerPipeline(Middleware):
             sum(self.stripped_msg_indices.values())
         )
 
-        # Tell the model about the placeholders — but only when this request
-        # actually carries some. Must precede the breakpoint injection so the
-        # note lands inside the cached prefix.
-        request = self._inject_system_note(request)
-
         # Inject cache breakpoint only when optimization is active
         request = self._inject_cache_breakpoint(request)
-        return request
-
-    def _placeholders_present(self) -> bool:
-        """True if a tool call/result placeholder was written on this request."""
-        return any(
-            o.chart_key in self._PLACEHOLDER_CHART_KEYS and o.last_stripped_ids
-            for o in self.optimizers
-        )
-
-    def _inject_system_note(self, request: ProxyRequest) -> ProxyRequest:
-        """Append PROXY_SYSTEM_NOTE as the last system block.
-
-        Appended after the client's own blocks so their cache_control
-        breakpoints (and the prefix they cover) are untouched; the note itself
-        carries no cache_control. A string system prompt is promoted to a
-        block list. No-op unless a placeholder was written this request.
-        """
-        if not self._placeholders_present():
-            return request
-        body = request.json
-        if not body:
-            return request
-        system = body.get("system")
-        if isinstance(system, str):
-            blocks = [{"type": "text", "text": system}] if system else []
-        elif isinstance(system, list):
-            blocks = list(system)
-        else:
-            blocks = []
-        note = {"type": "text", "text": self.PROXY_SYSTEM_NOTE}
-        if any(isinstance(b, dict) and b.get("text") == note["text"] for b in blocks):
-            return request  # already present (defensive; never expected)
-        blocks.append(note)
-        request.json = dict(body, system=blocks)
         return request
 
     async def on_response_done(self, request: ProxyRequest, response) -> None:

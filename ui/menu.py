@@ -146,8 +146,6 @@ class VoittaDesktopApp(
         opt_cfg = self._config.get("optimizer", {})
         # BashCompressor runs first so other Bash-handling optimizers see
         # already-compressed output (no double accounting).
-        # tool_use (pair-collapser) before tool_result so a long-call /
-        # long-response pair is collapsed once, not referenced twice.
         self._optimizer_pipeline = OptimizerPipeline(
             [self._bash_compressor, self._tool_use_optimizer, self._tool_result_optimizer,
              self._image_optimizer, self._thinking_optimizer],

@@ -73,6 +73,10 @@ def _configure_logging(log_dir: Path) -> None:
     # Cancel were indistinguishable in the log — while all three lead to very
     # different tool exposure.
     logging.getLogger("voitta-desktop.tool_gate").setLevel(logging.INFO)
+    # Per-request savings and cache-breakpoint placement are logged at INFO
+    # and were silently dropped by the WARNING root — the only view of what
+    # went upstream, since the request logger records the *inbound* body.
+    logging.getLogger("voitta-desktop.optimizers").setLevel(logging.INFO)
     # Silence MCP SDK post-cancellation SSE spam.
     logging.getLogger("mcp.client.streamable_http").setLevel(logging.CRITICAL)
 

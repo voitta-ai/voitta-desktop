@@ -152,9 +152,6 @@ class AppBase:
         self._optimizer_pipeline = OptimizerPipeline(
             [
                 self._bash_compressor,
-                # tool_use (pair-collapser) before tool_result so a long-call /
-                # long-response pair is collapsed once rather than the response
-                # being referenced first.
                 self._tool_use_optimizer,
                 self._tool_result_optimizer,
                 self._image_optimizer,
