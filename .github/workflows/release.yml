@@ -1,9 +1,16 @@
 # Signed + notarized + stapled DMG, attached to a GitHub Release.
 #
-# Triggered by pushing a v* tag (e.g. `git tag v0.1.1 && git push --tags`).
-# The tag's version (minus leading `v`) is patched into pyproject.toml at
-# build time, so briefcase produces a correctly-named DMG without requiring
-# a manual version bump commit.
+# pyproject.toml's `version` is the single source of truth (no more
+# tag-patches-pyproject at build time):
+#   - A PR that changes shipped files must bump it (job `version-bumped`).
+#   - A push to master reads it, and if `v<version>` isn't tagged yet, tags
+#     the pushed commit, builds/signs/notarizes/staples the DMG, and creates
+#     the GitHub Release with that DMG attached — all in this one job.
+#     (A GITHUB_TOKEN-created tag does not fire `on: push: tags`, so the
+#     build can't live in a separate tag-triggered job the way it used to.)
+#   - workflow_dispatch re-runs the same release job against whatever ref
+#     you pick in the UI — the fix for a build/notarize/publish failure on
+#     a version that's already merged, without needing a new bump.
 #
 # Reuses scripts/build_app.sh as-is — the only thing CI sets up that the
 # script can't is the `voitta-notary` keychain profile (locally created via
@@ -12,40 +19,79 @@ name: release
 
 on:
   push:
-    tags: ['v*']
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Tag to release (e.g. v0.1.1). Must already exist as a git tag.'
-        required: true
+    branches: [master]
+  pull_request:
+    branches: [master]
+    paths-ignore:
+      - '.github/**'
+      - '**.md'
+  workflow_dispatch: {}
 
 permissions:
-  contents: write  # gh release create needs this
+  contents: read
+
+env:
+  VERSION_FILE: pyproject.toml
 
 jobs:
-  release:
-    runs-on: macos-14
-    timeout-minutes: 45
+  version-bumped:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Version must advance
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE"
+          old=$(git show "FETCH_HEAD:$VERSION_FILE" | grep -m1 -E '^version = ' | sed -E 's/^version = "([^"]+)"/\1/')
+          new=$(grep -m1 -E '^version = ' "$VERSION_FILE" | sed -E 's/^version = "([^"]+)"/\1/')
+          if [ "$old" = "$new" ]; then
+            echo "::error::$VERSION_FILE version is still $old - bump it."
+            exit 1
+          fi
+          if [ "$(printf '%s\n%s\n' "$old" "$new" | sort -V | head -1)" != "$old" ]; then
+            echo "::error::$new does not advance past $old."
+            exit 1
+          fi
+          echo "$old -> $new"
+
+  release:
+    if: github.event_name != 'pull_request'
+    runs-on: macos-14
+    timeout-minutes: 45
+    permissions:
+      contents: write  # gh release create needs this
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version and tag
+        id: ver
+        run: |
+          version=$(grep -m1 -E '^version = ' "$VERSION_FILE" | sed -E 's/^version = "([^"]+)"/\1/')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if already released
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ steps.ver.outputs.tag }}" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "${{ steps.ver.outputs.tag }} is already released; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: actions/setup-python@v5
+        if: steps.gate.outputs.skip != 'true'
         with:
           python-version: '3.12'
 
-      - name: Sync version from tag
-        # Tag v0.1.1 → version "0.1.1" in pyproject.toml. Done in-runner so
-        # the repo doesn't need a tag-bump commit. BSD sed (-i '') is the
-        # macOS-runner flavour.
-        run: |
-          TAG="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
-          VERSION="${TAG#v}"
-          /usr/bin/sed -i '' -E "s/^version = \"[^\"]+\"/version = \"${VERSION}\"/" pyproject.toml
-          grep '^version' pyproject.toml
-
       - name: Import Developer ID certificate
+        if: steps.gate.outputs.skip != 'true'
         env:
           CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
           CERT_P12_PASSWORD: ${{ secrets.MACOS_CERT_P12_PASSWORD }}
@@ -70,6 +116,7 @@ jobs:
           security find-identity -v -p codesigning "$KEYCHAIN"
 
       - name: Configure notarytool credentials
+        if: steps.gate.outputs.skip != 'true'
         env:
           API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
           API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
@@ -97,11 +144,13 @@ jobs:
           rm -f "$KEY_PATH"
 
       - name: Setup venv
+        if: steps.gate.outputs.skip != 'true'
         run: |
           python -m venv .venv
           .venv/bin/pip install -q -r requirements.txt briefcase
 
       - name: Build, sign, notarize, staple
+        if: steps.gate.outputs.skip != 'true'
         env:
           VOITTA_NOTARY_PROFILE: voitta-notary
         run: |
@@ -110,6 +159,7 @@ jobs:
             --notarize
 
       - name: Locate DMG
+        if: steps.gate.outputs.skip != 'true'
         id: dmg
         run: |
           DMG=$(ls -1 dist/*.dmg | head -1)
@@ -117,14 +167,16 @@ jobs:
           echo "path=$DMG" >> "$GITHUB_OUTPUT"
 
       - name: Verify Gatekeeper acceptance
+        if: steps.gate.outputs.skip != 'true'
         run: spctl -a -vv --type install "${{ steps.dmg.outputs.path }}"
 
-      - name: Publish GitHub Release
+      - name: Tag and publish GitHub Release
+        if: steps.gate.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
-          gh release create "$TAG" \
-            --title "Voitta Desktop $TAG" \
+          gh release create "${{ steps.ver.outputs.tag }}" \
+            --title "Voitta Desktop ${{ steps.ver.outputs.tag }}" \
             --generate-notes \
+            --target "$GITHUB_SHA" \
             "${{ steps.dmg.outputs.path }}"
