@@ -20,10 +20,15 @@ logger = logging.getLogger("voitta-desktop.cache_sim")
 class CacheSimulator(Middleware):
     """Simulates Anthropic's content-block-level prefix caching."""
 
-    def __init__(self):
-        # session_id -> previous request's block sequence
+    def __init__(self, tracker=None):
+        # Optional ConversationTracker: lets us key state by thread
+        # (session + first-message identity) instead of bare session id —
+        # otherwise a Task sub-agent's requests, which share the session
+        # header, interleave with the main thread's and zero the match.
+        self._tracker = tracker
+        # conversation id -> previous request's block sequence
         self._prev_blocks: dict[str, list[str]] = {}
-        # session_id -> list of per-turn cache data dicts
+        # conversation id -> list of per-turn cache data dicts
         self.history: dict[str, list[dict]] = {}
 
     def get_history(self, session_id: str) -> list[dict]:
@@ -46,6 +51,10 @@ class CacheSimulator(Middleware):
         sid = request.headers.get("X-Claude-Code-Session-Id", "")
         if not sid:
             return request
+        if self._tracker is not None:
+            # Tracker runs earlier in the middleware chain, so the thread is
+            # already registered; this is a read-only lookup.
+            sid = self._tracker.peek_thread_id(sid, body)
 
         # Build ordered block sequence: tools → system → messages
         blocks = _extract_blocks(body)

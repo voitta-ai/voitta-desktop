@@ -164,7 +164,7 @@ class AppBase:
             haiku_only=bool(opt_cfg.get("haiku_only", False)),
             tracker=self._tracker,
         )
-        self._cache_sim = CacheSimulator()
+        self._cache_sim = CacheSimulator(tracker=self._tracker)
         self._proxy = AnthropicProxy(
             middlewares=[
                 self._request_logger,

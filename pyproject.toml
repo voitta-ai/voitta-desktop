@@ -7,7 +7,7 @@
 [tool.briefcase]
 project_name = "Voitta Desktop"
 bundle = "ai.voitta"
-version = "0.1.13"
+version = "0.1.14"
 url = "https://voitta.ai"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
@@ -71,7 +71,13 @@ requires = [
     "aiohttp>=3.9.0",
 
     # MCP unified proxy
-    "fastmcp>=2.10.0",
+    # <4: fastmcp 4 moved to the renamed "httpx2" package and mcp 2.x; the
+    # code (and the dev venv) is written against fastmcp 3 / httpx. A clean
+    # build on 2026-09-13 resolved 4.0.3 and the MCP proxy died on import.
+    "fastmcp>=2.10.0,<4",
+    # mcpproxy/server.py imports httpx directly; declare it rather than rely
+    # on it arriving transitively through fastmcp.
+    "httpx>=0.27",
 
     # OAuth2
     "msal>=1.28.0",
@@ -84,6 +90,11 @@ requires = [
     "python-dotenv>=1.0.0",
     "PyYAML>=6.0",
     "Pillow>=10.0",
+
+    # Anthropic serves error bodies (and can serve any response) with
+    # Content-Encoding: br — middleware/base.decompress() hard-requires
+    # brotli for those, and without it every 400 dump is unreadable noise.
+    "brotli>=1.1.0",
 
     # CA bundle — briefcase's standalone Python ships no system root CAs,
     # so aiohttp's TLS handshake to api.anthropic.com fails with

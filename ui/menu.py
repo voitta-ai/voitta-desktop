@@ -29,8 +29,6 @@ from AppKit import (
     NSWindow, NSWindowStyleMaskTitled, NSWindowStyleMaskClosable,
     NSScreen,
 )
-from WebKit import WKWebView
-
 from app_base import AppBase
 from config import (
     load_config, save_config, migrate_from_legacy, apps_for_backend,
@@ -45,15 +43,14 @@ from optimizers.thinking import ThinkingOptimizer
 from optimizers.tool_result import ToolResultOptimizer
 from optimizers.tool_use import ToolUseOptimizer
 from proxy import AnthropicProxy
-from ui.chart import generate_chart_html
 from ui._native import (
     _notify, _FocusTrigger, _InfoTicker, _is_port_free, _grab_free_port,
     _show_modal, _SettingsTitleObserver,
 )
 from ui.auth_flows import AuthFlowsMixin
-from ui.conv_menu import ConvMenuMixin
 from ui.menu_builder import MenuBuilderMixin
 from ui.mcp_lifecycle import MCPLifecycleMixin, OAUTH_REDIRECT_PORT
+from ui.session_explorer import SessionExplorerMixin
 from ui.settings_window import SettingsWindowMixin
 
 logger = logging.getLogger("voitta-desktop")
@@ -67,7 +64,7 @@ ICON_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 # ── Main App ─────────────────────────────────────────────────────────────────
 
 class VoittaDesktopApp(
-    AuthFlowsMixin, MCPLifecycleMixin, ConvMenuMixin, MenuBuilderMixin,
+    AuthFlowsMixin, MCPLifecycleMixin, SessionExplorerMixin, MenuBuilderMixin,
     SettingsWindowMixin, rumps.App, AppBase,
 ):
     """The macOS menu bar driver.
@@ -157,7 +154,7 @@ class VoittaDesktopApp(
             enabled=bool(opt_cfg.get("enabled", True)),
             haiku_only=bool(opt_cfg.get("haiku_only", False)),
         )
-        self._cache_sim = CacheSimulator()
+        self._cache_sim = CacheSimulator(tracker=self._tracker)
         self._proxy = AnthropicProxy(
             middlewares=[self._request_logger, self._tracker, self._optimizer_pipeline, self._cache_sim],
             port=self.llm_proxy_port,
@@ -169,7 +166,6 @@ class VoittaDesktopApp(
 
         # Build menu
         self._menu_items = {}
-        self._conv_menus: dict[str, rumps.MenuItem] = {}
         self._build_menu()
         self._update_auth_state()
         self._install_edit_shortcuts()
@@ -364,7 +360,13 @@ class VoittaDesktopApp(
     # class no longer owns loops or threads of its own.
 
     def notify_update(self) -> None:
-        """No-op — Mac UI polls on a 2-second timer instead."""
+        """A proxied response just completed (runtime thread). The menu still
+        refreshes on its 2-second timer; the Session Explorer window, when
+        open, gets an event push so it updates without polling Python."""
+        try:
+            self._explorer_ping()
+        except Exception:
+            pass
 
     # ── Menu bar title + icon ────────────────────────────────────────────────
 
@@ -376,7 +378,7 @@ class VoittaDesktopApp(
     @rumps.timer(2)
     def _refresh_menu(self, _timer):
         self._update_title()
-        self._update_conversations()
+        self._update_conv_count()
 
     def _update_title(self):
         try:
@@ -392,7 +394,10 @@ class VoittaDesktopApp(
         font = NSFont.menuBarFontOfSize_(0)
 
         convs = self._tracker.get_conversations_sorted()
-        num_convs = sum(1 for c in convs if c.turns)
+        num_convs = sum(
+            1 for c in convs
+            if c.turns and not c.parent_id and not c.id.startswith("anon-")
+        )
         alpha = 1.0 if self._proxy_running else 0.4
 
         # Minimal footprint: conversation count + dog only. Savings and the
@@ -484,7 +489,8 @@ class VoittaDesktopApp(
         alert.setInformativeText_(
             "Voitta Desktop sits in your menu bar.\n\n"
             "Auth section: click providers to connect/disconnect.\n"
-            "Conversations section: see live Claude Code sessions.\n\n"
+            "Conversations: click '<N> conversations' to open the Session\n"
+            "Explorer — per-conversation stats and full transcripts.\n\n"
             f"MCP proxy: http://127.0.0.1:{self.mcp_proxy_port}/mcp\n"
             + "\n".join(mcp_lines) + "\n\n"
             f"LLM proxy: http://127.0.0.1:{self.llm_proxy_port}\n"

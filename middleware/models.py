@@ -115,7 +115,8 @@ class BodyBreakdown:
 
 @dataclass
 class Conversation:
-    """A tracked conversation (Claude Code session)."""
+    """A tracked conversation — a Claude Code session's main thread, or one
+    sub-agent thread within a session (``parent_id`` set)."""
     id: str
     label: str
     fingerprint: str
@@ -124,6 +125,17 @@ class Conversation:
     turns: list[Turn] = field(default_factory=list)
     breakdown: BodyBreakdown | None = None
     model: str = ""
+    # Thread identity: sub-agent threads point at their session's main
+    # conversation and (once matched against the on-disk transcript)
+    # carry the transcript's agent id for Explorer lookup.
+    parent_id: str = ""
+    agent_id: str = ""
+    first_seed: str = ""  # first user message text (head), for agent matching
+    # Last request's raw system/tools — the context overhead the Session
+    # Explorer shows in full. Transcripts don't contain these (they're
+    # request-body fields, not messages), so the proxy is the only source.
+    system_raw: list | str | None = None
+    tools_raw: list | None = None
 
     @property
     def request_count(self) -> int:

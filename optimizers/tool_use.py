@@ -10,13 +10,20 @@ placeholder object — that invents a non-existent tool schema the model can lea
 and imitate. Instead, when a call's arguments are large, we collapse the **whole
 pair** (the ``tool_use`` block and its matching ``tool_result``) into plain text:
 
-    assistant: [tool_use Bash {...big...}]   ->  assistant: "[Referenced tool call …]"
-    user:      [tool_result for that call]   ->  user:      "[Referenced result … get_vt_object(hash)]"
+    assistant: [tool_use Bash {...big...}]   ->  assistant: "[voitta-proxy: Bash call … replaced …]"
+    user:      [tool_result for that call]   ->  user:      "[voitta-proxy: result of the Bash call above, get_vt_object(hash)]"
 
 Both become ordinary text blocks, so the tool_use/tool_result pairing constraint
 is preserved (neither is left orphaned) and no fake tool schema is introduced.
 The original ``{tool_use, tool_result}`` JSON is stored by hash in
 ``vt_object_store`` and retrievable via ``get_vt_object``.
+
+The assistant-side text sits exactly where the model's own tool call used to
+be, and models imitate it (Fable 5.1 wrote the old "[Referenced tool call …]"
+line as prose and ended its turn instead of calling Write). So the wording
+says outright that the proxy wrote it and must not be copied, and the pipeline
+appends a matching system note whenever a placeholder is present
+(``OptimizerPipeline.PROXY_SYSTEM_NOTE``).
 
 Policy (composes with ToolResultOptimizer):
   * short call + short response  -> left inline (nobody touches it)
@@ -38,6 +45,28 @@ TOOL_USE_REF_MIN_CHARS = 500
 
 # File tools are handled separately (see dedup study); leave their pairs inline.
 _SKIP_TOOLS = frozenset({"Read", "Write", "Edit", "NotebookEdit"})
+
+# Every placeholder starts with this tag so the system note (see
+# OptimizerPipeline.PROXY_SYSTEM_NOTE) can name it, and so the model can tell
+# proxy-written text from its own. Keep the wording byte-stable: the settled
+# prefix of every live session is re-derived each turn and must not drift.
+PLACEHOLDER_TAG = "[voitta-proxy:"
+
+
+def call_placeholder(name: str, h: str) -> str:
+    """Assistant-side text that stands in for a collapsed tool_use block.
+
+    Sits exactly where the model's own tool call used to be, so it must say
+    plainly that the proxy wrote it and that the model must not imitate it.
+    """
+    return (f'{PLACEHOLDER_TAG} {name} call and its result were replaced here to '
+            f'save context. get_vt_object(hash="{h}") restores them. Do not write '
+            f'text like this; issue real tool calls.]')
+
+
+def result_placeholder(name: str, h: str) -> str:
+    """User-side text that stands in for the matching tool_result block."""
+    return f'{PLACEHOLDER_TAG} result of the {name} call above, get_vt_object(hash="{h}")]'
 
 
 def _input_chars(inp) -> int:
@@ -128,9 +157,7 @@ class ToolUseOptimizer(BaseOptimizer):
                 acontent = _content_list(mi)
                 acontent[bi] = {
                     "type": "text",
-                    "text": (f"[Referenced tool call: {name} — arguments and result "
-                             f'omitted to save context. Retrieve the original call and '
-                             f'response via get_vt_object(hash="{h}").]'),
+                    "text": call_placeholder(name, h),
                 }
 
                 result_chars = 0
@@ -141,8 +168,7 @@ class ToolUseOptimizer(BaseOptimizer):
                     result_chars = _input_chars(orig.get("content")) if isinstance(orig, dict) else 0
                     rcontent[rbi] = {
                         "type": "text",
-                        "text": (f'[Referenced tool result for the {name} call above — '
-                                 f'get_vt_object(hash="{h}")]'),
+                        "text": result_placeholder(name, h),
                     }
 
                 tokens_removed += (call_chars + result_chars) // 4

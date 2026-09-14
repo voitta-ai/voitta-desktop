@@ -12,34 +12,37 @@ from .models import Conversation, Turn
 from .parsing import (
     parse_turns, compute_breakdown, extract_label, parse_sse_blocks,
 )
+from .transcripts import TranscriptStore
 
 logger = logging.getLogger("voitta-desktop.tracker")
 
+# The first user message after /compact starts with this fixed phrase —
+# it marks a main-thread continuation, not a new (sub-agent) thread.
+_COMPACT_PREFIX = "This session is being continued from a previous conversation"
+
 
 class ConversationTracker(Middleware):
-    """Tracks conversations with detailed content block history."""
+    """Tracks conversations with detailed content block history.
 
-    def __init__(self):
+    One Claude Code session can carry several independent API threads: the
+    main conversation plus one per Task sub-agent, all (potentially) sharing
+    the same X-Claude-Code-Session-Id header. Each thread re-sends its own
+    full history every call, so its first user message is a stable identity.
+    Threads are therefore keyed by (session, first-message hash); collapsing
+    them onto the session id alone made whichever thread answered last
+    overwrite the others' turns.
+    """
+
+    def __init__(self, transcripts: TranscriptStore | None = None):
         self.conversations: dict[str, Conversation] = {}
         self._pending: dict[int, dict] = {}
+        # session id -> {first-message hash -> conversation id}
+        self._threads: dict[str, dict[str, str]] = {}
+        self.transcripts = transcripts or TranscriptStore()
 
-    def _session_id(self, request: ProxyRequest, body: dict) -> str:
-        """Identify the conversation this request belongs to.
-
-        Claude Code sends X-Claude-Code-Session-Id, but the proxy is a plain
-        Anthropic endpoint and any other client may not. Raising here turned
-        a missing header into a 502 for the caller — the proxy refusing to
-        forward a request it could have forwarded fine, just without grouping.
-
-        Fall back to the first user message, whose text is stable for the
-        life of a conversation because every turn re-sends the full history.
-        Clients that send neither share one bucket, which costs accurate
-        grouping in the UI and nothing else.
-        """
-        session_id = request.headers.get("X-Claude-Code-Session-Id", "")
-        if session_id:
-            return session_id
-
+    @staticmethod
+    def _first_seed(body: dict) -> str:
+        """Text of the first user message — the thread's stable identity."""
         for message in body.get("messages") or []:
             if message.get("role") != "user":
                 continue
@@ -55,10 +58,73 @@ class ConversationTracker(Middleware):
             else:
                 continue
             if seed:
-                digest = hashlib.sha256(seed[:4096].encode()).hexdigest()[:16]
-                return f"anon-{digest}"
+                return seed[:4096]
+        return ""
 
-        return "anon-unknown"
+    def _resolve_thread(self, request: ProxyRequest, body: dict) -> tuple[str, str, str]:
+        """(conversation id, parent id, agent id) for this request's thread.
+
+        Registers the thread on first sight. The first thread seen for a
+        session claims the bare session id (the main conversation) unless
+        its first message matches a sub-agent transcript; later threads
+        become children (``<sid>#<hash>``) — except a /compact continuation,
+        which is the main thread with a rewritten history and keeps its id.
+        """
+        sid = request.headers.get("X-Claude-Code-Session-Id", "")
+        seed = self._first_seed(body)
+        h = hashlib.sha256(seed.encode()).hexdigest()[:16] if seed else "empty"
+
+        if sid:
+            threads = self._threads.setdefault(sid, {})
+            cid = threads.get(h)
+            if cid is not None:
+                conv = self.conversations.get(cid)
+                return (cid, conv.parent_id if conv else "",
+                        conv.agent_id if conv else "")
+
+            agent_id = self.transcripts.find_agent_by_seed(sid, seed)
+            if agent_id is None and threads and seed.lstrip().startswith(_COMPACT_PREFIX):
+                # Main thread continuing after /compact under a new seed.
+                threads[h] = sid
+                return (sid, "", "")
+            if agent_id is None and not threads:
+                threads[h] = sid  # main conversation
+                return (sid, "", "")
+            cid = f"{sid}#{h[:8]}"
+            threads[h] = cid
+            return (cid, sid, agent_id or "")
+
+        # No session header. Sub-agent calls may arrive header-less — try to
+        # attribute them to a live session via the transcript on disk before
+        # falling back to an anonymous bucket.
+        if seed:
+            for known_sid in list(self._threads.keys()):
+                agent_id = self.transcripts.find_agent_by_seed(known_sid, seed)
+                if agent_id:
+                    threads = self._threads.setdefault(known_sid, {})
+                    cid = threads.get(h)
+                    if cid is None:
+                        cid = f"{known_sid}#{h[:8]}"
+                        threads[h] = cid
+                    return (cid, known_sid, agent_id)
+            digest = hashlib.sha256(seed.encode()).hexdigest()[:16]
+            return (f"anon-{digest}", "", "")
+        return ("anon-unknown", "", "")
+
+    def _session_id(self, request: ProxyRequest, body: dict) -> str:
+        """Conversation id for this request (thread-aware). Kept as the
+        single seam both request and response paths resolve through."""
+        return self._resolve_thread(request, body)[0]
+
+    def peek_thread_id(self, sid: str, body: dict) -> str:
+        """Read-only thread lookup for other middlewares (cache simulator).
+
+        Returns the registered conversation id for this request's thread,
+        or the bare session id when the thread isn't registered (yet).
+        """
+        seed = self._first_seed(body)
+        h = hashlib.sha256(seed.encode()).hexdigest()[:16] if seed else "empty"
+        return self._threads.get(sid, {}).get(h, sid)
 
     async def on_request(self, request: ProxyRequest) -> ProxyRequest:
         path = request.path.split("?")[0]
@@ -71,7 +137,7 @@ class ConversationTracker(Middleware):
         if body.get("max_tokens") == 1:
             return request
 
-        sid = self._session_id(request, body)
+        sid, parent_id, agent_id = self._resolve_thread(request, body)
         now = time.time()
 
         if sid not in self.conversations:
@@ -82,11 +148,20 @@ class ConversationTracker(Middleware):
                 started_at=now,
                 last_active=now,
                 model=body.get("model", ""),
+                parent_id=parent_id,
+                agent_id=agent_id,
+                first_seed=self._first_seed(body)[:1000],
             )
 
         conv = self.conversations[sid]
         conv.last_active = now
         conv.model = body.get("model", conv.model)
+        if conv.parent_id and not conv.agent_id:
+            # The sub-agent's transcript may not have existed when its first
+            # request arrived — retry the attribution (cached, cheap).
+            found = self.transcripts.find_agent_by_seed(conv.parent_id, conv.first_seed)
+            if found:
+                conv.agent_id = found
 
         # Re-run label extraction on every request: Claude Code's explicit
         # {"title": "..."} JSON arrives mid-conversation (not the first turn),
@@ -357,6 +432,11 @@ class ConversationTracker(Middleware):
 
         conv.turns = turns
         conv.breakdown = compute_breakdown(body)
+        # Keep the raw system/tools of the latest request (pre-optimizer —
+        # `body` was captured before the pipeline ran). The Explorer renders
+        # these in full; transcripts never contain them.
+        conv.system_raw = body.get("system")
+        conv.tools_raw = body.get("tools")
         if conv.label == "conversation" and turns:
             from .parsing import _turn_label
             label = _turn_label(turns[0].blocks)
@@ -388,6 +468,10 @@ class ConversationTracker(Middleware):
         data = {
             "id": conv.id,
             "label": conv.label,
+            "parent_id": conv.parent_id,
+            "agent_id": conv.agent_id,
+            "model": conv.model,
+            "last_active": conv.last_active,
             "request_count": conv.request_count,
             "breakdown": {
                 "system_prompt_chars": bd.system_prompt_chars if bd else 0,
@@ -414,6 +498,8 @@ class ConversationTracker(Middleware):
                 "thinking_chars": t.thinking_chars,
                 "input_tokens": t.input_tokens,
                 "output_tokens": t.output_tokens,
+                "cache_read_input_tokens": t.cache_read_input_tokens,
+                "cache_creation_input_tokens": t.cache_creation_input_tokens,
                 "blocks": [
                     {"type": b.block_type.value, "summary": b.summary[:80]}
                     for b in t.blocks

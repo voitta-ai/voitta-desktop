@@ -6,13 +6,13 @@ titles. Host attributes consumed:
 
   self.mcp_proxy_port, self.llm_proxy_port, self._config, self._auth,
   self._optimizer_pipeline, self._noop, self._active_app,
-  self._menu_items, self._conv_menus,
+  self._menu_items, self._tracker,
   self._is_active, self._deauth_app, self._do_auth, self._set_active,
   self._toggle_optimizer, self._show_llm_tools_status, self.show_settings,
-  self.show_about, self.show_help, self._quit.
+  self.show_session_explorer, self.show_about, self.show_help, self._quit.
 
 Sets the host attributes ``self._llm_status``, ``self._optimize_toggle``,
-``self._status_item``, ``self._conv_header`` while building.
+``self._status_item``, ``self._conv_count_item`` while building.
 """
 from __future__ import annotations
 
@@ -110,12 +110,14 @@ class MenuBuilderMixin:
 
         menu_list.append(None)
 
-        # ── Conversations section ────────────────────────────────────────────
-        # Header is always visible; the section sits empty until live
-        # conversations stream in via _update_conversations.
-        self._conv_header = rumps.MenuItem("── Conversations ─────────────────────────")
-        self._conv_header.set_callback(self._noop)
-        menu_list.append(self._conv_header)
+        # ── Conversations ────────────────────────────────────────────────────
+        # A single live-count item. Clicking it opens the Session Explorer
+        # window (sidebar of conversations, Stats + Explorer tabs) — the
+        # per-conversation menu entries this replaces lived in conv_menu.py.
+        self._conv_count_item = rumps.MenuItem(
+            "No conversations yet", callback=self.show_session_explorer
+        )
+        menu_list.append(self._conv_count_item)
 
         menu_list.append(None)
 
@@ -129,9 +131,23 @@ class MenuBuilderMixin:
 
     def _rebuild_menu(self):
         self._menu_items = {}
-        self._conv_menus = {}
         self.menu.clear()
         self._build_menu()
+
+    def _update_conv_count(self):
+        """Refresh the '<N> conversations' menu item title. Counts main
+        (non-anonymous, non-agent) conversations with at least one turn."""
+        item = getattr(self, "_conv_count_item", None)
+        if item is None:
+            return
+        convs = self._tracker.get_conversations_sorted()
+        n = sum(
+            1 for c in convs
+            if c.turns and not c.parent_id and not c.id.startswith("anon-")
+        )
+        title = f"{n} conversation{'s' if n != 1 else ''}" if n else "No conversations yet"
+        if item.title != title:
+            item.title = title
 
     # ── Auth menu helpers ────────────────────────────────────────────────────
 

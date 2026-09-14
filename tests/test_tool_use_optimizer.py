@@ -31,8 +31,9 @@ from optimizers.bash_compress import BashCompressor
 from optimizers.image import ImageOptimizer, vt_object_store
 from optimizers.thinking import ThinkingOptimizer
 from optimizers.tool_result import ToolResultOptimizer
-from optimizers.tool_use import ToolUseOptimizer
+from optimizers.tool_use import PLACEHOLDER_TAG, ToolUseOptimizer
 
+NOTE = OptimizerPipeline.PROXY_SYSTEM_NOTE
 KEEP = 5
 MIN_CHARS = 500
 SID = "test-session"
@@ -402,6 +403,116 @@ def test_file_tools_never_collapsed():
              if b.get("type") == "tool_use" and b.get("name") == "Edit"]
     assert len(edits) == 10, f"Edit calls were wrongly collapsed: {len(edits)}/10 survive"
 
+
+def _placeholder_texts(body):
+    return [b["text"] for _, _, _, b in iter_blocks(body)
+            if b.get("type") == "text" and b["text"].startswith(PLACEHOLDER_TAG)]
+
+def _note_blocks(body):
+    system = body.get("system")
+    if isinstance(system, str):
+        return [system] if system == NOTE else []
+    return [b for b in (system or []) if isinstance(b, dict) and b.get("text") == NOTE]
+
+def test_placeholder_wording_names_proxy_and_forbids_copying():
+    """The assistant-side placeholder must say the proxy wrote it and tell the
+    model not to imitate it — that text sits where the model's own tool call
+    used to be, and models pattern-complete it as prose."""
+    c = Conversation().human("start")
+    for i in range(8):
+        c.tool_call("Bash", f"cmd {i} " + "D" * 900, f"res {i}")
+        c.human(f"q{i}")
+    body = optimize(c.body())
+    texts = _placeholder_texts(body)
+    assistant_texts = [b["text"] for _, _, role, b in iter_blocks(body)
+                       if role == "assistant" and b.get("type") == "text"
+                       and b["text"].startswith(PLACEHOLDER_TAG)]
+    assert assistant_texts, "no assistant-side placeholder produced"
+    for t in assistant_texts:
+        assert "Do not write text like this" in t, t
+        assert "get_vt_object(hash=" in t, t
+        assert len(t) < 220, f"placeholder too long ({len(t)}): {t}"
+    assert all(t.startswith(PLACEHOLDER_TAG) for t in texts)
+
+def test_system_note_only_when_placeholders_present():
+    """The proxy note is appended to the system prompt iff this request
+    carries a tool call/result placeholder."""
+    # Below threshold: nothing collapsed -> no note.
+    c = Conversation().human("start")
+    for i in range(2):
+        c.tool_call("Bash", f"cmd {i} " + "D" * 900, f"res {i}")
+        c.human(f"q{i}")
+    body = optimize(c.body())
+    assert not _placeholder_texts(body)
+    assert not _note_blocks(body), "note injected without any placeholder"
+    assert body["system"] == [{"type": "text", "text": "You are a coding agent."}]
+
+    # Above threshold: collapsed -> exactly one note, appended last.
+    for i in range(2, 9):
+        c.tool_call("Bash", f"cmd {i} " + "D" * 900, f"res {i}")
+        c.human(f"q{i}")
+    body = optimize(c.body())
+    assert _placeholder_texts(body)
+    assert len(_note_blocks(body)) == 1
+    assert body["system"][-1]["text"] == NOTE
+    assert "cache_control" not in body["system"][-1]
+    assert body["system"][0] == {"type": "text", "text": "You are a coding agent."}
+
+    # Only short calls with long results: ToolResultOptimizer places its own
+    # (user-side) placeholder, and that also warrants the note.
+    c2 = Conversation().human("start")
+    for i in range(9):
+        c2.tool_call("Bash", f"short {i}", f"res {i} " + "E" * 3000)
+        c2.human(f"q{i}")
+    body = optimize(c2.body())
+    assert len(_note_blocks(body)) == 1
+
+    # Pipeline disabled: system untouched even on a long conversation.
+    off = make_pipeline()
+    off.enabled = False
+    body = optimize(c.body(), pipeline=off)
+    assert not _note_blocks(body)
+
+def test_system_note_preserves_client_cache_markers_and_string_system():
+    """Client cache_control on system blocks must survive, and a string
+    system prompt must be promoted to blocks with the note last."""
+    c = Conversation().human("start")
+    for i in range(9):
+        c.tool_call("Bash", f"cmd {i} " + "D" * 900, f"res {i}")
+        c.human(f"q{i}")
+    raw = c.body()
+    raw["system"] = [
+        {"type": "text", "text": "A"},
+        {"type": "text", "text": "B", "cache_control": {"type": "ephemeral"}},
+    ]
+    body = optimize(raw)
+    assert body["system"][:2] == raw["system"]
+    assert body["system"][2] == {"type": "text", "text": NOTE}
+
+    raw = c.body()
+    raw["system"] = "plain string prompt"
+    body = optimize(raw)
+    assert body["system"] == [{"type": "text", "text": "plain string prompt"},
+                              {"type": "text", "text": NOTE}]
+
+    raw = c.body()
+    del raw["system"]
+    body = optimize(raw)
+    assert body["system"] == [{"type": "text", "text": NOTE}]
+
+def test_system_note_byte_frozen_across_turns():
+    """Once present, the system prompt (note included) must be byte-identical
+    turn over turn — it sits inside the cached prefix."""
+    c = Conversation().human("start")
+    seen = []
+    for t in range(16):
+        c.tool_call("Bash", f"run {t} " + "Z" * 900, f"res {t}")
+        c.human(f"t{t}")
+        body = optimize(c.body())
+        if _note_blocks(body):
+            seen.append(json.dumps(_strip_cc(body["system"]), sort_keys=True))
+    assert len(seen) >= 8, "note never appeared"
+    assert len(set(seen)) == 1, "system prompt drifted after the note appeared"
 
 # ───────────────────────────────── runner ─────────────────────────────────
 def main():
