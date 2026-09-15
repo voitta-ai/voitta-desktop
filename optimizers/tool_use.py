@@ -5,28 +5,30 @@ input arguments) accumulate in context forever — Claude Code's context is
 append-only and nothing strips them. In long sessions the biggest never-stripped
 band is these call arguments: Bash command strings, MCP tool payloads, etc.
 
-The block itself is kept — real name, real id, real field names. Only long
-string values inside ``input`` are cut to a short prefix plus a marker that
-says the proxy truncated it and how to get the full call back::
+The block is kept — real name, real id, real field names — and long string
+values inside ``input`` are cut to a short prefix. Nothing is added in their
+place. The pointer to the full call goes on the USER side, as a text block
+after the tool_results of the turn that answered it (the same shape Claude
+Code uses for its system-reminders)::
 
-    {"type":"tool_use","name":"Bash","id":"toolu_…",
-     "input":{"command":"grep -n saveThread src/app/api/… …[voitta-proxy: argument
-              truncated, get_vt_object(hash=\\"1f3d…\\") has the full call]"}}
+    assistant  tool_use     Bash {"command": "grep -n saveThread src/app/api/… (120 chars)"}
+    user       tool_result  <result, or the ToolResultOptimizer placeholder>
+    user       text         "[voitta-proxy: truncated call above: Bash get_vt_object(hash=\\"1f3d…\\")]"
 
 The full original block is stored by hash in ``vt_object_store``. The hash is
-deterministic (id + name + input), so the truncated block is byte-identical
-on every re-derivation and never re-invalidates the prompt cache.
+deterministic (id + name + input), so the rewrite is byte-identical on every
+re-derivation and never re-invalidates the prompt cache.
 
-Why not replace the pair with text? Because any proxy prose placed in the
-assistant's own turn gets imitated: three wordings of a "[voitta-proxy: …]"
-note standing in for the call were each copied by Fable 5.1 as plain text —
-first instead of a tool call (turn ended, work undone), then as a preamble to
-real calls. With the tool_use block kept, the model's history shows tool
-calls at the point where it decides what to emit, and nothing else.
+The rule behind the layout: the proxy never writes into the assistant turn.
+Anything it puts there gets imitated — three wordings of a text placeholder
+were each copied by Fable 5.1 as prose, and a marker appended inside the
+truncated string (" …[voitta-proxy: argument truncated, …]") was copied into
+freshly written commands within minutes. User-side annotations (the
+ToolResultOptimizer placeholders) have never been imitated.
 
-Composes with ToolResultOptimizer, which references long tool *results* on
-the user side; short results stay inline. File-access tools (Read/Write/Edit)
-are skipped here — handled separately.
+Independent of ToolResultOptimizer: the pointer block is outside the
+tool_result, so neither optimizer sees the other's output. File-access tools
+(Read/Write/Edit) are skipped here — handled separately.
 """
 
 import hashlib
@@ -39,14 +41,12 @@ from .image import vt_object_store
 TOOL_USE_REF_MIN_CHARS = 500
 # Kept prefix of each long string value.
 _KEEP_PREFIX = 120
-# String values shorter than this are left whole (cutting them saves nothing
-# once the marker is added).
+# String values shorter than this are left whole.
 _MIN_STRING = _KEEP_PREFIX + 160
 
 # File tools are handled separately (see dedup study); leave their calls whole.
 _SKIP_TOOLS = frozenset({"Read", "Write", "Edit", "NotebookEdit"})
 
-# Marker text placed inside a truncated string. Kept byte-stable.
 PLACEHOLDER_TAG = "[voitta-proxy:"
 
 
@@ -64,19 +64,22 @@ def _call_hash(tool_use: dict) -> str:
     return hashlib.sha256(key.encode()).hexdigest()[:12]
 
 
-def truncation_marker(h: str) -> str:
-    return f' …{PLACEHOLDER_TAG} argument truncated, get_vt_object(hash="{h}") has the full call]'
+def pointer_block(calls: list[tuple[str, str]]) -> dict:
+    """User-side text block naming the hash(es) that restore the truncated
+    call(s) answered in this turn. ``calls`` is ``[(tool_name, hash), …]``."""
+    refs = ", ".join(f'{name} get_vt_object(hash="{h}")' for name, h in calls)
+    what = "truncated call above" if len(calls) == 1 else "truncated calls above"
+    return {"type": "text", "text": f"{PLACEHOLDER_TAG} {what}: {refs}]"}
 
 
-def _truncate(value, marker: str):
-    """Return ``value`` with every long string cut to a prefix + marker.
-    Containers keep their shape; nothing else changes."""
+def _truncate(value):
+    """Cut every long string to its prefix; containers keep their shape."""
     if isinstance(value, str):
-        return value[:_KEEP_PREFIX] + marker if len(value) >= _MIN_STRING else value
+        return value[:_KEEP_PREFIX] if len(value) >= _MIN_STRING else value
     if isinstance(value, dict):
-        return {k: _truncate(v, marker) for k, v in value.items()}
+        return {k: _truncate(v) for k, v in value.items()}
     if isinstance(value, list):
-        return [_truncate(v, marker) for v in value]
+        return [_truncate(v) for v in value]
     return value
 
 
@@ -91,6 +94,8 @@ class ToolUseOptimizer(BaseOptimizer):
 
     def _optimize(self, messages: list, threshold_msg_idx: int) -> int:
         tokens_removed = 0
+        pointers: dict[str, tuple[str, str]] = {}   # tool_use_id -> (name, hash)
+
         for mi in range(min(threshold_msg_idx, len(messages))):
             msg = messages[mi]
             if msg.get("role") != "assistant":
@@ -102,31 +107,41 @@ class ToolUseOptimizer(BaseOptimizer):
             new_content = []
             for block in content:
                 if (not isinstance(block, dict) or block.get("type") != "tool_use"
-                        or block.get("name", "") in _SKIP_TOOLS):
+                        or block.get("name", "") in _SKIP_TOOLS
+                        or block.get("input") is None):
                     new_content.append(block)
                     continue
-                inp = block.get("input")
-                if inp is None:
-                    new_content.append(block)
-                    continue
+                inp = block["input"]
                 before = _input_chars(inp)
-                if before < self.min_chars:
+                truncated = _truncate(inp) if before >= self.min_chars else inp
+                after = _input_chars(truncated)
+                if after >= before:
                     new_content.append(block)
                     continue
 
                 h = _call_hash(block)
-                truncated = _truncate(inp, truncation_marker(h))
-                after = _input_chars(truncated)
-                if after >= before:
-                    new_content.append(block)  # bulk is not in strings; leave it
-                    continue
-
                 vt_object_store[h] = {"type": "tool_use", "data": block}
                 new_content.append(dict(block, input=truncated))
-                saved = before - after
-                tokens_removed += saved // 4
-                self.last_stripped_ids[block.get("id", "")] = saved
+                pointers[block.get("id", "")] = (block.get("name", ""), h)
+                tokens_removed += (before - after) // 4
+                self.last_stripped_ids[block.get("id", "")] = before - after
 
             messages[mi] = dict(msg, content=new_content)
+
+        if not pointers:
+            return tokens_removed
+
+        # The tool_result may sit at or just past the threshold (a human
+        # interruption appended to a tool_result turn makes it a turn start),
+        # so scan the whole list for it.
+        for mi, msg in enumerate(messages):
+            content = msg.get("content")
+            if msg.get("role") != "user" or not isinstance(content, list):
+                continue
+            here = [pointers[b["tool_use_id"]] for b in content
+                    if isinstance(b, dict) and b.get("type") == "tool_result"
+                    and b.get("tool_use_id") in pointers]
+            if here:
+                messages[mi] = dict(msg, content=content + [pointer_block(here)])
 
         return tokens_removed

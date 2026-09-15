@@ -31,7 +31,7 @@ from optimizers.bash_compress import BashCompressor
 from optimizers.image import ImageOptimizer, vt_object_store
 from optimizers.thinking import ThinkingOptimizer
 from optimizers.tool_result import ToolResultOptimizer
-from optimizers.tool_use import PLACEHOLDER_TAG, ToolUseOptimizer, truncation_marker
+from optimizers.tool_use import PLACEHOLDER_TAG, ToolUseOptimizer, pointer_block
 
 KEEP = 5
 MIN_CHARS = 500
@@ -273,8 +273,8 @@ def test_roundtrip_recoverable():
         originals.append((cmd, res))
         c.human(f"q{i}")
     body = optimize(c.body())
-    hashes = [h for _, _, _, b in iter_blocks(body) if b.get("type") == "tool_use"
-              for h in _hashes_in(json.dumps(b["input"]))]
+    hashes = [h for _, _, role, b in iter_blocks(body) if role == "user" and b.get("type") == "text"
+              for h in _hashes_in(b["text"])]
     assert hashes, "no truncated-call references found"
     recovered_cmds = set()
     for h in set(hashes):
@@ -408,7 +408,8 @@ def _aged(c):
 
 def test_truncated_call_keeps_block_and_schema():
     """An old long call stays a tool_use with its real name, id and field
-    names; only the long string is cut to a prefix plus the marker."""
+    names; the long string is cut to a bare prefix. The pointer to the full
+    call is a line ahead of its tool_result, on the user side."""
     c = Conversation().human("start")
     cmd = "grep -n saveThread src/app/api/chat/route.ts && " + "X" * 900
     c.tool_call("Bash", cmd, "res")
@@ -418,16 +419,19 @@ def test_truncated_call_keeps_block_and_schema():
     b = calls[0]
     assert b["name"] == "Bash" and b["id"] == "toolu_0001"
     assert list(b["input"].keys()) == ["command"]
-    v = b["input"]["command"]
-    assert v.startswith(cmd[:120]), v
-    hs = _hashes_in(v)
-    assert len(hs) == 1 and v.endswith(truncation_marker(hs[0])), v
-    assert len(v) < 300, len(v)
+    assert b["input"]["command"] == cmd[:120]
+    turn = body["messages"][2]
+    assert turn["role"] == "user"
+    assert turn["content"][0] == {"type": "tool_result", "tool_use_id": "toolu_0001", "content": "res"}
+    hs = _hashes_in(turn["content"][1]["text"])
+    assert len(hs) == 1 and turn["content"][1] == pointer_block([("Bash", hs[0])])
+    assert len(turn["content"]) == 2
     assert vt_object_store[hs[0]]["data"]["input"]["command"] == cmd
 
-def test_no_proxy_text_in_any_assistant_text_block():
-    """The point of the design: proxy prose never appears as assistant text,
-    where the model would imitate it. It lives only inside tool_use strings."""
+def test_nothing_proxy_written_in_any_assistant_block():
+    """The rule behind the design: the proxy writes nothing into assistant
+    turns — not a text block, not a marker inside a tool_use string — since
+    the model imitates whatever it finds there. User-side only."""
     c = Conversation().human("start")
     for i in range(8):
         c.tool_call("Bash", f"cmd {i} " + "D" * 900, f"res {i} " + "E" * 3000,
@@ -435,15 +439,39 @@ def test_no_proxy_text_in_any_assistant_text_block():
         c.human(f"q{i}")
     body = optimize(c.body())
     for _, _, role, b in iter_blocks(body):
-        if b.get("type") == "text":
-            assert PLACEHOLDER_TAG not in b["text"] or role == "user", b
         if role == "assistant":
-            assert b.get("type") != "text" or PLACEHOLDER_TAG not in b["text"]
-    # and the long results were still referenced by ToolResultOptimizer
-    settled_results = [b for mi, _, _, b in iter_blocks(body)
-                       if b.get("type") == "tool_result" and mi < 4]
-    assert any(isinstance(b.get("content"), str) and "get_vt_object" in b["content"]
-               for b in settled_results), "long results not referenced"
+            assert "voitta-proxy" not in json.dumps(b), b
+    pointers = [b for _, _, role, b in iter_blocks(body)
+                if role == "user" and b.get("type") == "text" and PLACEHOLDER_TAG in b["text"]]
+    assert pointers, "no user-side pointer written"
+    # tool_results still lead their turn; the long result is referenced
+    for m in body["messages"]:
+        if m["role"] == "user" and any(b.get("type") == "text" and PLACEHOLDER_TAG in b["text"]
+                                       for b in m["content"]):
+            assert m["content"][0]["type"] == "tool_result"
+            assert m["content"][-1]["type"] == "text"
+    assert any(b.get("type") == "tool_result" and isinstance(b.get("content"), str)
+               and "result removed" in b["content"] for _, _, _, b in iter_blocks(body))
+
+def test_pointer_for_parallel_calls_and_interrupted_turn():
+    """Parallel truncated calls share one pointer block listing both hashes;
+    a result turn sitting AT the threshold (human interruption appended)
+    still gets its pointer, after the existing text."""
+    c = Conversation().human("start")
+    c.tool_call("Bash", "a " + "D" * 900, "ra", parallel=[("Bash", "b " + "D" * 900, "rb")])
+    c.messages[-1]["content"].append({"type": "text", "text": "[Request interrupted by user]"})
+    for t in range(KEEP):
+        c.assistant_text(f"ok {t}")
+        c.human(f"q{t}")
+    body = optimize(c.body())
+    turn = body["messages"][2]
+    types = [b["type"] for b in turn["content"]]
+    assert types == ["tool_result", "tool_result", "text", "text"], types
+    assert turn["content"][2]["text"] == "[Request interrupted by user]"
+    assert len(_hashes_in(turn["content"][3]["text"])) == 2
+    assert "truncated calls above" in turn["content"][3]["text"]
+    from optimizers import validate_tool_pairing
+    assert validate_tool_pairing(body["messages"]) == []
 
 def test_nested_and_short_strings():
     """Strings are cut wherever they sit in the input; short strings and
@@ -459,7 +487,7 @@ def test_nested_and_short_strings():
     do = calls["mcp__x__do"]["input"]
     assert do["opts"] == big["opts"]
     assert [it["id"] for it in do["items"]] == [0, 1]
-    assert all(len(it["note"]) < 300 and PLACEHOLDER_TAG in it["note"] for it in do["items"])
+    assert all(it["note"] == "n" * 120 for it in do["items"])
     assert calls["mcp__x__list"]["input"] == {"ids": list(range(400))}
 
 def test_savings_recorded_per_call():
