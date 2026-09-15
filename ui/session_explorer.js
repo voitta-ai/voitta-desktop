@@ -35,13 +35,12 @@ window._voittaRPC = {
 
 /* ── State ──────────────────────────────────────────────────────────────── */
 const state = {
-  list: (typeof _initialList !== "undefined") ? _initialList : { mains: [], anon: [], seeded: [] },
+  list: (typeof _initialList !== "undefined") ? _initialList : { mains: [], anon: [] },
   selected: null,        // conv id
   tab: "stats",
   transcript: null,      // parsed {turns, cursor}
   statsRequests: -1,     // request_count the loaded chart was built from
   anonOpen: false,
-  seededOpen: true,
   follow: true,
   pendingNewer: false,
   hidden: new Set(["meta"]),
@@ -82,7 +81,6 @@ function findRow(id) {
     for (const c of m.children || []) if (c.id === id) return c;
   }
   for (const a of L.anon || []) if (a.id === id) return a;
-  for (const s of L.seeded || []) if (s.id === id) return s;
   return null;
 }
 
@@ -96,7 +94,6 @@ function rowEl(row, opts) {
   if (row.cache_pct !== null && row.cache_pct !== undefined) bits.push("cache:" + row.cache_pct + "%");
   if (row.requests) bits.push("×" + row.requests);
   if (row.transcript_only) bits.push("transcript only");
-  if (row.seeded) bits.push("previous run");
   sub.appendChild(el("span", null, bits.join("  ")));
   if (row.active) sub.appendChild(el("span", "dot"));
   d.appendChild(sub);
@@ -123,14 +120,7 @@ function renderSidebar() {
     box.appendChild(h);
     if (state.anonOpen) for (const a of L.anon) box.appendChild(rowEl(a, { dim: true }));
   }
-  if ((L.seeded || []).length) {
-    const h = el("div", "sec clickable",
-      (state.seededOpen ? "▾ " : "▸ ") + "Previous session (" + L.seeded.length + ")");
-    h.onclick = () => { state.seededOpen = !state.seededOpen; renderSidebar(); };
-    box.appendChild(h);
-    if (state.seededOpen) for (const s of L.seeded) box.appendChild(rowEl(s, { dim: true }));
-  }
-  if (!(L.mains || []).length && !(L.anon || []).length && !(L.seeded || []).length) {
+  if (!(L.mains || []).length && !(L.anon || []).length) {
     box.appendChild(el("div", "sec", "No conversations yet"));
     const hint = el("div", "row dim");
     hint.appendChild(el("div", "lbl", "Link Claude Code to the LLM proxy and start a session."));
@@ -175,7 +165,6 @@ function renderHeader() {
   } else {
     const bits = [];
     if (row.model) bits.push(row.model);
-    if (row.seeded) bits.push("previous run — live stats unavailable");
     if (row.has_transcript === false) bits.push("no transcript on disk");
     attr.textContent = bits.join("  ·  ");
   }
@@ -674,13 +663,13 @@ function refreshAll() {
     else pollTranscript();
   });
 }
-/* Slow heartbeat: keeps the active-dots and seeded list fresh even with no
- * traffic, and catches transcript growth from sessions not proxied. */
+/* Slow heartbeat: keeps the active-dots fresh even with no traffic, and
+ * catches transcript growth from sessions not proxied. */
 setInterval(refreshAll, 5000);
 
 /* ── Init ───────────────────────────────────────────────────────────────── */
 renderChips();
 renderSidebar();
 updatePanes();
-const first = (state.list.mains || [])[0] || (state.list.seeded || [])[0];
+const first = (state.list.mains || [])[0];
 if (first) selectConv(first.id);

@@ -75,3 +75,32 @@ def migrate_legacy_dirs() -> None:
                 shutil.copy2(src, dst)
             except OSError as e:
                 logger.warning("tool-cache migration failed for %s: %s", src.name, e)
+
+
+# Everything below is conversation content from earlier runs: request logs,
+# per-conversation debug dumps, rejected-request dumps, and the object store
+# holding the tool results, images and calls those conversations referenced.
+# Claude Code keeps its own transcripts; these are the proxy's copies only.
+_CONVERSATION_LOG_GLOBS = ("*.jsonl", "conv_*.json", "fail_*.json")
+
+
+def purge_conversations() -> None:
+    """Delete every trace of previous runs' conversations.
+
+    Runs once at startup, before anything opens the object store. Leaves
+    the app log (``desktop.log*``), MCP server logs, the crash marker and
+    the tool cache alone — none of those hold conversation content.
+    """
+    ensure_dirs()
+    victims = [p for g in _CONVERSATION_LOG_GLOBS for p in LOG_DIR.glob(g)]
+    victims += list(OBJECT_STORE_PATH.parent.glob(OBJECT_STORE_PATH.name + "*"))
+    removed = freed = 0
+    for path in victims:
+        try:
+            freed += path.stat().st_size
+            path.unlink()
+            removed += 1
+        except OSError as e:
+            logger.warning("could not remove %s: %s", path, e)
+    if removed:
+        logger.info("purged %d file(s) from previous runs, %.1f MB", removed, freed / 1e6)

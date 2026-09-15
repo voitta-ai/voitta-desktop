@@ -3,8 +3,7 @@
 Replaces the per-conversation menu entries: the menu now has a single
 "<N> conversations" item that opens this window. Left: a two-level sidebar
 (main conversations with their Task sub-agents as first-class children,
-anonymous clients grouped, previous-run conversations seeded from the
-on-disk debug dumps). Right: two tabs per conversation —
+anonymous clients grouped). Right: two tabs per conversation —
 
   • Stats — the existing chart (``chart_template.html``, untouched)
     rendered into an iframe via srcdoc, same payload as the old popup.
@@ -39,15 +38,13 @@ from WebKit import WKWebView, WKWebViewConfiguration, WKWebsiteDataStore
 
 from runtime import runtime
 from ui.chart import generate_chart_html, _safe_json
-from ui.conv_payload import build_chart_args, build_chart_args_from_dump
+from ui.conv_payload import build_chart_args
 from ui.main_thread import on_main_thread
 from ui._native import _FocusTrigger
 
 logger = logging.getLogger("voitta-desktop.explorer")
 
-_DUMPS_DIR = Path.home() / ".voitta-desktop" / "logs"
 _ACTIVE_WINDOW_S = 30.0   # "streaming now" dot in the sidebar
-_SEEDED_CAP = 20          # previous-run conversations shown at most
 
 
 @on_main_thread
@@ -295,8 +292,6 @@ class SessionExplorerMixin:
             m["children"] = rows
             m["has_transcript"] = transcripts.find_main(sid) is not None
 
-        seeded = self._seeded_rows(live_ids)
-
         agent_count = sum(len(m.get("children", [])) for m in mains)
         agent_tokens = sum(
             ch["tokens"] for m in mains for ch in m.get("children", []))
@@ -307,68 +302,7 @@ class SessionExplorerMixin:
             "tokens_fmt": self._fmt_tokens(sum(m["tokens"] for m in mains)),
             "agent_tokens_fmt": self._fmt_tokens(agent_tokens),
         }
-        return {"mains": mains, "anon": anon, "seeded": seeded,
-                "footer": footer, "now": now}
-
-    def _seeded_rows(self, live_ids: set) -> list[dict]:
-        """Previous-run conversations from the conv_*.json debug dumps.
-
-        Parsed lazily and cached by mtime — the dumps directory can hold
-        hundreds of files; only the newest _SEEDED_CAP are surfaced.
-        """
-        if not hasattr(self, "_seeded_cache"):
-            self._seeded_cache: dict[str, tuple[float, dict | None]] = {}
-        rows = []
-        try:
-            files = sorted(_DUMPS_DIR.glob("conv_*.json"),
-                           key=lambda p: p.stat().st_mtime, reverse=True)
-        except OSError:
-            return []
-        transcripts = self._tracker.transcripts
-        for f in files:
-            if len(rows) >= _SEEDED_CAP:
-                break
-            try:
-                mtime = f.stat().st_mtime
-            except OSError:
-                continue
-            cached = self._seeded_cache.get(f.name)
-            if cached is None or cached[0] != mtime:
-                row = None
-                try:
-                    dump = json.loads(f.read_text(encoding="utf-8"))
-                    cid = dump.get("id", "")
-                    turns = dump.get("turns") or []
-                    tokens = sum(t.get("input_tokens", 0) + t.get("output_tokens", 0)
-                                 for t in turns)
-                    if cid and turns:
-                        row = {
-                            "id": cid,
-                            "label": str(dump.get("label", cid))[:60],
-                            "parent_id": dump.get("parent_id", ""),
-                            "agent_id": dump.get("agent_id", ""),
-                            "model": dump.get("model", ""),
-                            "tokens": tokens,
-                            "tokens_fmt": self._fmt_tokens(tokens),
-                            "cache_pct": None,
-                            "requests": dump.get("request_count", len(turns)),
-                            "last_active": dump.get("last_active", mtime),
-                            "active": False,
-                            "seeded": True,
-                        }
-                except Exception:
-                    row = None
-                self._seeded_cache[f.name] = (mtime, row)
-                cached = (mtime, row)
-            row = cached[1]
-            if (row is None or row["id"] in live_ids
-                    or row["parent_id"]         # children ride along below
-                    or row["id"].startswith("anon-")):
-                continue
-            out = dict(row)
-            out["has_transcript"] = transcripts.find_main(row["id"]) is not None
-            rows.append(out)
-        return rows
+        return {"mains": mains, "anon": anon, "footer": footer, "now": now}
 
     # ── Stats tab ────────────────────────────────────────────────────────────
 
@@ -380,28 +314,7 @@ class SessionExplorerMixin:
             active = self._optimizer_pipeline.active_optimizers
             html = generate_chart_html(None, breakdown, turns, active)
             return {"html": html, "requests": conv.request_count}
-
-        # Seeded: last-known data from the debug dump.
-        dump = self._load_dump(conv_id)
-        if dump is not None:
-            breakdown, turns = build_chart_args_from_dump(dump)
-            if turns:
-                html = generate_chart_html(None, breakdown, turns, {})
-                return {"html": html, "requests": len(turns), "seeded": True}
-
         return {"empty": "No proxy traffic recorded for this conversation."}
-
-    @staticmethod
-    def _load_dump(conv_id: str) -> dict | None:
-        import re
-        safe_id = re.sub(r'[^a-zA-Z0-9_-]', '_', conv_id)[:60]
-        path = _DUMPS_DIR / f"conv_{safe_id}.json"
-        try:
-            if path.exists():
-                return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-        return None
 
     # ── Explorer tab ─────────────────────────────────────────────────────────
 

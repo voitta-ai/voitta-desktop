@@ -169,6 +169,11 @@ Click a conversation to see a token usage chart. Click "Open conversation detail
 
 - `~/.voitta_desktop/apps.json` — OAuth apps, Jira credentials, proxy ports
 - `~/.voitta_desktop/logs/` — Debug logs, request JSONL
+- `~/.voitta-desktop/state/objects.db` — Removed tool results, images and calls, retrievable via `get_vt_object`
+
+Every restart deletes the previous runs' conversations: the request JSONL,
+the per-conversation and rejected-request dumps, and the object store.
+Claude Code's own transcripts are untouched.
 - `~/.voitta_desktop_cache/` — Cached MCP tool listings (resilience)
 - `~/.voitta_desktop/jira.env` — Auto-generated for mcp-atlassian subprocess
 

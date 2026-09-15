@@ -105,6 +105,9 @@ def main() -> None:
     # Unify the on-disk tree before anything reads config or writes a log.
     paths.migrate_legacy_dirs()
     _configure_logging(paths.LOG_DIR)
+    # Previous runs' conversations do not carry over. Must precede any
+    # import that opens the object store.
+    paths.purge_conversations()
 
     # Install crash diagnostics immediately after logging is up, so an early
     # failure still gets recorded. See lifecycle.py for why both a signal

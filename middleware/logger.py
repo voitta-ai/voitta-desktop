@@ -22,15 +22,12 @@ class RequestLogger(Middleware):
         log_dir: Path = LOG_DIR,
         stale_after_s: int = 60,
         watchdog_interval_s: int = 30,
-        clear_on_start: bool = True,
         keep_messages: int = 2,
         max_str: int = 2000,
         rss_log_step_mb: float = 250.0,
     ):
         self._log_dir = log_dir
         self._log_dir.mkdir(parents=True, exist_ok=True)
-        if clear_on_start:
-            self._clear_logs()
         self._keep_messages = keep_messages
         self._max_str = max_str
         self._pending: dict[int, dict] = {}
@@ -41,25 +38,6 @@ class RequestLogger(Middleware):
         self._lock = threading.Lock()
         # The watchdog is a coroutine, spawned by AppBase on the shared
         # runtime — see runtime.py. It used to be its own thread.
-
-    def _clear_logs(self) -> None:
-        """Delete all request-log JSONL files from a previous run.
-
-        Scoped to the ``*.jsonl`` files this logger owns; the app's own
-        ``desktop.log`` (already size-capped) is left untouched.
-        """
-        freed = 0
-        removed = 0
-        for path in self._log_dir.glob("*.jsonl"):
-            try:
-                freed += path.stat().st_size
-                path.unlink()
-                removed += 1
-            except OSError as e:
-                logger.warning("Failed to remove old log %s: %s", path, e)
-        if removed:
-            logger.info("Cleared %d old request log(s), freed %.1f MB",
-                        removed, freed / 1_000_000)
 
     def _truncate(self, obj):
         """Recursively cap long strings; returns a new structure (no mutation)."""
