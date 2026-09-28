@@ -20,11 +20,20 @@ _SKIP_TOOLS = frozenset({"Read", "Write", "Edit"})
 
 
 def _content_hash(content) -> str:
-    """Compute a short hash from tool result content (string or list)."""
+    """Compute a short hash from tool result content (string or list).
+
+    Hashes the whole result, not a prefix. A prefix hash collides whenever
+    two results share an opening — search results, paginated listings and
+    repeated command output all do — and the store is INSERT OR REPLACE, so
+    a collision silently serves the wrong content back under the right hash.
+    SHA-256 over a few hundred KB is far cheaper than that failure, and the
+    result is still a pure function of the content, so the placeholder text
+    stays byte-identical on re-derivation and the prompt cache holds.
+    """
     if isinstance(content, str):
-        raw = content[:4096]
+        raw = content
     else:
-        raw = json.dumps(content, separators=(",", ":"))[:4096]
+        raw = json.dumps(content, separators=(",", ":"))
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
 
 

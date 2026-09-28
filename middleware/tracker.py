@@ -21,6 +21,28 @@ logger = logging.getLogger("voitta-desktop.tracker")
 _COMPACT_PREFIX = "This session is being continued from a previous conversation"
 
 
+def _prefix_chars(messages: list) -> list[int]:
+    """``[len(json.dumps(messages[:k])) for k in 0..len(messages)]``, in one pass.
+
+    The direct form is what a per-turn ``chars_in`` used to do, and it is
+    quadratic: 697 turns over a 39 MB context re-serialised the prefix 697
+    times, produced 19 GB of JSON and took 34 s per response — on the shared
+    event loop, so it delayed the next request and every other session.
+
+    ``json.dumps`` of a list is ``"[" + ", ".join(items) + "]"``, so a prefix
+    length is recoverable from a running sum of the per-message lengths: two
+    brackets, plus the items, plus two characters per separator. Verified
+    byte-identical to the old expression for every prefix of a real 1394
+    message conversation.
+    """
+    out = [2]                                    # json.dumps([]) == "[]"
+    running = 0
+    for i, m in enumerate(messages):
+        running += len(json.dumps(m))
+        out.append(2 + running + 2 * i)          # i+1 items -> i separators
+    return out
+
+
 class ConversationTracker(Middleware):
     """Tracks conversations with detailed content block history.
 
@@ -211,6 +233,7 @@ class ConversationTracker(Middleware):
 
         body_without_messages = {k: v for k, v in body.items() if k != "messages"}
         base_chars = len(json.dumps(body_without_messages))
+        prefix_chars = _prefix_chars(messages)
 
         msg_index = 0
         for turn in turns:
@@ -224,7 +247,7 @@ class ConversationTracker(Middleware):
                     saw_assistant = True
                 turn_end += 1
 
-            turn.chars_in = base_chars + len(json.dumps(messages[:turn_end]))
+            turn.chars_in = base_chars + prefix_chars[turn_end]
             turn.chars_out = sum(
                 len(json.dumps(messages[mi].get("content", "")))
                 for mi in range(msg_index, turn_end)
@@ -419,7 +442,12 @@ class ConversationTracker(Middleware):
 
             orig_imgs  = _count_images(orig_msgs)
             sent_imgs  = _count_images(sent_msgs)
-            orig_kb    = len(json.dumps(orig_msgs)) // 1024
+            # orig_msgs is the array prefix_chars was built from, so its full
+            # length is already known; serialising it again here cost a second
+            # pass over the whole (pre-optimizer, ~39 MB) context per request,
+            # for a log line. sent_msgs is the optimized array and far smaller.
+            orig_kb    = (prefix_chars[-1] if orig_msgs is messages else
+                          len(json.dumps(orig_msgs))) // 1024
             sent_kb    = len(json.dumps(sent_msgs)) // 1024
             total_tok  = inp + cr + cc
             cache_pct  = int(cr * 100 / total_tok) if total_tok else 0

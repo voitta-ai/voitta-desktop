@@ -597,12 +597,15 @@
       Past the Tool-Results time horizon, large tool-call <em>arguments</em> (Bash
       commands, MCP payloads) are replaced with a <code>get_vt_object(hash)</code>
       reference the model can pull back on demand. File tools (Read/Write/Edit) are
-      left untouched. Small calls stay inline. Set to 0 to disable.
+      left untouched. Small calls stay inline. This is a floor, not a switch:
+      <strong>0 is the most aggressive setting</strong>, not "off" — it removes the
+      size gate so every call holding a string of 280+ chars is truncated. To turn
+      referencing off, raise it above your largest call (20000 disables it in practice).
     </div>
     <div class="field">
       <label>Reference args ≥</label>
       <input type="number" id="tool_use_ref_min_chars" min="0" max="20000" step="100" placeholder="500" style="flex:0 0 90px;">
-      <span style="font-size:11px; color:var(--text-secondary);">chars (default 500 — the cache-study knee)</span>
+      <span style="font-size:11px; color:var(--text-secondary);">chars (default 500 — the cache-study knee; 0 = truncate everything)</span>
     </div>
   </div>
 

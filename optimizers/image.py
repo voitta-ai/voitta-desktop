@@ -9,17 +9,24 @@ IMAGE_KEEP_TURNS = 5
 # Global hash→object store shared with the MCP get_vt_object tool.
 # Each entry: {"type": "image"|..., "data": <original content block>}
 #
-# Backed by SQLite: the get_vt_object references the optimizers leave in a
-# conversation outlive this process, so the store has to as well.
+# Backed by SQLite so a long session's references resolve without keeping every
+# object in RAM. The file is purged at startup, so it spans one run, not many.
 from .object_store import PersistentObjectStore
 
 vt_object_store = PersistentObjectStore()
 
 
 def _image_hash(item: dict) -> str:
-    """Compute a short hash from image data."""
+    """Compute a short hash from the full base64 payload.
+
+    Prefix hashing is especially wrong for images: two screenshots of the
+    same app at the same size share far more than their first 4 KB of
+    base64, so they collided and the store handed back whichever was
+    written last. Hashing everything costs microseconds and stays
+    deterministic, so the placeholder text does not move between requests.
+    """
     data = item.get("source", {}).get("data", "")
-    return hashlib.sha256(data[:4096].encode()).hexdigest()[:12]
+    return hashlib.sha256(data.encode()).hexdigest()[:12]
 
 
 def _store_image(item: dict) -> str:

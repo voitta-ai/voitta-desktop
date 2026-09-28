@@ -77,7 +77,7 @@ flowchart TB
         UI["menu bar UI<br/>dog · conv count · popups ·<br/>Settings (WKWebView)"]
         AUTH["OAuth state + refresh timers<br/>(MSAL · Google PKCE)"]
         SUBS["managed MCP subprocesses<br/>(Popen, log capture, port reclaim)"]
-        STORE[("vt_object_store<br/>in-memory removed-content store")]
+        STORE[("vt_object_store<br/>SQLite removed-content store<br/>(purged at startup)")]
     end
 
     subgraph backends["MCP backends"]
@@ -112,10 +112,12 @@ flowchart TB
   so a re-sent conversation prefix stays byte-identical and Anthropic's
   prompt cache is not invalidated. The last `keep_turns` user turns are never
   touched.
-- Anything the optimizer removes is **recoverable**: the placeholder text
-  tells the model to call `get_vt_object(hash=…)` on the MCP proxy, which
-  serves the original from `vt_object_store`. (In-memory only — see
-  [§16](#16-appendix-known-issues).)
+- Anything the optimizer removes is **recoverable within the run**: the
+  placeholder text tells the model to call `get_vt_object(hash=…)` on the MCP
+  proxy, which serves the original from `vt_object_store`. The store is
+  SQLite-backed but is **deleted at startup** by `purge_conversations()`, so a
+  placeholder from a previous run no longer resolves — see
+  [§6](#6-the-optimizer-pipeline).
 - Backend MCP auth is resolved **per upstream call** (fresh `ProxyClient`
   from a factory closure), so token refreshes propagate without remounting.
 - Tool listings are served from a **disk cache, stale-while-revalidate** —
@@ -360,7 +362,7 @@ transcript and is unaffected.
 ```mermaid
 flowchart LR
     IN["request body"] --> B["BashCompressor<br/>ALL turns · lossless filters<br/>ANSI · whitespace · progress ·<br/>smart git/npm/pytest handlers"]
-    B --> TU["ToolUseOptimizer<br/>big call+result PAIRS →<br/>one get_vt_object ref"]
+    B --> TU["ToolUseOptimizer<br/>big stale call ARGUMENTS →<br/>truncated in place, user-side ref"]
     TU --> TR["ToolResultOptimizer<br/>big stale tool_results →<br/>get_vt_object ref"]
     TR --> IM["ImageOptimizer<br/>stale images →<br/>get_vt_object ref"]
     IM --> TH["ThinkingOptimizer<br/>stale thinking blocks<br/>omitted (signature-safe)"]
@@ -369,8 +371,28 @@ flowchart LR
 ```
 
 Order matters twice: **BashCompressor first** so later optimizers see
-already-compressed bash output (no double counting); **ToolUse before
-ToolResult** so a long-call/long-response pair collapses once, not twice.
+already-compressed bash output (no double counting); **ToolResult before
+Image** so images nested inside a tool result are not hashed twice.
+
+`ToolUseOptimizer` and `ToolResultOptimizer` are independent — the first
+rewrites `tool_use` blocks on the assistant side, the second rewrites
+`tool_result` blocks on the user side, and neither sees the other's output.
+It no longer collapses call+result *pairs*: the `tool_use` block is kept
+intact (real name, real id, real field names) and only long string values
+inside `input` are cut to a 120-char prefix, with the recovery hash placed in
+a separate user-side text block after the turn's tool_results.
+
+**The proxy never writes into the assistant turn.** Anything placed there
+gets imitated: three wordings of an assistant-side placeholder were each
+copied by Fable 5.1 as prose — once *instead of* a real tool call, ending the
+turn with the work undone — and a marker appended inside a truncated argument
+string was copied into freshly written Bash commands within minutes, eight
+calls in one session with every hash invented. A system note explaining the
+placeholders did not help and was removed. User-side annotations (the
+`ToolResultOptimizer` placeholders) have never been imitated. This is why the
+truncation pointer lives on the user side; see the module docstring in
+[optimizers/tool_use.py](../optimizers/tool_use.py) and
+`test_nothing_proxy_written_in_any_assistant_block`.
 
 ### `keep_turns`: the stability window
 
@@ -420,11 +442,25 @@ The store is shared by both proxies — same process, no IPC — and is backed
 by SQLite at `~/.voitta-desktop/state/objects.db`
 ([optimizers/object_store.py](../optimizers/object_store.py)).
 
-Persistence is not an optimisation here, it is correctness. The placeholders
-live in the conversation transcript, which outlives the process; when the
-store was a bare in-memory dict, every restart silently orphaned every
-reference already in flight, and the model would ask for a hash and be told
-it did not exist.
+**Lifetime: one run.** `purge_conversations()`
+([paths.py](../paths.py)) deletes `objects.db` and its sidecars at startup,
+before anything opens the store, as part of dropping every trace of previous
+runs' conversations. So a placeholder from an earlier run does **not**
+resolve — the model gets `No object found for hash …` and has to redo the
+work. This is a deliberate privacy trade, not an oversight, but it does mean
+the original argument for SQLite (placeholders outlive the process, so the
+store must too) now only holds *within* a run. What SQLite still buys is a
+bounded memory footprint and LRU eviction across a long session.
+
+If cross-restart resolution is ever wanted back, the change is to exempt
+`OBJECT_STORE_PATH` from `_CONVERSATION_LOG_GLOBS` handling in
+`purge_conversations()` — the store itself already supports it.
+
+Hashes cover the **full** content, not a prefix. An earlier version hashed
+only the first 4096 chars, which collided for any two results sharing an
+opening — paginated listings, repeated command output, screenshots of the
+same window — and since writes are `INSERT OR REPLACE`, a collision served
+the wrong content back under a valid-looking hash.
 
 It subclasses `dict`, so the optimizers' `store[h] = obj` and `store.get(h)`
 are unchanged. Writes go through to disk; reads fall back to disk on a miss
@@ -935,7 +971,9 @@ so the reasoning is recoverable.
 |---|---|
 | **MCP sessions destroyed under flaky network.** A cancelled `tools/list` made the SDK respond twice and assert; the `AssertionError` unwound the anyio TaskGroup and killed the session. | Cancellation propagates out of the gate so the SDK's own guard fires. [§8](#8-the-tool-gate), [tests](../tests/test_tool_gate_cancellation.py) |
 | **The gate re-prompted forever.** No human answers inside a client's ~5 s timeout. | The popup outlives the request and publishes through `on_result`; the retry is served from cache. [§8](#8-the-tool-gate) |
-| **`vt_object_store` was in-memory.** Restarting orphaned every `get_vt_object` placeholder in live sessions. | SQLite-backed, with disk fallback on read. [§6](#6-the-optimizer-pipeline), [tests](../tests/test_object_store.py) |
+| **`vt_object_store` was in-memory.** Restarting orphaned every `get_vt_object` placeholder in live sessions. | SQLite-backed, with disk fallback on read and LRU eviction at 512 MB. Note the startup purge still drops the file, so resolution is per-run by design. [§6](#6-the-optimizer-pipeline), [tests](../tests/test_object_store.py) |
+| **The model wrote proxy placeholders as prose instead of calling a tool.** An assistant-side placeholder sat exactly where a `tool_use` used to be and got pattern-completed; one variant ended the turn with the work undone, another produced eight Bash calls with invented hashes. | The proxy never writes into the assistant turn; the truncation pointer moved to the user side. A system note explaining the placeholders was tried and did not help. [§6](#6-the-optimizer-pipeline), [tests](../tests/test_tool_use_optimizer.py) |
+| **Prefix hashing collided.** Content hashes covered only the first 4096 chars, so two results sharing an opening resolved to one row and `INSERT OR REPLACE` served the wrong one. | Hash the full content. [§6](#6-the-optimizer-pipeline) |
 | **OAuth state was memory-only** — re-auth on every restart. | Refresh tokens in the Keychain, restored and refreshed at startup. [§10](#10-oauth-sign-in-and-token-refresh) |
 | **Tracker required `X-Claude-Code-Session-Id`** and 502'd without it. | Falls back to a hash of the first user message. [tests](../tests/test_tracker_session_id.py) |
 | **TUI arm/disarm raised `ImportError`** — it imported functions that did not exist. | `arm_claude_link`/`disarm_claude_link` added; the three open-coded copies of that sequence now call them. [tests](../tests/test_claude_link_and_config.py) |

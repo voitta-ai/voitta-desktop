@@ -1,9 +1,15 @@
-"""The object store must outlive the process.
+"""The object store must hold every reference written during a run.
 
 Optimizers strip content out of a conversation and leave a
-``get_vt_object(hash=...)`` reference behind. Those references sit in a
-transcript that survives a restart, so a store that does not survive one
-turns every earlier reference into a dead end. These tests pin that.
+``get_vt_object(hash=...)`` reference behind. A long session writes far more
+than fits in RAM, so the store writes through to SQLite, falls back to disk on
+a miss, and evicts by least-recently-read. These tests pin the durability of a
+reference against eviction and process-level reopening.
+
+Scope: the app deletes the database at startup (``purge_conversations()``), so
+references do not resolve across restarts by design. These tests exercise
+reopening directly because that is the mechanism the in-run disk fallback
+relies on, not because the shipped app reuses a previous run's file.
 """
 
 import json
@@ -108,13 +114,74 @@ def test_stats_counts_what_is_on_disk(tmp_path):
     assert stats["persistent"] is True
 
 
-def test_rewrite_replaces_rather_than_duplicates(tmp_path):
+def test_rewriting_a_held_key_is_a_no_op(tmp_path):
+    """Keys are content hashes, so a key already held means the same payload:
+    the write is skipped entirely rather than re-INSERTed.
+
+    This is the hot path. The proxy re-derives the optimized view on every
+    turn, so without the skip every object was rewritten on every request
+    (478 writes/request on a long session, each with a table scan and an
+    fsync). A same-key write with *different* content therefore keeps the
+    first payload — the same trade the 12-hex-char references already make.
+    """
     store = _store(tmp_path)
     store["abc123"] = OBJ
+
+    before = store._db().total_changes
     store["abc123"] = {"type": "image", "data": "replaced"}
 
+    assert store._db().total_changes == before, "the database was written to"
     assert store.stats()["count"] == 1
-    assert _store(tmp_path).get("abc123")["data"] == "replaced"
+    assert store["abc123"] == OBJ                       # first payload kept
+    assert _store(tmp_path).get("abc123") == OBJ
+
+
+def test_reopened_store_still_replaces_a_row(tmp_path):
+    """The skip is per-process (it consults the resident dict), so a store
+    reopened over an existing file still writes — and the running byte total
+    must not double-count the row it displaces."""
+    _store(tmp_path)["abc123"] = OBJ
+
+    second = _store(tmp_path)
+    second["abc123"] = {"type": "image", "data": "y" * 100}
+
+    assert second.stats()["count"] == 1
+    assert second.stats()["bytes"] == second._total_bytes
+
+
+def test_byte_total_tracks_inserts_and_eviction(tmp_path):
+    """The running total replaces a SUM() scan per write, so it has to stay
+    equal to what the table actually holds — including across an eviction."""
+    store = _store(tmp_path, budget_bytes=2_000)
+    payload = {"type": "tool_result", "data": "y" * 400}
+
+    for i in range(4):                                  # under budget
+        store[f"h{i}"] = payload
+    assert store._total_bytes == store.stats()["bytes"]
+
+    for i in range(4, 20):                              # forces eviction
+        store[f"h{i}"] = payload
+    assert store._total_bytes == store.stats()["bytes"]
+    assert store._total_bytes <= 2_000
+
+
+def test_evicted_object_stays_resolvable_from_memory(tmp_path):
+    """Eviction drops the disk row but must leave the resident copy alone.
+
+    Within a run memory is the store of record: it is never evicted and the
+    file is deleted at startup. If eviction also dropped the key, the skip
+    above would refuse to rewrite it and a live reference in the context would
+    stop resolving.
+    """
+    store = _store(tmp_path, budget_bytes=2_000)
+    payload = {"type": "tool_result", "data": "y" * 400}
+    for i in range(20):
+        store[f"h{i}"] = payload
+
+    assert store.stats()["count"] < 20                  # something was evicted
+    evicted = [f"h{i}" for i in range(20) if dict.get(store, f"h{i}") is None]
+    assert not evicted, f"evicted from memory as well: {evicted[:3]}"
+    assert store.get("h0") == payload                   # oldest still resolves
 
 
 def test_schema_is_readable_by_plain_sqlite(tmp_path):
