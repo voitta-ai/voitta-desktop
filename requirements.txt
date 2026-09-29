@@ -12,7 +12,9 @@ msal>=1.28.0
 requests>=2.31.0
 
 # MCP proxy
-fastmcp>=2.10.0,<4   # 4.x moved to httpx2 / mcp 2.x; code targets fastmcp 3
+fastmcp==3.4.7       # MUST match pyproject.toml — see the comment there.
+                     # A dev venv on a different version than the bundle is
+                     # how the "Unknown tool" breakage shipped unnoticed.
 httpx>=0.27          # imported directly by mcpproxy/server.py
 
 # macOS native UI

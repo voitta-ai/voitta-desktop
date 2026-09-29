@@ -71,10 +71,18 @@ requires = [
     "aiohttp>=3.9.0",
 
     # MCP unified proxy
-    # <4: fastmcp 4 moved to the renamed "httpx2" package and mcp 2.x; the
-    # code (and the dev venv) is written against fastmcp 3 / httpx. A clean
-    # build on 2026-09-13 resolved 4.0.3 and the MCP proxy died on import.
-    "fastmcp>=2.10.0,<4",
+    # Exact pin, and requirements.txt must match it. Two separate incidents:
+    #   * 4.x moved to the renamed "httpx2" package and mcp 2.x — a clean
+    #     build on 2026-09-13 resolved 4.0.3 and the MCP proxy died on import,
+    #     so the range became <4.
+    #   * <4 then resolved 3.4.7 into the bundle while the dev venv still had
+    #     3.1.1. 3.4.7's ProxyProvider._get_tool reads a private cache our
+    #     provider never fills, so every proxied tool call failed with
+    #     "Unknown tool" while listings kept working — invisible to a test
+    #     suite running against 3.1.1 (see tests/test_proxied_tool_calls.py).
+    # A range across a library we subclass buys nothing and hides breakage;
+    # upgrade deliberately, with the suite running on the new version.
+    "fastmcp==3.4.7",
     # mcpproxy/server.py imports httpx directly; declare it rather than rely
     # on it arriving transitively through fastmcp.
     "httpx>=0.27",

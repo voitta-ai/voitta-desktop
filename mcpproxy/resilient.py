@@ -12,6 +12,7 @@ from fastmcp import FastMCP as FastMCPServer
 from fastmcp.server.providers.proxy import (
     FastMCPProxy, ProxyClient, ProxyProvider, ProxyTool, StatefulProxyClient,
 )
+from fastmcp.utilities.versions import version_sort_key
 
 logger = logging.getLogger("voitta-desktop.mcp")
 
@@ -276,6 +277,30 @@ class ResilientProxyProvider(ProxyProvider):
         except Exception as e:
             self._warn_upstream("tool listing", e)
             return []
+
+    async def _get_tool(self, name: str, version=None):
+        """Resolve one tool by name off OUR listing — the tools/call path.
+
+        Must be overridden together with ``_list_tools``. fastmcp's
+        ``ProxyProvider`` keeps a private ``_tools_cache`` that only its own
+        ``_list_tools`` fills; since 3.4.7 its ``_get_tool`` reads that field
+        and asserts it is non-None. We serve listings from the disk cache and
+        never touch it, so every proxied call died on that assertion — which
+        fastmcp reports as ``Unknown tool: 'vim_search'``. Tools listed fine
+        and none of them could be called, on every mounted backend.
+
+        The body mirrors ``Provider._get_tool``: filter the listing by name,
+        honour a version spec, return the highest match. Depending on our own
+        ``_list_tools`` instead of a base-class field also keeps the call path
+        working across fastmcp upgrades.
+        """
+        tools = await self._list_tools()
+        matching = [t for t in tools if t.name == name]
+        if version is not None:
+            matching = [t for t in matching if version.matches(t.version)]
+        if not matching:
+            return None
+        return max(matching, key=version_sort_key)
 
     async def _list_tools_live(self) -> list[ProxyTool]:
         """Fetch the tool list from upstream with an ephemeral client, but build
