@@ -21,6 +21,7 @@ Usage:  check_bundle.py <path to .app>
 
 from __future__ import annotations
 
+import os
 import pathlib
 import subprocess
 import sys
@@ -95,9 +96,15 @@ def check_bundle_imports(app_dir: pathlib.Path) -> str | None:
         "    importlib.import_module(name)\n"
         "print('ok')\n"
     )
+    # -B: never write bytecode. This runs AFTER `briefcase build` has ad-hoc
+    # signed the bundle, and importing the app tree with bytecode enabled
+    # drops __pycache__/*.pyc into the sealed Resources/ — every one of them a
+    # "file added" that invalidates the signature. The check must observe the
+    # bundle, not modify it.
     result = subprocess.run(
-        [sys.executable, "-c", program],
+        [sys.executable, "-B", "-c", program],
         capture_output=True, text=True, cwd=str(resources),
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
     )
     if result.returncode != 0:
         return (result.stderr or result.stdout).strip()

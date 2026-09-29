@@ -166,6 +166,20 @@ fi
 echo "[build_app] briefcase update (sync source + resources)..."
 "$VENV/bin/briefcase" update macOS app --no-input
 
+# `update` refreshes the code but NOT Info.plist — only `create` writes that.
+# So every build after the first ships a bundle whose Finder-visible version
+# is whatever `create` last saw, while the code inside is current. Stamp it
+# here, BEFORE `build` signs the bundle: editing the plist afterwards would
+# invalidate the seal we are about to apply.
+PLIST="$APP_DIR/Contents/Info.plist"
+if [ -f "$PLIST" ]; then
+  for key in CFBundleShortVersionString CFBundleVersion; do
+    /usr/libexec/PlistBuddy -c "Set :$key $VERSION" "$PLIST" 2>/dev/null \
+      || /usr/libexec/PlistBuddy -c "Add :$key string $VERSION" "$PLIST"
+  done
+  echo "[build_app] Info.plist stamped: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST")"
+fi
+
 # briefcase build — strips, signs (ad-hoc by default).
 echo "[build_app] briefcase build (ad-hoc sign)..."
 "$VENV/bin/briefcase" build macOS app --no-input
