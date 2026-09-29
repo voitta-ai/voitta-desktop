@@ -9,7 +9,9 @@ from pathlib import Path
 
 import mcp.types
 from fastmcp import FastMCP as FastMCPServer
-from fastmcp.server.providers.proxy import FastMCPProxy, ProxyClient, ProxyProvider, ProxyTool
+from fastmcp.server.providers.proxy import (
+    FastMCPProxy, ProxyClient, ProxyProvider, ProxyTool, StatefulProxyClient,
+)
 
 logger = logging.getLogger("voitta-desktop.mcp")
 
@@ -90,6 +92,28 @@ class ResilientProxyProvider(ProxyProvider):
     def __init__(self, client_factory, *, backend_name: str = "upstream", cache_listings: bool = False,
                  app_ref=None, prefix: str = ""):
         super().__init__(client_factory)
+        # Two factories, one per lifetime:
+        #
+        # * ``self.client_factory`` (the base class's) opens a fresh client and
+        #   is used for this provider's OWN calls — listings, the capability
+        #   handshake, the instructions fetch. Those run as background tasks
+        #   with no server session in scope, so they cannot be session-bound.
+        #
+        # * ``self._tool_client_factory`` is what every ProxyTool is built
+        #   with, i.e. what runs inside a tools/call request. When the backend
+        #   is a StatefulProxyClient this is ``new_stateful``: one upstream
+        #   connection per server session, reused across that session's
+        #   calls and closed on the session's exit stack. Otherwise (stdio) it
+        #   is the same ephemeral factory.
+        #
+        # Wiring this at the ProxyTool seam, rather than swapping the base
+        # factory, is what keeps ``new_stateful``'s get_context() call out of
+        # the request-less paths where it would raise.
+        probe = client_factory()
+        if isinstance(probe, StatefulProxyClient):
+            self._tool_client_factory = probe.new_stateful
+        else:
+            self._tool_client_factory = client_factory
         self._backend_name = backend_name
         self._cache_listings = cache_listings
         self._app_ref = app_ref
@@ -234,14 +258,14 @@ class ResilientProxyProvider(ProxyProvider):
         # refresh in background. The first listing on a fresh install still
         # blocks; everything after is instant regardless of network.
         if self._cache_listings:
-            cached = _load_cache(self._backend_name, "tools", mcp.types.Tool, client_factory=self.client_factory)
+            cached = _load_cache(self._backend_name, "tools", mcp.types.Tool, client_factory=self._tool_client_factory)
             if cached is not None:
                 self._stash_tool_names(cached)
                 self._spawn_refresh("tools", self._refresh_tools)
                 return cached
 
         try:
-            tools = await asyncio.wait_for(super()._list_tools(), timeout=LISTING_FIRST_FILL_TIMEOUT_S)
+            tools = await asyncio.wait_for(self._list_tools_live(), timeout=LISTING_FIRST_FILL_TIMEOUT_S)
             if self._cache_listings and tools:
                 _save_cache(self._backend_name, "tools", tools)
             self._stash_tool_names(tools)
@@ -253,8 +277,28 @@ class ResilientProxyProvider(ProxyProvider):
             self._warn_upstream("tool listing", e)
             return []
 
+    async def _list_tools_live(self) -> list[ProxyTool]:
+        """Fetch the tool list from upstream with an ephemeral client, but build
+        each ProxyTool with the session-scoped factory.
+
+        Replaces the base ``_list_tools`` for one reason: the base builds every
+        tool with the same factory it listed with. Here the listing must use
+        the request-less ephemeral client and the tools must use the stateful
+        one, so the two are separated. Error semantics match the base exactly —
+        METHOD_NOT_FOUND is an empty list, anything else propagates.
+        """
+        client = self.client_factory()
+        async with client:
+            try:
+                mcp_tools = await client.list_tools()
+            except mcp.McpError as e:
+                if e.error.code == mcp.types.METHOD_NOT_FOUND:
+                    return []
+                raise
+        return [ProxyTool.from_mcp_tool(self._tool_client_factory, t) for t in mcp_tools]
+
     async def _refresh_tools(self):
-        tools = await super()._list_tools()
+        tools = await self._list_tools_live()
         if tools:
             _save_cache(self._backend_name, "tools", tools)
             self._stash_tool_names(tools)
@@ -274,7 +318,7 @@ class ResilientProxyProvider(ProxyProvider):
         """
         try:
             tools = await asyncio.wait_for(
-                ProxyProvider._list_tools(self),
+                self._list_tools_live(),
                 timeout=REFRESH_TIMEOUT_S,
             )
         except asyncio.CancelledError:

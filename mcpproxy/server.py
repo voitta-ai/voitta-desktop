@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 import httpx
 
 from fastmcp import FastMCP as FastMCPServer
-from fastmcp.server.providers.proxy import ProxyClient
+from fastmcp.server.providers.proxy import ProxyClient, StatefulProxyClient
 from fastmcp.client.transports import StreamableHttpTransport, StdioTransport
 from fastmcp.utilities.types import Image
 
@@ -25,12 +25,25 @@ logger = logging.getLogger("voitta-desktop.mcp")
 
 # ── Auth-factory builders, one per auth.type ─────────────────────────────────
 #
-# HTTP factories return a thunk that builds a fresh ProxyClient on each
-# upstream call so token refreshes propagate without rebuilding the proxy.
+# HTTP factories return a thunk that builds a StatefulProxyClient. fastmcp
+# keys one upstream connection per *server session* off that client
+# (StatefulProxyClient.new_stateful) and tears it down on the session's own
+# exit stack — so a Claude Code window pays DNS + TLS + MCP initialize once,
+# not on every tool call. For a remote backend on an 80–140 ms WAN that was
+# 3–7 s per call; it is now the wire time.
+#
+# Headers are read when the client is BUILT, which is once per session. A
+# token that changes mid-session therefore reaches new sessions, not live
+# ones — the same restart-to-apply contract Settings already states for URL
+# edits. There is deliberately no header-diffing or silent reconnect here:
+# a dead upstream surfaces as the real error and the library reconnects on
+# the session's next call.
 #
 # Stdio factories (npx / command) create the transport ONCE at setup time and
 # close over it. Creating a new NpxStdioTransport per call would spawn a fresh
 # npx process on every tool listing and tool call — a process-per-call leak.
+# They stay on plain ProxyClient: the transport already keeps the process
+# alive, and a per-session subprocess would be the wrong lifetime.
 
 def _server_url(server: dict) -> str:
     """Return the HTTP endpoint for an http-kind server.
@@ -100,7 +113,7 @@ def _make_transport(url: str, headers: dict) -> StreamableHttpTransport:
 def _make_static_headers_factory(url: str, headers: dict):
     """Static headers — used by none/bearer/api_key/basic/custom_headers."""
     def factory():
-        return ProxyClient(_make_transport(url, dict(headers)))
+        return StatefulProxyClient(_make_transport(url, dict(headers)))
     return factory
 
 
@@ -124,7 +137,7 @@ def _make_voitta_rag_legacy_factory(app_ref, url: str):
             if profile.get("name"):
                 headers[f"X-Auth-Name-{suffix}"] = profile["name"]
         logger.debug("voitta_rag_legacy factory: url=%s, %d headers", url, len(headers))
-        return ProxyClient(_make_transport(url, headers))
+        return StatefulProxyClient(_make_transport(url, headers))
     return factory
 
 
@@ -146,7 +159,7 @@ def _make_oauth_app_factory(app_ref, url: str, backend: str, app_type: str):
                     headers["X-Auth-Name"] = profile["name"]
         logger.debug("oauth_app factory: url=%s, backend=%s, headers=%s",
                      url, backend, list(headers.keys()))
-        return ProxyClient(_make_transport(url, headers))
+        return StatefulProxyClient(_make_transport(url, headers))
     return factory
 
 

@@ -270,6 +270,13 @@ class StatusPopup:
         self.window = None
         self.webview = None
         self.observer = None
+        # Token from NSNotificationCenter's block-based observer. It MUST be
+        # kept and removed on close: the block captures `self`, the center
+        # holds the block, so an un-removed observer pins this popup — and its
+        # WKWebView with a live JavaScriptCore heap — for the life of the
+        # process. One leaked view per "Refresh LLM Tools" click; JSC's
+        # scavenger then sweeps every one of them on a timer.
+        self._close_token = None
         self._closed = False
         self._refresh_handler = None      # callable(idx: int) -> None
         self._refresh_all_handler = None  # callable() -> None
@@ -327,15 +334,15 @@ class StatusPopup:
         def _on_will_close(notification):
             if self._closed:
                 return
-            self._cleanup_observer()
             self._closed = True
+            self._teardown()
             if self._close_handler is not None:
                 try:
                     self._close_handler()
                 except Exception as e:
                     logger.warning("close handler raised: %s", e)
 
-        NSNotificationCenter.defaultCenter().addObserverForName_object_queue_usingBlock_(
+        self._close_token = NSNotificationCenter.defaultCenter().addObserverForName_object_queue_usingBlock_(
             "NSWindowWillCloseNotification", self.window, None, _on_will_close
         )
 
@@ -349,6 +356,27 @@ class StatusPopup:
             except Exception:
                 pass
             self.observer = None
+
+    def _teardown(self):
+        """Release everything that would otherwise outlive the window.
+
+        Order matters: the notification observer goes first (it is the one
+        holding `self`), then the KVO observer, then the web view is detached
+        from the window and both references are dropped. The window was
+        created with releasedWhenClosed=False so that AppKit never frees it
+        under a still-live Python wrapper; that means *we* are the last owner
+        and must let go here or it lives forever.
+        """
+        if self._close_token is not None:
+            NSNotificationCenter.defaultCenter().removeObserver_(self._close_token)
+            self._close_token = None
+        self._cleanup_observer()
+        if self.webview is not None:
+            self.webview.stopLoading()
+        if self.window is not None:
+            self.window.setContentView_(None)
+        self.webview = None
+        self.window = None
 
     def update(self, idx: int, state: str, label: str):
         """Push a status change for row `idx`. Safe from any thread."""
