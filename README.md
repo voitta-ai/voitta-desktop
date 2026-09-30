@@ -9,24 +9,32 @@ The dog in your menu bar shows token savings and active conversation count. Clic
 
 ## Setup
 
-### 1. Install dependencies
+### 1. Install
+
+Download `Voitta.Desktop-<version>.dmg` from the
+[latest release](https://github.com/voitta-ai/voitta-desktop/releases/latest),
+open it and drag **Voitta Desktop** to **Applications**. The build is signed
+and notarized, and runs on Apple silicon with macOS 14 or later.
+
+Launch it. A dog icon appears in your menu bar and both proxies start.
+Credentials and backends are configured in the app (click the dog >
+Settings).
+
+<details>
+<summary>Run from source instead</summary>
 
 ```bash
 cd voitta-desktop
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.sample .env   # optional, see below
+python app.py
 ```
 
-### 2. Configure credentials
-
-Copy `.env.sample` to `.env` and fill in your OAuth credentials:
-
-```bash
-cp .env.sample .env
-```
-
-Key fields:
+On first start the app seeds `~/.voitta-desktop/apps.json` from the
+environment, including a `.env` in the working directory. After that
+`apps.json` wins; change settings in the Settings window. Key fields:
 
 | Variable | What it is |
 |---|---|
@@ -38,17 +46,9 @@ Key fields:
 | `JIRA_EMAIL` | Your Jira account email |
 | `JIRA_API_TOKEN` | Jira API token (create at https://id.atlassian.com/manage-profile/security/api-tokens) |
 
-You can also configure these through the Settings UI (click the dog > Settings).
+</details>
 
-### 3. Run it
-
-```bash
-python app.py
-```
-
-A dog icon appears in your menu bar. That's it — both proxies start automatically.
-
-### 4. Configure Claude Code
+### 2. Configure Claude Code
 
 Claude Code needs two things pointed at Voitta Desktop:
 
@@ -105,7 +105,7 @@ This gives Claude access to all mounted backends through a single endpoint:
 export ANTHROPIC_BASE_URL=http://127.0.0.1:18900
 ```
 
-### 5. Authenticate providers
+### 3. Authenticate providers
 
 After launching Voitta Desktop:
 
@@ -126,7 +126,8 @@ Tokens refresh automatically in the background. Click a connected provider again
 | 18767 | Jira MCP (mcp-atlassian) subprocess | `JIRA_MCP_PORT` |
 | 53214 | OAuth2 redirect callback | `OAUTH_REDIRECT_PORT` |
 
-All configurable in `.env`.
+Saved in `~/.voitta-desktop/apps.json` and editable in Settings. The
+variables only seed a fresh config.
 
 ## What you see in the menu bar
 
@@ -167,17 +168,22 @@ Click a conversation to see a token usage chart. Click "Open conversation detail
 
 ## Config storage
 
-- `~/.voitta_desktop/apps.json` — OAuth apps, Jira credentials, proxy ports
-- `~/.voitta_desktop/logs/` — Debug logs, request JSONL
-- `~/.voitta-desktop/state/objects.db` — Removed tool results, images and calls, retrievable via `get_vt_object`
+Everything lives under `~/.voitta-desktop/` (set `VOITTA_DESKTOP_HOME` to
+move it):
+
+- `apps.json` — OAuth apps, MCP servers, Jira credentials, proxy ports
+- `logs/` — `desktop.log`, request JSONL, per-conversation dumps, MCP subprocess logs
+- `state/objects.db` — Removed tool results, images and calls, retrievable via `get_vt_object`
+- `cache/tools/` — Cached MCP tool listings (resilience)
+- `jira.env` — Auto-generated for the mcp-atlassian subprocess
 
 Every restart deletes the previous runs' conversations: the request JSONL,
 the per-conversation and rejected-request dumps, and the object store.
 Claude Code's own transcripts are untouched.
-- `~/.voitta_desktop_cache/` — Cached MCP tool listings (resilience)
-- `~/.voitta_desktop/jira.env` — Auto-generated for mcp-atlassian subprocess
 
-On first run, Voitta Desktop migrates config from `~/.voitta_auth/apps.json` if it exists.
+On first run, Voitta Desktop picks up config from the older
+`~/.voitta_desktop/`, `~/.voitta_desktop_cache/` and `~/.voitta_auth/`
+locations if they exist.
 
 ## MCP subprocess dependencies
 
