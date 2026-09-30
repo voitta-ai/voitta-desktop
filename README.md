@@ -16,9 +16,12 @@ Download `Voitta.Desktop-<version>.dmg` from the
 open it and drag **Voitta Desktop** to **Applications**. The build is signed
 and notarized, and runs on Apple silicon with macOS 14 or later.
 
-Launch it. A dog icon appears in your menu bar and both proxies start.
-Credentials and backends are configured in the app (click the dog >
-Settings).
+Launch it. A dog icon appears in your menu bar, both proxies start, and on
+first launch the Settings window opens, where credentials and backends are
+configured. Later, open Settings from the dog's menu. macOS hides menu bar
+icons that don't fit (on a notched MacBook with a busy menu bar, the dog may
+never be drawn). Launching Voitta Desktop again while it runs, from
+Spotlight or Applications, also opens Settings.
 
 <details>
 <summary>Run from source instead</summary>
