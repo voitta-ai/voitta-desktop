@@ -7,7 +7,7 @@
 [tool.briefcase]
 project_name = "Voitta Desktop"
 bundle = "ai.voitta"
-version = "0.1.23"
+version = "0.2.0b1"
 url = "https://voitta.ai"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
@@ -26,9 +26,7 @@ Voitta Desktop is a macOS menu-bar app that runs two local proxies:
 
   • LLM Proxy — intercepts Claude API calls, optimizes context (image
     stripping, stale file-read removal, bash output compression),
-    visualizes per-conversation token usage and savings, and routes each
-    Claude Code window to a Claude or ChatGPT subscription or an API-key
-    provider (DeepSeek, Mistral, ...).
+    visualizes per-conversation token usage and savings.
 
   • MCP Auth Proxy — single FastMCP endpoint that aggregates RAG, Google
     Workspace, Jira, and other backends with automatic OAuth2 injection.
@@ -50,7 +48,6 @@ sources = [
     "runtime.py",
     "lifecycle.py",
     "auth",
-    "llmgw",
     "mcpproxy",
     "middleware",
     "optimizers",
