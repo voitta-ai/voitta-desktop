@@ -11,6 +11,10 @@
 #   - workflow_dispatch re-runs the same release job, restricted to master,
 #     for retrying a build/notarize/publish failure on a version that's
 #     already merged, without needing a new bump.
+#   - A PEP 440 pre-release version (0.2.0b1, 0.2.0rc1) is published as a
+#     GitHub prerelease, so releases/latest stays on the last final version.
+#     Pre-releases may be dispatched from any branch: that is how a PR gets
+#     a signed, notarized beta DMG before it merges.
 #
 # Reuses scripts/build_app.sh as-is — the only thing CI sets up that the
 # script can't is the `voitta-notary` keychain profile (locally created via
@@ -40,11 +44,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Version must advance
         env:
           BASE: ${{ github.base_ref }}
         run: |
           set -euo pipefail
+          pip install -q packaging
           git fetch --no-tags --depth=1 origin "$BASE"
           old=$(git show "FETCH_HEAD:$VERSION_FILE" 2>/dev/null | grep -m1 -E '^version = ' | sed -E 's/^version = "([^"]+)"/\1/' || true)
           if [ -z "$old" ]; then
@@ -60,11 +69,29 @@ jobs:
             echo "::error::$VERSION_FILE version is still $old - bump it."
             exit 1
           fi
-          if [ "$(printf '%s\n%s\n' "$old" "$new" | sort -V | head -1)" != "$old" ]; then
-            echo "::error::$new does not advance past $old."
-            exit 1
-          fi
-          echo "$old -> $new"
+          # PEP 440 order, as briefcase uses. `sort -V` ranks 0.2.0 below
+          # 0.2.0b1, so a beta could never be followed by its release.
+          # Canonical spelling only: briefcase names the DMG after the
+          # normalized version, while the tag and Info.plist take it verbatim.
+          python - "$old" "$new" <<'EOF'
+          import sys
+          from packaging.version import InvalidVersion, Version
+
+          def fail(msg):
+              print(f"::error::{msg}")
+              sys.exit(1)
+
+          old, new = sys.argv[1], sys.argv[2]
+          try:
+              parsed = Version(new)
+          except InvalidVersion:
+              fail(f"{new} is not a PEP 440 version.")
+          if str(parsed) != new:
+              fail(f"Spell the version {parsed}, not {new}.")
+          if parsed <= Version(old):
+              fail(f"{new} does not advance past {old}.")
+          print(f"{old} -> {new}")
+          EOF
 
   release:
     if: github.event_name != 'pull_request'
@@ -74,18 +101,6 @@ jobs:
       contents: write  # gh release create/upload needs this
     steps:
       - uses: actions/checkout@v4
-
-      - name: Restrict release job to master
-        # workflow_dispatch lets a maintainer pick any ref in the UI; push
-        # is already filtered to master by the trigger above, so this is a
-        # no-op there. Without this, a stale/recovery branch could get
-        # signed, notarized, and published as a public release.
-        run: |
-          set -euo pipefail
-          if [ "${{ github.ref }}" != "refs/heads/master" ]; then
-            echo "::error::release job only runs against refs/heads/master (got ${{ github.ref }}). Re-dispatch from master."
-            exit 1
-          fi
 
       - name: Resolve version and tag
         id: ver
@@ -98,6 +113,24 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          if [[ "$version" =~ (a|b|rc)[0-9]+$ ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restrict final releases to master
+        # workflow_dispatch lets a maintainer pick any ref in the UI; push
+        # is already filtered to master by the trigger above, so this is a
+        # no-op there. Without this, a stale/recovery branch could get
+        # signed, notarized, and published as a public release. Pre-releases
+        # are exempt: they never become "Latest".
+        run: |
+          set -euo pipefail
+          if [ "${{ github.ref }}" != "refs/heads/master" ] && [ "${{ steps.ver.outputs.prerelease }}" != "true" ]; then
+            echo "::error::Only pre-release versions (e.g. 0.2.0b1) may be released from ${{ github.ref }}; ${{ steps.ver.outputs.version }} must be released from refs/heads/master."
+            exit 1
+          fi
 
       - name: Skip only if the release already has its DMG
         # Distinguish "fully released" from "release exists but the DMG
@@ -227,5 +260,6 @@ jobs:
               --title "Voitta Desktop $TAG" \
               --generate-notes \
               --target "$GITHUB_SHA" \
+              --prerelease="${{ steps.ver.outputs.prerelease }}" \
               "$DMG"
           fi
