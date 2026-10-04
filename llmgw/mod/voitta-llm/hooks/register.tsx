@@ -123,7 +123,24 @@ function menu(v: LlmView): string {
   ].join('\n')
 }
 
+// The picker is for picking; the status line is the lasting display. So
+// the panel goes away on a pick, on Esc, or as soon as the person sends
+// anything, never lingering above the prompt.
+let paneOpen = false
+
+async function closePane($: Engine) {
+  if (paneOpen) {
+    paneOpen = false
+    await $.ui.close({ id: PANE })
+  }
+}
+
 export const register: Register = on => {
+  on('prompt.submit', async ($, e, next) => {
+    await closePane($)
+    return next(e)
+  })
+
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'llm',
@@ -153,7 +170,8 @@ export const register: Register = on => {
         const v = await refresh($)
         const opened = await $.ui.open({ id: PANE, title: 'LLM for this window', focus: true })
         if (opened.isPlaced) {
-          return { text: `${statusText(v)}. Pick another in the panel (Esc closes it).` }
+          paneOpen = true
+          return { text: 'Pick an account in the panel (Esc closes it).' }
         }
         await $.ui.close({ id: PANE })
         return { text: `${statusText(v)}\n\n${menu(v)}` }
@@ -209,7 +227,7 @@ export const register: Register = on => {
       <Box flexDirection="column">
         <Select
           key="account"
-          label="Account: "
+          label="Account"
           options={options}
           value={v.pick ?? 'default'}
           autoFocus
@@ -217,7 +235,7 @@ export const register: Register = on => {
             try {
               const next = await pick($, value === 'default' ? null : value)
               $.ui.toast(picked(next).split('\n')[0] ?? '')
-              await $.ui.close({ id: PANE })
+              await closePane($)
             } catch (err) {
               await fail($, err)
             }

@@ -21,6 +21,7 @@ function gateway(on: On, opts: { session?: () => string; down?: boolean } = {}) 
   const picks: Record<string, string> = {}
   const puts: { session: string; account: string }[] = []
   const status: (string | undefined)[] = []
+  const closed: string[] = []
   mock.env(on, { ANTHROPIC_BASE_URL: `${GW}/` })
   on('session.id', () => ({ value: opts.session ? opts.session() : 'win-A' }))
   on('ui.status', (_$, e) => {
@@ -29,7 +30,10 @@ function gateway(on: On, opts: { session?: () => string; down?: boolean } = {}) 
   })
   on('ui.toast', () => ({ value: undefined }))
   on('ui.open', () => ({ value: { isPlaced: true as const } }))
-  on('ui.close', () => ({ value: undefined }))
+  on('ui.close', (_$, e) => {
+    closed.push(e.id)
+    return { value: undefined }
+  })
   on('classic.SessionStart', () => ({}))
   on('http.fetch', (_$, e) => {
     if (opts.down) {
@@ -50,7 +54,7 @@ function gateway(on: On, opts: { session?: () => string; down?: boolean } = {}) 
     expect(url.origin + url.pathname).toBe(`${GW}/_voitta/llm/api/llm/options`)
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(view(url.searchParams.get('session') ?? '')) } }
   })
-  return { picks, puts, status }
+  return { picks, puts, status, closed }
 }
 
 test('/llm <name> picks that account for this window', async ($, on) => {
@@ -120,3 +124,16 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(gw.puts.at(-1)).toEqual({ session: 'win-A', account: 'openai:a' })
   })
 }
+
+test('the picker closes when the person sends a message, leaving only the status line', async ($, on) => {
+  const gw = gateway(on)
+  // stands in for the engine sending the prompt on
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  const r = await $.command.run({ command: 'llm', args: '' })
+  expect(r.text).toBe('Pick an account in the panel (Esc closes it).')
+  await $.prompt.submit({ text: 'hello' })
+  expect(gw.closed).toEqual(['voitta-llm'])
+  // nothing more to close the second time
+  await $.prompt.submit({ text: 'again' })
+  expect(gw.closed).toEqual(['voitta-llm'])
+})
