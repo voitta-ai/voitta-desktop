@@ -22,13 +22,20 @@ function gateway(on: On, opts: { session?: () => string; down?: boolean } = {}) 
   const puts: { session: string; account: string }[] = []
   const status: (string | undefined)[] = []
   const closed: string[] = []
+  const toasts: { text: string; timeoutMs?: number }[] = []
+  const stores: Record<string, unknown>[] = []
   mock.env(on, { ANTHROPIC_BASE_URL: `${GW}/` })
   on('session.id', () => ({ value: opts.session ? opts.session() : 'win-A' }))
   on('ui.status', (_$, e) => {
     status.push(e.text)
     return { value: undefined }
   })
-  on('ui.toast', () => ({ value: undefined }))
+  on('ui.toast', (_$, e) => {
+    toasts.push({ text: e.text, timeoutMs: e.timeoutMs })
+    return { value: undefined }
+  })
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.cwd', () => ({ value: '/work/proj' }))
   on('ui.open', () => ({ value: { isPlaced: true as const } }))
   on('ui.close', (_$, e) => {
     closed.push(e.id)
@@ -43,6 +50,12 @@ function gateway(on: On, opts: { session?: () => string; down?: boolean } = {}) 
     const view = (session: string) => ({
       session, pick: picks[session] ?? null, default: OPTIONS[0], options: OPTIONS, ui: 'http://localhost:18910',
     })
+    if (e.init?.method === 'POST' && url.pathname === '/_voitta/llm/api/conversations') {
+      stores.push(JSON.parse(e.init.body ?? '{}') as Record<string, unknown>)
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({
+        path: '/home/.voitta-desktop/conversations/win-A.json', bytes: 1234, records: 10, user: 3,
+        assistant: 4, subagents: 0, routed_requests: 2, unreadable_lines: 0 }) } }
+    }
     if (e.init?.method === 'PUT') {
       const session = decodeURIComponent(url.pathname.split('/').pop() ?? '')
       const account = (JSON.parse(e.init.body ?? '{}') as { account: string }).account
@@ -54,7 +67,7 @@ function gateway(on: On, opts: { session?: () => string; down?: boolean } = {}) 
     expect(url.origin + url.pathname).toBe(`${GW}/_voitta/llm/api/llm/options`)
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(view(url.searchParams.get('session') ?? '')) } }
   })
-  return { picks, puts, status, closed }
+  return { picks, puts, status, closed, toasts, stores }
 }
 
 test('/llm <name> picks that account for this window', async ($, on) => {
@@ -136,4 +149,23 @@ test('the picker closes when the person sends a message, leaving only the status
   // nothing more to close the second time
   await $.prompt.submit({ text: 'again' })
   expect(gw.closed).toEqual(['voitta-llm'])
+})
+
+test('/voitta-store stores this window and shows a one-second toast, nothing else', async ($, on) => {
+  const gw = gateway(on)
+  const r = await $.command.run({ command: 'voitta-store', args: '' })
+  expect(gw.stores).toEqual([{ session: 'win-A', model: 'claude-opus-5-5', cwd: '/work/proj', transcript_path: null }])
+  expect(gw.toasts).toEqual([{ text: 'Conversation stored', timeoutMs: 1000 }])
+  expect(r.text).toBeUndefined()
+  expect(gw.closed).toEqual([])
+})
+
+test('/voitta-store failing says so briefly and stores nothing', async ($, on) => {
+  const gw = gateway(on, { down: true })
+  const r = await $.command.run({ command: 'voitta-store', args: '' })
+  expect(gw.stores).toEqual([])
+  expect(gw.toasts.length).toBe(1)
+  expect(gw.toasts[0]?.text).toContain('Not stored')
+  expect(gw.toasts[0]?.timeoutMs).toBe(5000)
+  expect(r.text).toBeUndefined()
 })

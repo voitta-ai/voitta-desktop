@@ -24,8 +24,8 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-from . import config, oauth, providers
-from .router import Router
+from . import config, conversations, oauth, providers
+from .router import _SAFE_ID, Router, RoutingJournal
 from .store import AS_IS, AccountStore, SessionPicks, public_view
 
 log = logging.getLogger("voitta-desktop.llm")
@@ -52,13 +52,18 @@ def _same_origin(handler):
 
 
 class LlmAccounts:
-    def __init__(self, port: int, data_dir: Path = config.DATA_DIR):
+    def __init__(self, port: int, data_dir: Path = config.DATA_DIR, *,
+                 conversations_dir: Path | None = None, claude_projects: list[Path] | None = None):
         self.port = port
         self.ui_url = f"http://localhost:{port}{PREFIX}/"
         self.self_origins = {f"http://localhost:{port}", f"http://127.0.0.1:{port}"}
         self.store = AccountStore(data_dir / "accounts.json")
         self.picks = SessionPicks(data_dir / "sessions.json")
         self.pending = oauth.PendingLogins(data_dir / "invites.json")
+        self.journal = RoutingJournal(data_dir / "routes")
+        # Beside llm/, not inside it: ~/.voitta-desktop/conversations.
+        self.conversations_dir = conversations_dir or data_dir.parent / "conversations"
+        self.claude_projects = claude_projects
         self.device_invites: dict[str, dict] = {}
         self.http: aiohttp.ClientSession | None = None
         self.router: Router | None = None
@@ -72,7 +77,9 @@ class LlmAccounts:
     async def start(self):
         timeout = aiohttp.ClientTimeout(total=None, connect=15, sock_read=600)
         self.http = aiohttp.ClientSession(timeout=timeout)
-        self.router = Router(self.store, self.picks, self.http, ui_url=self.ui_url, self_origins=self.self_origins)
+        self.router = Router(self.store, self.picks, self.http, ui_url=self.ui_url, self_origins=self.self_origins,
+                             journal=self.journal)
+        await asyncio.to_thread(self.journal.prune)
         self._refresher = asyncio.create_task(self._refresh_loop(), name="llm-token-refresh")
 
     async def stop(self):
@@ -104,6 +111,7 @@ class LlmAccounts:
         r.add_post(p + "/api/accounts/{id}/activate", self.activate)
         r.add_get(p + "/api/llm/options", self.llm_options)
         r.add_put(p + "/api/llm/sessions/{session}", self.llm_pick)
+        r.add_post(p + "/api/conversations", self.store_conversation)
         r.add_get(p + "/api/mod", self.mod_status)
         r.add_post(p + "/api/mod/install", self.mod_install)
         r.add_post(p + "/api/accounts/{id}/refresh", self.refresh)
@@ -396,6 +404,36 @@ class LlmAccounts:
             self.picks.set(session_id, account_id)
         log.info("window %s: %s", session_id[:8], account_id or "default")
         return web.json_response(self._llm_view(session_id))
+
+    # ---- /voitta-store: keep this window's conversation --------------------------
+
+    @_same_origin
+    async def store_conversation(self, request):
+        data = await request.json()
+        session_id = str(data.get("session") or "")
+        if not _SAFE_ID.fullmatch(session_id):
+            return web.json_response({"error": "a Claude Code session id is required"}, status=400)
+        projects = self.claude_projects or conversations.claude_projects_dirs()
+        transcript = conversations.find_transcript(session_id, data.get("transcript_path"), projects)
+        if not transcript:
+            return web.json_response({"error": f"Claude Code's transcript for session {session_id[:8]} "
+                                               "was not found"}, status=404)
+        pick = self.picks.get(session_id)
+        effective = self.store.get(pick or self.store.active_id or "") or {}
+        llm = {"window_pick": pick, "default": self.store.active_id,
+               "account": {k: effective.get(k) for k in ("id", "label", "provider", "kind", "models", "options")},
+               "route": "window" if pick else "default"}
+        claude_code = {k: data[k] for k in ("model", "cwd", "entrypoint") if data.get(k)}
+        routing = self.journal.read(session_id)
+
+        def build_and_write():
+            record = conversations.build(session_id, transcript, routing, claude_code=claude_code, llm=llm)
+            path = conversations.write(self.conversations_dir, record)
+            return path, record["counts"]
+
+        path, counts = await asyncio.to_thread(build_and_write)
+        log.info("stored conversation %s: %s", session_id[:8], counts)
+        return web.json_response({"path": str(path), "bytes": path.stat().st_size, **counts})
 
     # ---- the /llm mod: one-click install into Claude Code ---------------------
 

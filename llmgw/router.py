@@ -10,12 +10,14 @@ Anthropic's, which the proxy streams through its middleware as usual.
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 import uuid
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import aiohttp
 from multidict import CIMultiDict
@@ -131,14 +133,72 @@ class Routed:
 @dataclass
 class Decision:
     """What ``route`` decided. ``routed`` is None for "As is": the proxy
-    forwards the request itself, then reports the status with ``as_is_done``."""
+    forwards the request itself, then reports the status with ``as_is_done``.
+    The proxy calls ``done`` once the answer has been sent (or abandoned)."""
     entry: dict
     routed: Routed | None = None
+    on_done: Callable[[dict], None] | None = None
     _started: float = field(default_factory=time.monotonic)
 
     def as_is_done(self, status: int, host: str):
         self.entry.update(status=status, upstream={"host": host, "trace": None, "id": None, "model": None},
                           ms=int((time.monotonic() - self._started) * 1000))
+
+    def done(self):
+        if self.on_done:
+            self.on_done(self.entry)
+
+
+class RoutingJournal:
+    """Per window, one line per model request: where it went and who answered.
+
+    Claude Code's own transcript records the model it asked for; for a request
+    routed to another account the real answer came from elsewhere, and only
+    this journal knows. /voitta-store copies it beside the transcript.
+    """
+
+    KEEP_DAYS = 30
+
+    def __init__(self, folder: Path):
+        self.folder = folder
+
+    def path(self, session_id: str) -> Path:
+        return self.folder / f"{session_id}.jsonl"
+
+    def append(self, entry: dict):
+        session_id = entry.get("session_id")
+        if not session_id or entry.get("path") != "/v1/messages" or not _SAFE_ID.fullmatch(session_id):
+            return
+        record = {k: entry.get(k) for k in ("ts", "status", "ms", "route", "account_id", "account", "provider",
+                                           "model", "upstream_model", "upstream", "usage", "error", "notes")
+                  if entry.get(k) is not None}
+        try:
+            self.folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+            fd = os.open(self.path(session_id), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "a") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError as e:
+            log.warning("routing journal for %s: %s", session_id[:8], e)
+
+    def read(self, session_id: str) -> list[dict]:
+        try:
+            lines = self.path(session_id).read_text().splitlines()
+        except FileNotFoundError:
+            return []
+        return [json.loads(line) for line in lines if line.strip()]
+
+    def prune(self):
+        cutoff = time.time() - self.KEEP_DAYS * 86400
+        for p in self.folder.glob("*.jsonl"):
+            try:
+                if p.stat().st_mtime < cutoff:
+                    p.unlink()
+            except OSError:
+                pass
+
+
+# Claude Code session ids are UUIDs; anything else never names a file.
+_SAFE_ID = re.compile(r"[0-9A-Za-z-]{8,64}")
 
 
 def _strip_foreign_thinking(body: dict) -> bool:
@@ -162,10 +222,11 @@ def _strip_foreign_thinking(body: dict) -> bool:
 
 class Router:
     def __init__(self, store: AccountStore, picks: SessionPicks, http: aiohttp.ClientSession,
-                 *, ui_url: str, self_origins: set[str]):
+                 *, ui_url: str, self_origins: set[str], journal: RoutingJournal | None = None):
         self.store = store
         self.picks = picks
         self.http = http
+        self.journal = journal
         self.ui_url = ui_url
         self.self_origins = self_origins
         self.requests = deque(maxlen=config.REQUEST_LOG_SIZE)
@@ -246,6 +307,10 @@ class Router:
             raise GatewayError(403, self._relogin(account), retry=False)
         return account, route
 
+    def _journal_done(self, entry: dict):
+        if self.journal:
+            self.journal.append(entry)
+
     def _seen(self, session_id: str | None, account: dict, route: str):
         if not session_id:
             return
@@ -255,7 +320,7 @@ class Router:
 
     def _entry(self, path: str, session_id: str | None) -> dict:
         entry = {"ts": time.time(), "path": path.split("?")[0], "status": None,
-                 "session": session_id[:8] if session_id else None}
+                 "session": session_id[:8] if session_id else None, "session_id": session_id}
         self.requests.appendleft(entry)
         return entry
 
@@ -267,21 +332,22 @@ class Router:
             account, route = self.resolve(session_id)
         except GatewayError as e:
             entry.update(status=e.status, error=e.message, ms=0)
-            return Decision(entry, e.routed())
-        entry.update(account=account["label"], provider=account["provider"], route=route)
+            return Decision(entry, e.routed(), self._journal_done)
+        entry.update(account=account["label"], account_id=account["id"], provider=account["provider"], route=route)
         self._seen(session_id, account, route)
         if account["kind"] == "as_is":
             # The default path, so no JSON parse: Claude Code puts "model" first.
             if m := _MODEL_RE.search(body, 0, 512):
                 entry["model"] = m.group(1).decode("utf-8", "replace")
-            return Decision(entry)
+            return Decision(entry, None, self._journal_done)
         # A web page must not be able to spend the user's accounts through this
         # local port; Claude Code sends no Origin, a browser always does.
         origin = _header(headers, "origin")
         if origin and origin not in self.self_origins:
             entry.update(status=403, error=f"cross-origin request from {origin} refused", ms=0)
-            return Decision(entry, GatewayError(403, "cross-origin request refused", retry=False).routed())
-        return Decision(entry, await self.answer(account, method, path, headers, body, entry))
+            return Decision(entry, GatewayError(403, "cross-origin request refused", retry=False).routed(),
+                            self._journal_done)
+        return Decision(entry, await self.answer(account, method, path, headers, body, entry), self._journal_done)
 
     async def answer(self, account: dict, method: str, path: str, headers: dict, body: bytes,
                      entry: dict) -> Routed:

@@ -19,6 +19,18 @@ export type LlmView = {
   ui: string
 }
 
+/** What Voitta Desktop answers to /voitta-store (POST /_voitta/llm/api/conversations). */
+export type StoredConversation = {
+  path: string
+  bytes: number
+  records: number
+  user: number
+  assistant: number
+  subagents: number
+  routed_requests: number
+  unreadable_lines: number
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'voitta-llm': { view: LlmView | null; error: string | null }

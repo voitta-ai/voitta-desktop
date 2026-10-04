@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Hook, Register } from 'claude-code'
 
-import type { LlmOption, LlmView } from '../types'
+import type { LlmOption, LlmView, StoredConversation } from '../types'
 
 // /llm: which account this Claude Code window's requests go to.
 //
@@ -9,6 +9,10 @@ import type { LlmOption, LlmView } from '../types'
 // every request carries Claude Code's session id. This mod only tells Voitta
 // "session X -> account Y"; it never touches the requests themselves. Models
 // per account are set in Voitta Desktop (Settings → LLMs).
+//
+// /voitta-store: Voitta Desktop copies this window's whole conversation (Claude
+// Code's transcript, subagents, which account and model answered each request)
+// into its own folder. A one-second toast, nothing left on screen.
 
 type Engine = Parameters<Hook<'command.run'>>[0]
 
@@ -24,7 +28,7 @@ async function gatewayUrl($: Engine): Promise<string> {
   return base.replace(/\/+$/, '')
 }
 
-async function call($: Engine, method: string, path: string, body?: unknown): Promise<LlmView> {
+async function call<T = LlmView>($: Engine, method: string, path: string, body?: unknown): Promise<T> {
   const base = await gatewayUrl($)
   let r
   try {
@@ -42,7 +46,7 @@ async function call($: Engine, method: string, path: string, body?: unknown): Pr
   if (!r.ok) {
     throw new Error(`Voitta Desktop refused: ${r.status} ${r.text.slice(0, 200)}`)
   }
-  return JSON.parse(r.text) as LlmView
+  return JSON.parse(r.text) as T
 }
 
 function optionLine(o: LlmOption): string {
@@ -66,6 +70,16 @@ function statusText(v: LlmView): string {
 // The window's pick, kept here so a /clear (new session id, same window)
 // can carry it over. Voitta Desktop is the record; this is only the carry.
 let windowPick: string | null = null
+// Where Claude Code keeps this window's transcript, as its hooks report it.
+// Only a hint: Voitta Desktop checks it, and finds the file by session id without it.
+let transcriptPath: string | null = null
+
+async function storeConversation($: Engine): Promise<StoredConversation> {
+  const [session, model, cwd] = await Promise.all([$.session.id(), $.session.model(), $.session.cwd()])
+  return call<StoredConversation>($, 'POST', '/_voitta/llm/api/conversations', {
+    session, model, cwd, transcript_path: transcriptPath,
+  })
+}
 
 async function show($: Engine, v: LlmView) {
   windowPick = v.pick
@@ -147,6 +161,10 @@ export const register: Register = on => {
       description: "Pick which LLM account this window uses (Voitta Desktop)",
       argumentHint: '[number | name | default]',
     })
+    await $.command.register({
+      name: 'voitta-store',
+      description: "Store this window's whole conversation in Voitta Desktop",
+    })
     refresh($).catch(err => quiet($, err))
     return next(e)
   })
@@ -154,6 +172,7 @@ export const register: Register = on => {
   // A /clear moves the window to a new session id without a session.start;
   // the new id starts with no pick, so hand it the window's.
   on('classic.SessionStart', async ($, e, next) => {
+    transcriptPath = e.transcript_path ?? transcriptPath
     const result = await next(e)
     if (e.source === 'clear' && windowPick) {
       await pick($, windowPick).catch(err => fail($, err))
@@ -202,6 +221,18 @@ export const register: Register = on => {
     } catch (err) {
       return { text: `/llm: ${await fail($, err)}` }
     }
+  })
+
+  // Nothing in the transcript: a one-second toast says it worked; a failure
+  // stays a little longer so it can be read.
+  on('command.run', { command: 'voitta-store' }, async $ => {
+    try {
+      await storeConversation($)
+      $.ui.toast('Conversation stored', { timeoutMs: 1000 })
+    } catch (err) {
+      $.ui.toast(`Not stored: ${err instanceof Error ? err.message : String(err)}`, { timeoutMs: 5000 })
+    }
+    return {}
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {

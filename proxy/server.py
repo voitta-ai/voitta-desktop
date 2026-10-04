@@ -108,6 +108,7 @@ class AnthropicProxy:
         started_mws: list[Middleware] = []
         proxy_resp: ProxyResponse | None = None
         routed = None  # an llm account's answer, when the request isn't "As is"
+        decision = None
         try:
             # Run request middleware
             for mw in self.middlewares:
@@ -123,7 +124,6 @@ class AnthropicProxy:
                     logger.info("Middleware %s.on_request took %d ms for %s",
                                 type(mw).__name__, mw_duration_ms, proxy_req.path)
 
-            decision = None
             if self.llm and self.llm.router:
                 decision = await self.llm.router.route(
                     proxy_req.method, proxy_req.path, proxy_req.headers, proxy_req.body)
@@ -187,6 +187,8 @@ class AnthropicProxy:
                 # Ends the router's upstream stream; if the client went away
                 # mid-answer, the router records that (499) rather than an error.
                 await routed.aclose()
+            if decision is not None:
+                decision.done()
             # Synthetic 502 for paths that bailed before we built proxy_resp;
             # keeps downstream middlewares' contract intact (always paired).
             resp_for_done = proxy_resp if proxy_resp is not None else ProxyResponse(status=502, headers={})

@@ -132,6 +132,12 @@ translated to and from the Anthropic Messages API. There is no fallback: a
 failing account returns its error to Claude Code. Accounts live in
 `~/.voitta-desktop/llm/` (mode 0600). See `llmgw/__init__.py`.
 
+The same mod adds `/voitta-store`: Voitta Desktop copies the window's whole
+conversation (Claude Code's transcript including compacted turns, its
+subagents, and which account and model answered each request) to
+`~/.voitta-desktop/conversations/<session id>.json`. A one-second toast
+confirms it; storing again replaces that window's copy with the newer one.
+
 ## Ports
 
 | Port | Purpose | Configured via |
@@ -186,6 +192,7 @@ Click a conversation to see a token usage chart. Click "Open conversation detail
 - `~/.voitta_desktop/apps.json` — OAuth apps, Jira credentials, proxy ports
 - `~/.voitta_desktop/logs/` — Debug logs, request JSONL
 - `~/.voitta-desktop/llm/` — LLM accounts and credentials, `/llm` window picks, open invites (mode 0600)
+- `~/.voitta-desktop/conversations/` — conversations stored with `/voitta-store` (mode 0600; never purged)
 - `~/.voitta-desktop/state/objects.db` — Removed tool results, images and calls, retrievable via `get_vt_object`
 
 Every restart deletes the previous runs' conversations: the request JSONL,
