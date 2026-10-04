@@ -135,8 +135,18 @@ failing account returns its error to Claude Code. Accounts live in
 The same mod adds `/voitta-store`: Voitta Desktop copies the window's whole
 conversation (Claude Code's transcript including compacted turns, its
 subagents, and which account and model answered each request) to
-`~/.voitta-desktop/conversations/<session id>.json`. A one-second toast
-confirms it; storing again replaces that window's copy with the newer one.
+`~/.voitta-desktop/conversations/<session id>/` (the transcript files byte for
+byte, plus `meta.json` and the routing record). A one-second toast confirms
+it; storing again replaces that window's copy with the newer one.
+
+**Stored conversations…** in the menu bar (with the count) opens a window to
+browse them: search titles, projects and models; sort; filter by project. A
+conversation shows its whole history, compacted turns included, with each
+answer's model and, where Voitta's routing record identifies it, which account
+and model actually answered. The Models & routing tab lists what was asked
+for, what answered and every routed request. Export as Markdown, one JSON file
+with everything, or Claude Code's own `.jsonl` (several at once → a `.zip`);
+Reveal in Finder; Delete removes Voitta's copy only, never Claude Code's files.
 
 ## Ports
 
@@ -192,7 +202,7 @@ Click a conversation to see a token usage chart. Click "Open conversation detail
 - `~/.voitta_desktop/apps.json` — OAuth apps, Jira credentials, proxy ports
 - `~/.voitta_desktop/logs/` — Debug logs, request JSONL
 - `~/.voitta-desktop/llm/` — LLM accounts and credentials, `/llm` window picks, open invites (mode 0600)
-- `~/.voitta-desktop/conversations/` — conversations stored with `/voitta-store` (mode 0600; never purged)
+- `~/.voitta-desktop/conversations/` — conversations stored with `/voitta-store`, one folder each (mode 0600; never purged)
 - `~/.voitta-desktop/state/objects.db` — Removed tool results, images and calls, retrievable via `get_vt_object`
 
 Every restart deletes the previous runs' conversations: the request JSONL,

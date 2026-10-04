@@ -1,12 +1,15 @@
-"""/voitta-store: the routing journal and the conversation copy, through Voitta's real proxy."""
+"""/voitta-store and stored conversations: the journal, the copy, and what the window does with it."""
 
 import json
 import stat
+import zipfile
 
 import pytest
 from aiohttp.test_utils import TestServer
 
+from llmgw import conversations as conv
 from llmgw.web import LlmAccounts
+from middleware.transcripts import TranscriptStore
 from proxy import AnthropicProxy
 from tests.llm_fake_upstream import FakeUpstream
 from tests.test_llm_routing import Client, _free_port, body, use
@@ -14,37 +17,184 @@ from tests.test_llm_routing import Client, _free_port, body, use
 SESSION = "4ad29fe4-cc08-4bad-9b0a-69faaa62ba18"
 
 
+def rec(uuid, parent, type_, content, **kw):
+    role = "assistant" if type_ == "assistant" else "user"
+    msg = {"role": role, "content": content}
+    if type_ == "assistant":
+        msg["model"] = kw.pop("model", "claude-opus-5-5")
+    return {"type": type_, "uuid": uuid, "parentUuid": parent, "sessionId": SESSION,
+            "timestamp": kw.pop("ts", "2026-10-03T14:00:00.000Z"), "message": msg, **kw}
+
+
 def transcript_lines():
+    """Two turns, a compaction (boundary with no parent, linked back through
+    logicalParentUuid), a summary, then one more turn."""
     return [
-        {"type": "user", "sessionId": SESSION, "cwd": "/work/proj", "version": "2.1.288",
-         "message": {"role": "user", "content": "first question"}},
-        {"type": "assistant", "sessionId": SESSION, "version": "2.1.288", "effort": "high",
-         "message": {"role": "assistant", "model": "claude-opus-5-5", "content": [{"type": "text", "text": "a1"}]}},
-        # what /compact leaves: the summary; the turns above stay in the file
-        {"type": "system", "subtype": "compact_boundary", "sessionId": SESSION},
-        {"type": "user", "sessionId": SESSION, "message": {"role": "user", "content": "after compact"}},
-        {"type": "assistant", "sessionId": SESSION, "version": "2.1.288",
-         "message": {"role": "assistant", "model": "claude-opus-5-5", "content": [{"type": "text", "text": "a2"}]}},
+        rec("u1", None, "user", "first question", cwd="/work/proj", version="2.1.288"),
+        rec("a1", "u1", "assistant", [{"type": "text", "text": "answer one"},
+                                      {"type": "tool_use", "id": "t1", "name": "Bash",
+                                       "input": {"command": "echo ```fenced```", "description": "Print"}}],
+            effort="high", version="2.1.288"),
+        rec("r1", "a1", "user", [{"type": "tool_result", "tool_use_id": "t1", "content": "```fenced```"}]),
+        rec("a2", "r1", "assistant", [{"type": "text", "text": "done with one"}]),
+        {"type": "system", "subtype": "compact_boundary", "uuid": "cb", "parentUuid": None,
+         "logicalParentUuid": "a2", "timestamp": "2026-10-03T15:00:00.000Z"},
+        rec("s1", "cb", "user", "Summary of the earlier conversation", isCompactSummary=True),
+        rec("u2", "s1", "user", "after compact", ts="2026-10-03T15:01:00.000Z"),
+        rec("a3", "u2", "assistant", [{"type": "text", "text": "answer two"}], ts="2026-10-03T15:01:05.000Z"),
         {"type": "ai-title", "aiTitle": "Testing the store", "sessionId": SESSION},
     ]
 
 
+def write_transcript(project, records, tail='{"half-written'):
+    path = project / f"{SESSION}.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in records) + tail)
+    return path
+
+
 @pytest.fixture
-async def env(tmp_path):
+def claude(tmp_path):
+    projects = tmp_path / "claude" / "projects"
+    project = projects / "-work-proj"
+    (project / SESSION / "subagents").mkdir(parents=True)
+    transcript = write_transcript(project, transcript_lines())
+    (project / SESSION / "subagents" / "agent-1.jsonl").write_text(
+        json.dumps(rec("x1", None, "user", "explore the repo")) + "\n"
+        + json.dumps(rec("x2", "x1", "assistant", [{"type": "text", "text": "found it"}],
+                         model="claude-haiku-4-5")) + "\n")
+    (project / SESSION / "subagents" / "agent-1.meta.json").write_text('{"agentType": "Explore"}')
+    return projects, transcript
+
+
+def store(tmp_path, transcript, routing=()):
+    return conv.store(tmp_path / "conversations", SESSION, transcript, list(routing),
+                      claude_code={"model": "claude-opus-5-5"}, llm={"route": "default", "account": {"label": "As is"}})
+
+
+# ---- the full history ------------------------------------------------------------
+
+def test_full_history_follows_compactions_back(claude):
+    _, transcript = claude
+    texts = lambda parsed: [b.get("text") for t in parsed["turns"] for e in t["entries"] for b in e["blocks"]
+                            if b.get("t") == "text"]
+    live = TranscriptStore().parse(transcript)
+    full = TranscriptStore().parse(transcript, full_history=True)
+    assert "first question" not in texts(live)          # the live Explorer: what the model sees now
+    assert texts(full)[0] == "first question"           # stored view: everything
+    assert "after compact" in texts(full) and "answer two" in texts(full)
+    assert sum(t["compact"] for t in full["turns"]) == 1
+
+
+# ---- storing -----------------------------------------------------------------------
+
+def test_store_copies_files_byte_for_byte(tmp_path, claude):
+    _, transcript = claude
+    meta = store(tmp_path, transcript, [{"ts": 1, "model": "m", "status": 200}])
+    d = tmp_path / "conversations" / SESSION
+    assert (d / "transcript.jsonl").read_bytes() == transcript.read_bytes()
+    assert (d / "subagents" / "agent-1.meta.json").read_text() == '{"agentType": "Explore"}'
+    assert sorted(p.name for p in d.iterdir()) == ["meta.json", "routing.jsonl", "subagents", "transcript.jsonl"]
+    assert all(stat.S_IMODE(p.stat().st_mode) == 0o600 for p in d.rglob("*") if p.is_file())
+    assert meta["title"] == "Testing the store" and meta["project"] == "proj"
+    assert meta["first_prompt"] == "first question"
+    assert meta["models"]["requested"] == {"claude-opus-5-5": 3, "claude-haiku-4-5": 1}
+    assert meta["subagents"] == [{"id": "agent-1", "label": "explore the repo"}]
+    assert meta["counts"]["unreadable_lines"] == 1 and meta["bytes"] > 0
+    # again: replaced, never duplicated
+    store(tmp_path, transcript)
+    assert [p.name for p in (tmp_path / "conversations").iterdir()] == [SESSION]
+
+
+def test_list_count_delete_and_listeners(tmp_path, claude):
+    _, transcript = claude
+    events = []
+    conv.on_change(lambda: events.append(1))
+    try:
+        folder = tmp_path / "conversations"
+        assert conv.list_conversations(folder) == [] and conv.count(folder) == 0
+        store(tmp_path, transcript)
+        assert [m["session_id"] for m in conv.list_conversations(folder)] == [SESSION]
+        assert conv.count(folder) == 1
+        assert conv.delete(folder, ["../etc", "0000-not-stored", SESSION]) == 1
+        assert conv.count(folder) == 0 and len(events) == 2
+        assert transcript.exists()  # Claude Code's own file is never touched
+    finally:
+        conv._listeners.clear()
+
+
+def test_old_single_file_format_moves_to_a_folder(tmp_path, claude):
+    _, transcript = claude
+    folder = tmp_path / "conversations"
+    folder.mkdir()
+    records = [json.loads(line) for line in transcript.read_text().splitlines()[:-1]]
+    (folder / f"{SESSION}.json").write_text(json.dumps({
+        "format": "voitta-conversation/1", "session_id": SESSION, "stored_at": "2026-10-04T10:12:00+0200",
+        "transcript": records, "subagents": {}, "routing": [], "llm": {}, "claude_code": {}}))
+    [meta] = conv.list_conversations(folder)
+    assert meta["title"] == "Testing the store" and meta["stored_at"] == "2026-10-04T10:12:00+0200"
+    assert not (folder / f"{SESSION}.json").exists()
+    assert len((folder / SESSION / "transcript.jsonl").read_text().splitlines()) == len(records)
+
+    # an old copy next to a newer folder: storing again (or listing) drops it
+    (folder / f"{SESSION}.json").write_text("{}")
+    store(tmp_path, transcript)
+    assert not (folder / f"{SESSION}.json").exists()
+    (folder / f"{SESSION}.json").write_text("{}")
+    assert len(conv.list_conversations(folder)) == 1 and not (folder / f"{SESSION}.json").exists()
+
+
+# ---- who answered ---------------------------------------------------------------------
+
+def test_route_for_needs_exactly_one_fitting_request():
+    t = conv._parse_ts("2026-10-03T15:01:05.000Z")
+    r1 = {"ts": t - 4, "ms": 3000, "model": "claude-opus-5-5", "status": 200, "account": "DeepSeek",
+          "route": "window", "upstream": {"host": "api.deepseek.com", "model": "deepseek-v4-pro"}}
+    assert conv.route_for("2026-10-03T15:01:05.000Z", "claude-opus-5-5", [r1]) is r1
+    assert conv.route_label(r1) == "deepseek-v4-pro @ api.deepseek.com · DeepSeek · window pick"
+    assert conv.route_for("2026-10-03T15:01:05.000Z", "claude-haiku-4-5", [r1]) is None   # other model
+    assert conv.route_for("2026-10-03T15:01:05.000Z", "claude-opus-5-5", [r1, dict(r1)]) is None  # ambiguous
+    assert conv.route_for("2026-10-03T16:00:00.000Z", "claude-opus-5-5", [r1]) is None   # outside the window
+
+
+# ---- exports --------------------------------------------------------------------------
+
+def test_exports(tmp_path, claude):
+    _, transcript = claude
+    store(tmp_path, transcript)
+    folder = tmp_path / "conversations"
+    md = conv.to_markdown(folder, SESSION)
+    assert md.startswith("# Testing the store")
+    assert md.index("first question") < md.index("Context compacted here") < md.index("after compact")
+    assert "````\n```fenced```\n````" in md          # fences longer than anything inside
+    assert "# Subagent: explore the repo" in md and "found it" in md
+    assert "**Claude** · claude-opus-5-5" in md
+
+    doc = json.loads(conv.to_json(folder, SESSION))
+    assert doc["format"] == "voitta-conversation/1" and len(doc["transcript"]) == 9
+    assert list(doc["subagents"]) == ["agent-1"]
+
+    out = conv.export(folder, [SESSION], "jsonl", tmp_path / "t.jsonl")
+    assert out.read_bytes() == transcript.read_bytes()
+
+    other = "11111111-2222-3333-4444-555555555555"
+    conv.store(folder, other, transcript, [], claude_code={}, llm={})
+    z = conv.export(folder, [SESSION, other], "md", tmp_path / "both.zip")
+    with zipfile.ZipFile(z) as zf:
+        assert sorted(zf.namelist()) == ["Testing-the-store-11111111.md", "Testing-the-store-4ad29fe4.md"]
+    with pytest.raises(ValueError):
+        conv.export(folder, [SESSION], "pdf", tmp_path / "x.pdf")
+
+
+# ---- through Voitta's real proxy ----------------------------------------------------------
+
+@pytest.fixture
+async def env(tmp_path, claude):
+    projects, transcript = claude
     fake = FakeUpstream()
     upstream = TestServer(fake.app())
     await upstream.start_server()
     base = str(upstream.make_url("")).rstrip("/")
-
-    projects = tmp_path / "claude" / "projects"
-    project = projects / "-work-proj"
-    (project / SESSION / "subagents").mkdir(parents=True)
-    transcript = project / f"{SESSION}.jsonl"
-    transcript.write_text("".join(json.dumps(r) + "\n" for r in transcript_lines()) + '{"half-written')
-    (project / SESSION / "subagents" / "agent-1.jsonl").write_text(json.dumps(
-        {"type": "assistant", "message": {"role": "assistant", "model": "claude-haiku-4-5", "content": []}}) + "\n")
     (tmp_path / "elsewhere.jsonl").write_text("{}\n")
-
     port = _free_port()
     llm = LlmAccounts(port, data_dir=tmp_path / "llm", claude_projects=[projects])
     proxy = AnthropicProxy(middlewares=[], port=port, upstream_url=base, llm=llm)
@@ -65,15 +215,14 @@ async def test_journal_records_who_answered_each_window_request(env):
     await client.post("/v1/messages/count_tokens", json=body(False), headers={"x-claude-code-session-id": SESSION})
     await client.post("/v1/messages", json=body(False))  # no session: nothing to file it under
 
-    [rec] = llm.journal.read(SESSION)  # count_tokens isn't a model answer
-    assert rec["account"] == "Mistral" and rec["account_id"] == "mistral:k" and rec["route"] == "default"
-    assert rec["model"] == "claude-sonnet-4-5" and rec["upstream_model"] == "mistral-large-latest"
-    assert rec["status"] == 200 and rec["upstream"]["host"] == "127.0.0.1"
+    [rec_] = llm.journal.read(SESSION)  # count_tokens isn't a model answer
+    assert rec_["account"] == "Mistral" and rec_["account_id"] == "mistral:k" and rec_["route"] == "default"
+    assert rec_["model"] == "claude-sonnet-4-5" and rec_["upstream_model"] == "mistral-large-latest"
+    assert rec_["status"] == 200 and rec_["upstream"]["host"] == "127.0.0.1"
     assert stat.S_IMODE(llm.journal.path(SESSION).stat().st_mode) == 0o600
-    assert list((tmp_path / "llm" / "routes").iterdir()) == [llm.journal.path(SESSION)]
 
 
-async def test_store_copies_the_whole_history_with_models(env):
+async def test_store_endpoint(env):
     llm, client, base, tmp_path, transcript = env
     use(llm.store, "mistral", "k", "Mistral", {"api_key": "sk"}, base_url=f"{base}/v1",
         models={"big": "mistral-large-latest", "small": "mistral-small-latest"})
@@ -83,41 +232,69 @@ async def test_store_copies_the_whole_history_with_models(env):
         "session": SESSION, "model": "claude-opus-5-5", "cwd": "/work/proj", "transcript_path": str(transcript)})
     out = await r.json()
     assert r.status == 200, out
-    saved = tmp_path / "conversations" / f"{SESSION}.json"
-    assert out["path"] == str(saved) and stat.S_IMODE(saved.stat().st_mode) == 0o600
-    assert out["records"] == 6 and out["unreadable_lines"] == 1 and out["subagents"] == 1
+    assert out["path"] == str(tmp_path / "conversations" / SESSION) and out["records"] == 9
+    meta = conv.load_meta(tmp_path / "conversations", SESSION)
+    assert meta["models"]["answered_by"] == {"mistral-large-latest @ 127.0.0.1": 1}
+    assert meta["llm"]["account"]["id"] == "mistral:k" and "credentials" not in json.dumps(meta)
+    assert len(conv.routing(tmp_path / "conversations", SESSION)) == 1
 
-    doc = json.loads(saved.read_text())
-    assert doc["format"] == "voitta-conversation/1" and doc["title"] == "Testing the store"
-    assert [m["message"]["content"] for m in doc["transcript"] if m["type"] == "user"] == \
-        ["first question", "after compact"]  # compacted turns included
-    assert doc["subagents"]["agent-1"][0]["message"]["model"] == "claude-haiku-4-5"
-    assert doc["models"]["requested"] == {"claude-opus-5-5": 2, "claude-haiku-4-5": 1}
-    assert doc["models"]["answered_by"] == {"mistral-large-latest @ 127.0.0.1": 1}
-    assert doc["claude_code"] == {"version": "2.1.288", "model": "claude-opus-5-5", "cwd": "/work/proj"}
-    assert doc["llm"]["account"]["id"] == "mistral:k" and doc["llm"]["route"] == "default"
-    assert doc["llm"]["account"]["models"] == {"big": "mistral-large-latest", "small": "mistral-small-latest"}
-    assert "credentials" not in json.dumps(doc["llm"])
-    assert len(doc["routing"]) == 1
-
-    # storing again replaces the copy with the newer, longer one
-    with transcript.open("a") as f:
-        f.write("\n" + json.dumps({"type": "user", "message": {"role": "user", "content": "later"}}) + "\n")
-    await client.post("/_voitta/llm/api/conversations", json={"session": SESSION})
-    assert len(json.loads(saved.read_text())["transcript"]) == 7
-    assert list((tmp_path / "conversations").iterdir()) == [saved]
-
-
-async def test_store_refuses_what_is_not_a_claude_transcript(env):
-    llm, client, base, tmp_path, transcript = env
-    r = await client.post("/_voitta/llm/api/conversations", json={"session": "../../etc/passwd"})
-    assert r.status == 400
-    # a hint outside the Claude projects folder is ignored; the real one is found by id
+    # refusals: bad id, a hint outside Claude's folder (ignored), unknown session, another website
+    assert (await client.post("/_voitta/llm/api/conversations", json={"session": "../../etc/passwd"})).status == 400
     r = await client.post("/_voitta/llm/api/conversations", json={
         "session": SESSION, "transcript_path": str(tmp_path / "elsewhere.jsonl")})
-    assert r.status == 200 and (await r.json())["records"] == 6
-    r = await client.post("/_voitta/llm/api/conversations", json={"session": "0000-unknown-session"})
-    assert r.status == 404
-    r = await client.post("/_voitta/llm/api/conversations", json={"session": SESSION},
-                          headers={"Origin": "https://evil.example"})
-    assert r.status == 403
+    assert r.status == 200 and (await r.json())["records"] == 9
+    assert (await client.post("/_voitta/llm/api/conversations",
+                              json={"session": "0000-unknown-session"})).status == 404
+    assert (await client.post("/_voitta/llm/api/conversations", json={"session": SESSION},
+                              headers={"Origin": "https://evil.example"})).status == 403
+
+
+# ---- the window's backend (no AppKit window needed) ------------------------------------
+
+def test_window_rpc(tmp_path, claude):
+    from ui.stored_conversations import StoredConversationsMixin
+
+    class Host(StoredConversationsMixin):
+        class _llm:
+            conversations_dir = tmp_path / "conversations"
+
+    _, transcript = claude
+    t = conv._parse_ts("2026-10-03T15:01:05.000Z")
+    store(tmp_path, transcript, [{"ts": t - 2, "ms": 1500, "model": "claude-opus-5-5", "status": 200,
+                                  "account": "DeepSeek", "route": "window",
+                                  "upstream": {"host": "api.deepseek.com", "model": "deepseek-v4-pro"}}])
+    host = Host()
+    assert [m["session_id"] for m in host._stored_rpc("list", {})["conversations"]] == [SESSION]
+    r = host._stored_rpc("transcript", {"conv_id": SESSION})
+    entries = [e for turn in r["turns"] for e in turn["entries"]]
+    assert entries[0]["blocks"][0]["text"] == "first question"            # full history
+    assert [e.get("route") for e in entries if e["role"] == "assistant"][-1] == \
+        "deepseek-v4-pro @ api.deepseek.com · DeepSeek · window pick"
+    sub = host._stored_rpc("transcript", {"conv_id": SESSION + "@agent-1"})
+    assert sub["turns"][0]["entries"][0]["blocks"][0]["text"] == "explore the repo"
+    assert "empty" in host._stored_rpc("transcript", {"conv_id": SESSION + "@../../x"})
+    assert "empty" in host._stored_rpc("transcript", {"conv_id": "not-a-session"})
+    assert len(host._stored_rpc("routing", {"session": SESSION})["records"]) == 1
+    assert '"first question"' in host._stored_rpc("raw", {"conv_id": SESSION, "uuid": "u1"})["json"]
+    assert host._stored_rpc("delete", {"sessions": [SESSION]}) == {"deleted": 1, "list": {"conversations": []}}
+    assert host._stored_menu_title() == "Stored conversations…"
+
+
+def test_menu_hook_needs_no_runtime(tmp_path, monkeypatch):
+    """The menu is built before the runtime starts (app crashed at launch when it wasn't)."""
+    import runtime as rt
+    from ui.stored_conversations import StoredConversationsMixin
+
+    def not_started(*a, **k):
+        raise RuntimeError("AsyncRuntime.start() has not been called")
+    monkeypatch.setattr(rt.runtime, "run_blocking", not_started)
+    monkeypatch.setattr(rt.runtime, "submit", not_started, raising=False)
+
+    class Host(StoredConversationsMixin):
+        class _llm:
+            conversations_dir = tmp_path / "conversations"
+    try:
+        Host()._stored_watch()
+        assert Host()._stored_menu_title() == "Stored conversations…"
+    finally:
+        conv._listeners.clear()

@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+/*INJECT_CSS*/
+
+/* ── Stored conversations: sidebar extras ────────────────────────────── */
+.filters { padding: 10px 10px 6px; display: flex; flex-direction: column; gap: 6px;
+  border-bottom: 1px solid var(--border); }
+.filters input, .filters select { font: inherit; font-size: 12px; padding: 4px 8px;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg);
+  outline: none; min-width: 0; }
+.filters input:focus { border-color: var(--accent); }
+.filters .pair { display: flex; gap: 6px; }
+.filters .pair select { flex: 1; }
+.row { display: flex; gap: 8px; align-items: flex-start; }
+.row .rowText { flex: 1; min-width: 0; }
+.row .chk { margin-top: 2px; flex: none; }
+.row .sub2 { font-size: 10px; color: var(--fg3); margin-top: 1px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); }
+.sidebar .foot { display: flex; align-items: center; gap: 8px; }
+.sidebar .foot .grow { flex: 1; }
+.empty { padding: 18px 14px; color: var(--fg3); font-size: 12px; line-height: 1.6; }
+
+/* ── Header facts + actions ──────────────────────────────────────────── */
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px;
+  font-size: 11px; margin: 4px 0 8px; }
+.facts .k { color: var(--fg3); text-transform: uppercase; letter-spacing: .05em; font-size: 10px;
+  padding-top: 1px; }
+.facts .v { color: var(--fg2); font-family: var(--mono); white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+.actions { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; align-items: center; }
+.actions .btn { font-size: 12px; padding: 4px 10px; }
+.btn.danger { color: var(--err); }
+.btn.danger:hover { background: var(--err); color: #fff; border-color: var(--err); }
+.btn.on { background: var(--accent-bg); color: var(--accent); border-color: var(--accent); }
+.status { font-size: 11px; color: var(--fg2); }
+.status.err { color: var(--err); }
+
+/* ── Export menu + delete dialog ─────────────────────────────────────── */
+.menuPop { position: fixed; z-index: 60; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.25); padding: 4px; display: none;
+  min-width: 260px; }
+.menuPop.show { display: block; }
+.menuPop .item { padding: 6px 10px; border-radius: 5px; cursor: pointer; font-size: 12px; }
+.menuPop .item:hover { background: var(--accent); color: #fff; }
+.menuPop .item small { display: block; color: var(--fg3); font-size: 10px; }
+.menuPop .item:hover small { color: #e8f0ff; }
+#modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 70; display: none;
+  align-items: center; justify-content: center; }
+#modal.show { display: flex; }
+#modal .box { background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+  width: 440px; padding: 18px 20px; box-shadow: 0 10px 40px rgba(0,0,0,.35); }
+#modal h3 { margin: 0 0 8px; font-size: 14px; }
+#modal p { margin: 6px 0; color: var(--fg2); line-height: 1.5; font-size: 12px; }
+#modal .names { max-height: 140px; overflow-y: auto; font-size: 12px; color: var(--fg); margin: 8px 0; }
+#modal .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+#modal .buttons .btn { font-size: 12px; padding: 5px 14px; }
+
+/* ── Models & routing pane ───────────────────────────────────────────── */
+#modelsPane { overflow-y: auto; padding: 14px 18px 40px; }
+#modelsPane h4 { margin: 18px 0 6px; font-size: 11px; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--fg3); }
+#modelsPane h4:first-child { margin-top: 0; }
+table.grid { border-collapse: collapse; width: 100%; font-size: 12px; }
+table.grid th { text-align: left; font-weight: 600; color: var(--fg2); font-size: 11px;
+  border-bottom: 1px solid var(--border); padding: 4px 8px; white-space: nowrap; }
+table.grid td { padding: 4px 8px; border-bottom: 1px solid var(--bg3); vertical-align: top; }
+table.grid td.mono { font-family: var(--mono); font-size: 11px; }
+table.grid td.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.grid tr.bad td { color: var(--err); }
+.note { font-size: 11px; color: var(--fg3); margin: 6px 0; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="sidebar">
+    <div class="filters">
+      <input type="text" id="search" placeholder="Search titles, projects, models…">
+      <div class="pair">
+        <select id="sort" title="Sort">
+          <option value="new">Newest first</option>
+          <option value="old">Oldest first</option>
+          <option value="size">Largest first</option>
+          <option value="title">Title A–Z</option>
+        </select>
+        <select id="project" title="Project"><option value="">All projects</option></select>
+      </div>
+    </div>
+    <div class="rows" id="rows"></div>
+    <div class="foot">
+      <span class="btn" id="selectBtn">Select</span>
+      <span class="grow" id="footText"></span>
+    </div>
+  </div>
+  <div class="main">
+    <div class="head">
+      <div class="title" id="title">Stored conversations</div>
+      <div class="attr" id="attr"></div>
+      <div class="facts" id="facts"></div>
+      <div class="actions" id="actions"></div>
+      <div class="tabs" id="tabs">
+        <div class="tab sel" id="tabConversation">Conversation</div>
+        <div class="tab" id="tabModels">Models &amp; routing</div>
+      </div>
+    </div>
+    <div class="content">
+      <div class="pane" id="explorerPane">
+        <div class="toolbar">
+          <input type="text" id="q" placeholder="Find in conversation…">
+          <span class="btn" id="prevHit">⏶</span>
+          <span class="btn" id="nextHit">⏷</span>
+          <span class="hits" id="hits"></span>
+          <span class="btn" id="toTop" title="Start of the conversation">Top</span>
+          <span class="btn" id="toEnd" title="End of the conversation">End</span>
+          <div class="chips" id="chips"></div>
+        </div>
+        <div id="scroll"></div>
+        <div class="pill" id="pill"></div>
+      </div>
+      <div class="pane" id="modelsPane"></div>
+      <div class="pane sel" id="emptyPane">
+        <div class="placeholder" id="emptyMsg">Select a conversation</div>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="overlay"><div class="box" id="overlayBox"></div></div>
+<div class="menuPop" id="exportMenu"></div>
+<div id="modal"><div class="box" id="modalBox"></div></div>
+<script>
+/*INJECT*/
+</script>
+</body>
+</html>

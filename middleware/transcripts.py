@@ -66,6 +66,51 @@ def _entry_text(message: dict) -> str:
     return ""
 
 
+def _is_compact_boundary(e: dict) -> bool:
+    return e.get("type") == "system" and e.get("subtype") == "compact_boundary"
+
+
+def active_chain(entries: list[dict], through_compactions: bool = False) -> list[dict]:
+    """Drop abandoned branches: keep only entries on the parent chain of the
+    newest message, in file order. Compact boundaries are kept as markers
+    wherever they appear.
+
+    A compaction starts a new chain (the boundary has no parent); with
+    ``through_compactions`` the walk continues through the boundary's
+    ``logicalParentUuid`` into the turns the compaction summarized, so the
+    whole history comes back.
+    """
+    by_uuid = {e.get("uuid"): e for e in entries if e.get("uuid")}
+    leaf = None
+    for e in reversed(entries):
+        if e.get("type") in _RENDERED_TYPES:
+            leaf = e
+            break
+    if leaf is None:
+        return [e for e in entries if _is_compact_boundary(e)]
+
+    keep: set[str] = set()
+    node, hops = leaf, 0
+    while node is not None and hops < 100_000:
+        uid = node.get("uuid")
+        if not uid or uid in keep:
+            break
+        keep.add(uid)
+        parent = node.get("parentUuid")
+        if not parent and through_compactions and _is_compact_boundary(node):
+            parent = node.get("logicalParentUuid")
+        node = by_uuid.get(parent)
+        hops += 1
+
+    chain = []
+    for e in entries:
+        if _is_compact_boundary(e):
+            chain.append(e)
+        elif e.get("type") in _RENDERED_TYPES and e.get("uuid") in keep:
+            chain.append(e)
+    return chain
+
+
 class TranscriptStore:
     """Locates and parses Claude Code transcripts, with light caching.
 
@@ -218,8 +263,12 @@ class TranscriptStore:
             return None  # needs agent_id — use agent_path()
         return self.find_main(conv_id)
 
-    def parse(self, path: Path) -> dict:
+    def parse(self, path: Path, full_history: bool = False) -> dict:
         """Parse a transcript file into turn-grouped renderable entries.
+
+        ``full_history`` also follows each compaction back to the turns it
+        summarized (the stored-conversations view); the live Explorer shows
+        what the model currently sees.
 
         Returns ``{"turns": [...], "cursor": <file size>, "entry_count": n}``.
         Never raises: unreadable file → empty result.
@@ -241,40 +290,12 @@ class TranscriptStore:
             logger.warning("transcript read failed: %s: %s", path, e)
             return {"turns": [], "cursor": 0, "entry_count": 0}
 
-        chain = self._active_chain(entries)
+        chain = active_chain(entries, through_compactions=full_history)
         turns = self._group_turns(chain, path)
         return {"turns": turns, "cursor": size, "entry_count": len(chain)}
 
     def _active_chain(self, entries: list[dict]) -> list[dict]:
-        """Drop abandoned branches: keep only entries on the parent chain of
-        the newest message, in file order. Compact boundaries are kept as
-        markers wherever they appear."""
-        by_uuid = {e.get("uuid"): e for e in entries if e.get("uuid")}
-        leaf = None
-        for e in reversed(entries):
-            if e.get("type") in _RENDERED_TYPES:
-                leaf = e
-                break
-        if leaf is None:
-            return [e for e in entries if self._is_compact_boundary(e)]
-
-        keep: set[str] = set()
-        node, hops = leaf, 0
-        while node is not None and hops < 100_000:
-            uid = node.get("uuid")
-            if not uid or uid in keep:
-                break
-            keep.add(uid)
-            node = by_uuid.get(node.get("parentUuid"))
-            hops += 1
-
-        chain = []
-        for e in entries:
-            if self._is_compact_boundary(e):
-                chain.append(e)
-            elif e.get("type") in _RENDERED_TYPES and e.get("uuid") in keep:
-                chain.append(e)
-        return chain
+        return active_chain(entries)
 
     @staticmethod
     def _is_compact_boundary(e: dict) -> bool:

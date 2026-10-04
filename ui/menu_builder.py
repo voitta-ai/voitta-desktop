@@ -124,6 +124,10 @@ class MenuBuilderMixin:
             "No conversations yet", callback=self.show_session_explorer
         )
         menu_list.append(self._conv_count_item)
+        # What /voitta-store kept: survives restarts and updates, unlike the above.
+        self._stored_item = rumps.MenuItem(self._stored_menu_title(), callback=self.show_stored_conversations)
+        menu_list.append(self._stored_item)
+        self._stored_watch()
 
         menu_list.append(None)
 

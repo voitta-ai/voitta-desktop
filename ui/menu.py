@@ -53,6 +53,7 @@ from ui.menu_builder import MenuBuilderMixin
 from ui.mcp_lifecycle import MCPLifecycleMixin, OAUTH_REDIRECT_PORT
 from ui.session_explorer import SessionExplorerMixin
 from ui.settings_window import SettingsWindowMixin
+from ui.stored_conversations import StoredConversationsMixin
 
 logger = logging.getLogger("voitta-desktop")
 
@@ -66,7 +67,7 @@ ICON_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 
 class VoittaDesktopApp(
     AuthFlowsMixin, MCPLifecycleMixin, SessionExplorerMixin, MenuBuilderMixin,
-    SettingsWindowMixin, rumps.App, AppBase,
+    SettingsWindowMixin, StoredConversationsMixin, rumps.App, AppBase,
 ):
     """The macOS menu bar driver.
 

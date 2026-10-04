@@ -426,14 +426,11 @@ class LlmAccounts:
         claude_code = {k: data[k] for k in ("model", "cwd", "entrypoint") if data.get(k)}
         routing = self.journal.read(session_id)
 
-        def build_and_write():
-            record = conversations.build(session_id, transcript, routing, claude_code=claude_code, llm=llm)
-            path = conversations.write(self.conversations_dir, record)
-            return path, record["counts"]
-
-        path, counts = await asyncio.to_thread(build_and_write)
-        log.info("stored conversation %s: %s", session_id[:8], counts)
-        return web.json_response({"path": str(path), "bytes": path.stat().st_size, **counts})
+        meta = await asyncio.to_thread(conversations.store, self.conversations_dir, session_id, transcript,
+                                       routing, claude_code=claude_code, llm=llm)
+        log.info("stored conversation %s: %s", session_id[:8], meta["counts"])
+        return web.json_response({"path": str(self.conversations_dir / session_id), "bytes": meta["bytes"],
+                                  **meta["counts"]})
 
     # ---- the /llm mod: one-click install into Claude Code ---------------------
 

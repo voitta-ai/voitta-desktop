@@ -47,6 +47,21 @@ logger = logging.getLogger("voitta-desktop.explorer")
 _ACTIVE_WINDOW_S = 30.0   # "streaming now" dot in the sidebar
 
 
+_UI_DIR = Path(__file__).parent
+
+
+def page_html(page: str, inject: str) -> str:
+    """``<page>.html`` with the shared transcript viewer (transcript_view.css
+    and .js) stitched in ahead of the page's own ``<page>.js``."""
+    read = lambda name: (_UI_DIR / name).read_text(encoding="utf-8")
+    html = read(f"{page}.html").replace("/*INJECT_CSS*/", read("transcript_view.css"))
+    return html.replace("/*INJECT*/", inject + "\n" + read("transcript_view.js") + "\n" + read(f"{page}.js"))
+
+
+def explorer_page_html(initial: dict) -> str:
+    return page_html("session_explorer", f"var _initialList = {_safe_json(initial)};")
+
+
 @on_main_thread
 def _explorer_inject_js(app_ref, gen, js):
     """Push JS into the explorer webview from any thread, generation-guarded."""
@@ -178,15 +193,7 @@ class SessionExplorerMixin:
         webview.setAutoresizingMask_(18)
         window.contentView().addSubview_(webview)
 
-        ui_dir = Path(__file__).parent
-        html = (ui_dir / "session_explorer.html").read_text(encoding="utf-8")
-        js = (ui_dir / "session_explorer.js").read_text(encoding="utf-8")
-        initial = self._explorer_list()
-        html = html.replace(
-            "/*INJECT*/",
-            f"var _initialList = {_safe_json(initial)};\n" + js,
-        )
-        webview.loadHTMLString_baseURL_(html, None)
+        webview.loadHTMLString_baseURL_(explorer_page_html(self._explorer_list()), None)
 
         NSNotificationCenter.defaultCenter().addObserver_selector_name_object_(
             bridge, "windowWillClose:", "NSWindowWillCloseNotification", window
