@@ -285,6 +285,15 @@ class _SettingsTitleObserver(NSObject):
             runtime.run_blocking(_do_log)
             return
 
+        if title.startswith(("VOITTA_OPEN_URL:", "VOITTA_COPY:", "VOITTA_SETTINGS_SIZE:")):
+            # From the LLMs tab (settings.js's _bridge): "<command>:<payload>#<salt>".
+            obj.evaluateJavaScript_completionHandler_(
+                "document.title = 'Voitta Desktop — Settings'", None
+            )
+            command, _, rest = title.partition(":")
+            self._llm_tab_request(command, rest.rpartition("#")[0])
+            return
+
         if title.startswith("VOITTA_CLAUDE_LINK_TOGGLE:"):
             # Reset the title so back-to-back clicks still fire KVO. Do NOT
             # mark this observer as handled — the settings window stays
@@ -307,6 +316,34 @@ class _SettingsTitleObserver(NSObject):
             self._handled = True
             self._removeKVO()
             self._deferClose()
+
+    def _llm_tab_request(self, command, payload):
+        from urllib.parse import unquote
+        from AppKit import NSPasteboard, NSPasteboardTypeString, NSWorkspace
+        from Foundation import NSURL
+        if command == "VOITTA_OPEN_URL":
+            url = unquote(payload)
+            if url.startswith(("https://", "http://")):  # logins and links open in the default browser
+                NSWorkspace.sharedWorkspace().openURL_(NSURL.URLWithString_(url))
+        elif command == "VOITTA_COPY":
+            board = NSPasteboard.generalPasteboard()
+            board.clearContents()
+            board.setString_forType_(unquote(payload), NSPasteboardTypeString)
+        elif command == "VOITTA_SETTINGS_SIZE":
+            # Wide for the LLM accounts table; back to where it was otherwise.
+            frame = self._window.frame()
+            if payload == "wide":
+                self._normal_frame = frame
+                width, height = max(frame.size.width, 1240), max(frame.size.height, 860)
+                screen = self._window.screen().visibleFrame()
+                width, height = min(width, screen.size.width), min(height, screen.size.height)
+                top = frame.origin.y + frame.size.height
+                x = max(screen.origin.x, min(frame.origin.x, screen.origin.x + screen.size.width - width))
+                y = max(screen.origin.y, top - height)
+                self._window.setFrame_display_animate_(((x, y), (width, height)), True, True)
+            elif getattr(self, "_normal_frame", None) is not None:
+                self._window.setFrame_display_animate_(self._normal_frame, True, True)
+                self._normal_frame = None
 
     def onSaveData_error_(self, result, error):
         # Close the window immediately so the user isn't blocked

@@ -278,11 +278,14 @@
   .tabs {
     display: flex;
     gap: 2px;
+    overflow-x: auto;  /* a narrowed window scrolls the tab row instead of clipping it */
     border-bottom: 1px solid var(--card-border);
     margin: -4px -4px 20px;
     padding: 0 4px;
   }
   .tab {
+    flex: none;
+    white-space: nowrap;
     padding: 8px 14px;
     border: none;
     background: transparent;
@@ -302,6 +305,9 @@
     border-bottom-color: var(--accent);
   }
   .tab-pane { display: none; }
+  #llm-frame { width: 100%; height: calc(100vh - 190px); min-height: 420px; border: 0;
+               border-radius: 10px; background: var(--bg); }
+  .llm-note { color: var(--text-secondary); font-size: 12px; margin: 0 4px 8px; }
   .tab-pane.active { display: block; }
 
   /* ── Info tab — Prius-style energy monitor (single SVG, orthogonal) ─── */
@@ -425,6 +431,9 @@
   .info-svg .backend-dot.ok    { fill: #30d158; filter: drop-shadow(0 0 3px #30d158); }
   .info-svg .backend-dot.empty { fill: rgba(180, 220, 255, 0.12); stroke: rgba(180,220,255,0.4); stroke-width: 1; }
   .info-svg .backend-dot.error { fill: #ff9500; filter: drop-shadow(0 0 3px #ff9500); }
+  .info-svg .default-ring { fill: none; stroke: #ffd83d; stroke-width: 1.5; }
+  .info-svg .clickable { cursor: pointer; }
+  .info-svg .clickable:hover .comp-rect { stroke: #ffd83d; }
 
   .info-svg .x-circle { fill: #0e3a5c; stroke: #ff453a; stroke-width: 2; }
   .info-svg .x-stroke { stroke: #ff453a; stroke-width: 2.5; stroke-linecap: round; }
@@ -448,11 +457,19 @@
   <button class="tab active" data-tab="proxies" onclick="switchTab('proxies')">Proxies</button>
   <button class="tab" data-tab="tools" onclick="switchTab('tools')">Tools</button>
   <button class="tab" data-tab="accounts" onclick="switchTab('accounts')">Accounts</button>
+  <button class="tab" data-tab="llms" onclick="switchTab('llms')">LLMs</button>
   <button class="tab" data-tab="mcps" onclick="switchTab('mcps')">MCPs</button>
   <button class="tab" data-tab="bash" onclick="switchTab('bash')">Bash</button>
   <button class="tab" data-tab="time" onclick="switchTab('time')">Time</button>
   <button class="tab" data-tab="info" onclick="switchTab('info')">Info</button>
 </nav>
+
+<!-- ── LLMs ───────────────────────────────────────────────────────────────── -->
+<!-- The LLM accounts page, served by the LLM proxy itself; loaded on first visit. -->
+<div class="tab-pane" id="tab-llms">
+  <div class="llm-note">Changes here apply immediately; Save and Cancel don't affect them.</div>
+  <iframe id="llm-frame" aria-label="LLM accounts"></iframe>
+</div>
 
 <!-- ── Accounts ───────────────────────────────────────────────────────────── -->
 <div class="tab-pane" id="tab-accounts">
@@ -659,15 +676,24 @@
 
       <!-- ── Status pills (top-right) ─────────────────────────────────── -->
       <g transform="translate(310, 10)">
-        <rect class="pill-bg" width="160" height="76" rx="6"/>
+        <rect class="pill-bg" width="160" height="58" rx="6"/>
         <text class="pill-key" x="10" y="18">LLM</text>
         <text class="pill-val ok" id="info-llm-pill" x="150" y="18">—</text>
         <text class="pill-key" x="10" y="36">CLAUDE MCP</text>
         <text class="pill-val ok" id="info-mcp-claude-pill" x="150" y="36">—</text>
         <text class="pill-key" x="10" y="54">CODEX MCP</text>
         <text class="pill-val ok" id="info-mcp-codex-pill" x="150" y="54">—</text>
-        <text class="pill-key" x="10" y="72">MODEL</text>
-        <text class="pill-val neutral" id="info-model-pill" x="150" y="72">—</text>
+      </g>
+
+      <!-- ── LLM routing (top-left): the default account, and what last
+           actually answered (an account's own model, not what Claude Code asked for). -->
+      <g transform="translate(10, 10)" class="clickable" onclick="switchTab('llms')">
+        <title>Open Settings → LLMs</title>
+        <rect class="pill-bg" width="150" height="72" rx="6"/>
+        <text class="pill-key" x="10" y="17">DEFAULT LLM</text>
+        <text class="pill-val neutral" style="text-anchor:start" id="info-default-pill" x="10" y="31">—</text>
+        <text class="pill-key" x="10" y="51">LAST ANSWERED BY</text>
+        <text class="pill-val neutral" style="text-anchor:start" id="info-model-pill" x="10" y="65">—</text>
       </g>
 
       <!-- ── CLAUDE CODE (top center) ─────────────────────────────────── -->
@@ -730,16 +756,16 @@
             d="M 370 310 V 358" />
       <polygon id="info-arrow-backends-tip" points="365,352 375,352 370,362" fill="#ffd83d"/>
 
-      <!-- ── UPSTREAM (bottom-bottom-left) ────────────────────────────── -->
-      <g id="info-comp-upstream" transform="translate(40, 360)">
-        <rect class="comp-rect" id="info-upstream-rect" width="140" height="60" rx="10"/>
-        <!-- Icon: cloud -->
-        <g transform="translate(48, 12)" id="info-upstream-icon">
-          <ellipse class="icon-stroke" cx="22" cy="20" rx="22" ry="9" fill="rgba(184,216,255,0.12)"/>
-          <circle  class="icon-stroke" cx="14" cy="14" r="7" fill="rgba(184,216,255,0.12)"/>
-          <circle  class="icon-stroke" cx="29" cy="12" r="9" fill="rgba(184,216,255,0.12)"/>
-        </g>
-        <text class="comp-sub" x="70" y="52" id="info-upstream-host">api.anthropic.com</text>
+      <!-- ── LLM ACCOUNTS (bottom-bottom-left) ────────────────────────── -->
+      <!-- One dot per account the LLM proxy can route to ("As is" first); the
+           default is ringed. Each window goes to its /llm pick or the default. -->
+      <g id="info-comp-upstream" transform="translate(20, 360)" class="clickable"
+         onclick="switchTab('llms')">
+        <title>Open Settings → LLMs</title>
+        <rect class="comp-rect" id="info-upstream-rect" width="180" height="60" rx="10"/>
+        <text class="comp-sub" x="90" y="14" style="letter-spacing:2px;">LLM ACCOUNTS</text>
+        <g id="info-account-dots" transform="translate(18, 32)"></g>
+        <text class="comp-sub" x="90" y="52" id="info-upstream-host">—</text>
       </g>
 
       <!-- ── BACKENDS (bottom-bottom-right) ───────────────────────────── -->

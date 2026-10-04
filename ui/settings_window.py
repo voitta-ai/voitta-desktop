@@ -207,6 +207,11 @@ class SettingsWindowMixin:
             win = self._settings_refs[0]
             try:
                 if win.isVisible():
+                    tab = getattr(self, "_settings_initial_tab", None)
+                    self._settings_initial_tab = None
+                    if tab:
+                        self._settings_refs[1].evaluateJavaScript_completionHandler_(
+                            f"switchTab({json.dumps(tab)})", None)
                     NSApp.activateIgnoringOtherApps_(True)
                     win.makeKeyAndOrderFront_(None)
                     return
@@ -224,11 +229,13 @@ class SettingsWindowMixin:
         gen = self._settings_gen
 
         mask = 1 | 2 | 8
-        frame = NSMakeRect(200, 200, 540, 650)
+        # Wide enough for every tab label on one row (8 tabs and counting).
+        frame = NSMakeRect(200, 200, 780, 720)
         window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             frame, mask, NSBackingStoreBuffered, False
         )
         window.setTitle_("Voitta Desktop — Settings")
+        window.setContentMinSize_((640, 480))
         window.setReleasedWhenClosed_(False)
         window.center()
 
@@ -260,8 +267,12 @@ class SettingsWindowMixin:
             f"var _initialClaudeLinked = {_safe_json(linked)};\n"
             f"var _initialInfo = {_safe_json(info_state)};\n"
             f"var _toolTree = {_safe_json(tool_tree)};\n"
+            # The LLMs tab embeds the LLM proxy's own accounts page.
+            f"var _llmUrl = {_safe_json(f'http://localhost:{self.llm_proxy_port}/_voitta/llm/')};\n"
+            f"var _initialTab = {_safe_json(getattr(self, '_settings_initial_tab', None) or '')};\n"
             + js_body,
         )
+        self._settings_initial_tab = None
         webview.loadHTMLString_baseURL_(html_content, None)
 
         observer = _SettingsTitleObserver.alloc().initWithApp_window_gen_(self, window, gen)
@@ -446,6 +457,7 @@ class SettingsWindowMixin:
             backends.append({"label": label, "tools_count": count, "state": state})
 
         return {
+            "llm": self._collect_llm_info(),
             "llm_wired": llm_wired,
             "mcp_wired": mcp_wired,
             "mcp_wired_claude": mcp_wired_claude,
@@ -459,6 +471,41 @@ class SettingsWindowMixin:
             "savings_usd": float(self._optimizer_pipeline.total_savings_usd),
             "backends": backends,
         }
+
+    def _collect_llm_info(self) -> dict:
+        """LLM accounts for the Info diagram: each account (the default marked),
+        how many windows active since start picked it with /llm, and what last
+        actually answered."""
+        llm = getattr(self, "_llm", None)
+        if llm is None or llm.router is None:
+            return {}
+        short = {"as_is": "As is", "claude": "Claude", "openai": "ChatGPT", "deepseek": "DeepSeek",
+                 "mistral": "Mistral", "openai_api": "OpenAI"}
+        state = {"ok": "ok", "limited": "empty"}  # needs_login / error → "error"
+        try:
+            # Windows seen since start that route by their own /llm pick.
+            picked = [s["account"] for s in list(llm.router.sessions.values()) if s.get("route") == "window"]
+            recent = list(llm.router.requests)
+            accounts = []
+            for o in llm.options():
+                accounts.append({
+                    "label": o["label"], "provider": o["provider_label"],
+                    "short": short.get(o["provider"], o["label"]), "status": o["status"],
+                    "state": state.get(o["status"], "error"),
+                    "is_default": o["id"] == llm.store.active_id,
+                    "windows": picked.count(o["id"]),
+                })
+        except RuntimeError:  # changed under us mid-read; the next tick redraws
+            return {}
+        last = next((r for r in recent if r.get("status") == 200 and r.get("path", "").startswith("/v1/messages")
+                     and not r.get("path", "").endswith("count_tokens")), None)
+        last_answer = None
+        if last:
+            receipt = last.get("upstream") or {}
+            model = receipt.get("model") or last.get("upstream_model") or last.get("model") or "?"
+            model = model.removeprefix("claude-")
+            last_answer = {"model": model, "account": last.get("account"), "host": receipt.get("host")}
+        return {"accounts": accounts, "picked_windows": len(picked), "last_answer": last_answer}
 
     # ── Claude link popup ────────────────────────────────────────────────────
 

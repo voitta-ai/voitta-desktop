@@ -43,6 +43,7 @@ from optimizers.thinking import ThinkingOptimizer
 from optimizers.tool_result import ToolResultOptimizer
 from optimizers.tool_use import ToolUseOptimizer
 from proxy import AnthropicProxy
+from llmgw.web import LlmAccounts
 from ui._native import (
     _notify, _FocusTrigger, _InfoTicker, _is_port_free, _grab_free_port,
     _show_modal, _SettingsTitleObserver,
@@ -153,10 +154,14 @@ class VoittaDesktopApp(
             haiku_only=bool(opt_cfg.get("haiku_only", False)),
         )
         self._cache_sim = CacheSimulator(tracker=self._tracker)
+        # LLM accounts: which upstream each Claude Code window's requests go
+        # to, after the middleware above. "As is" (the default) changes nothing.
+        self._llm = LlmAccounts(port=self.llm_proxy_port)
         self._proxy = AnthropicProxy(
             middlewares=[self._request_logger, self._tracker, self._optimizer_pipeline, self._cache_sim],
             port=self.llm_proxy_port,
             upstream_url=self.llm_upstream_url,
+            llm=self._llm,
         )
         self._proxy_running = False
         self.terminal_mode = False
@@ -165,6 +170,8 @@ class VoittaDesktopApp(
         # Build menu
         self._menu_items = {}
         self._build_menu()
+        # The LLM submenu follows account changes made anywhere (the page, /llm, here).
+        self._llm.store.listeners.append(self._fill_llm_menu)
         self._update_auth_state()
         self._install_edit_shortcuts()
 

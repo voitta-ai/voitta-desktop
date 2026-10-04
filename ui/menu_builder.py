@@ -101,6 +101,12 @@ class MenuBuilderMixin:
         self._status_item = rumps.MenuItem("  LLM Tools Status", callback=self._show_llm_tools_status)
         menu_list.append(self._status_item)
 
+        # The default LLM account: where Claude Code's requests go unless a
+        # window picked its own with /llm. Refilled whenever accounts change.
+        self._llm_menu = rumps.MenuItem("  LLM")
+        menu_list.append(self._llm_menu)
+        self._fill_llm_menu()
+
         # Recovery path for the tool gate. Its answer is cached for
         # REUSE_WINDOW_S so a client's retry (after its ~5s timeout) is served
         # without a second popup — but that also means a mistaken Cancel, which
@@ -128,6 +134,43 @@ class MenuBuilderMixin:
         menu_list.append(rumps.MenuItem("Quit", callback=self._quit))
 
         self.menu = menu_list
+
+    @on_main_thread
+    def _fill_llm_menu(self):
+        item = getattr(self, "_llm_menu", None)
+        llm = getattr(self, "_llm", None)
+        if item is None or llm is None:
+            return
+        default = llm.store.active_id
+        options = llm.options()
+
+        def label(o):
+            if o["id"] == "as-is":
+                return "As is (Claude Code's own login)"
+            text = o["label"] + (f" · {o['main']}" if o["main"] else "")
+            return text + ("  ⚠ log in again" if o["status"] == "needs_login" else "")
+
+        current = next((o for o in options if o["id"] == default), None)
+        item.title = f"  LLM: {'As is' if not current or current['id'] == 'as-is' else current['label']}"
+        if item._menu is not None:
+            item.clear()
+        for o in options:
+            choice = rumps.MenuItem(label(o), callback=self._make_llm_default(o["id"]))
+            choice.state = int(o["id"] == default)
+            item.add(choice)
+        item.add(rumps.separator)
+        item.add(rumps.MenuItem("Manage LLM accounts…", callback=self._open_llm_settings))
+
+    def _make_llm_default(self, account_id):
+        def callback(_):
+            # The store belongs to the runtime loop; change it there. Its
+            # listener refills this menu.
+            runtime.loop.call_soon_threadsafe(self._llm.store.set_active, account_id)
+        return callback
+
+    def _open_llm_settings(self, _):
+        self._settings_initial_tab = "llms"
+        self.show_settings(None)
 
     def _rebuild_menu(self):
         self._menu_items = {}

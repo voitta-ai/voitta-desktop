@@ -1,0 +1,732 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM Accounts</title>
+<style>
+  :root { --bg:#fafafa; --card:#fff; --fg:#1d1d1f; --muted:#6e6e73; --line:#e3e3e6;
+          --accent:#2f6fde; --ok:#1f8a4c; --warn:#b26a00; --bad:#c62828; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#161618; --card:#1f1f22; --fg:#ececef; --muted:#9a9aa0; --line:#333338;
+            --accent:#6b9cff; --ok:#4cc27e; --warn:#e3a437; --bad:#ff6b6b; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  main { max-width:1240px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:20px; margin:0 0 4px; } h2 { font-size:15px; margin:0 0 12px; }
+  .sub { color:var(--muted); margin-bottom:20px; }
+  /* Inside Settings → LLMs: the settings window already says where we are. */
+  .embedded .standalone { display:none; }
+  .embedded main { padding-top:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
+  code, .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; }
+  pre { margin:0; padding:10px 12px; background:var(--bg); border:1px solid var(--line); border-radius:8px; overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:8px 6px; border-top:1px solid var(--line); vertical-align:middle; }
+  th { color:var(--muted); font-weight:500; font-size:12px; border-top:none; white-space:nowrap; }
+  .scroll { overflow-x:auto; }
+  button, .btn { font:inherit; padding:6px 12px; border-radius:7px; border:1px solid var(--line); background:var(--card);
+                 color:var(--fg); cursor:pointer; text-decoration:none; display:inline-block; white-space:nowrap; }
+  button.primary, .btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.small { padding:3px 8px; font-size:12px; }
+  button:disabled { opacity:.5; cursor:default; }
+  input, select { font:inherit; padding:6px 8px; border:1px solid var(--line); border-radius:7px; background:var(--bg); color:var(--fg); min-width:0; }
+  select.model, input.model { width:170px; }
+  .catalog-err { color:var(--warn); font-size:12px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:8px; }
+  .grid label { display:flex; flex-direction:column; gap:4px; color:var(--muted); font-size:12px; }
+  .pill { display:inline-block; white-space:nowrap; padding:1px 8px; border-radius:99px; font-size:12px; border:1px solid currentColor; }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); } .muted { color:var(--muted); }
+  .banner { padding:10px 14px; border-radius:8px; margin-bottom:16px; border:1px solid currentColor; }
+  tr.active td { background:color-mix(in srgb, var(--accent) 8%, transparent); }
+  .note { color:var(--muted); font-size:12px; margin-top:8px; }
+  .hidden { display:none; }
+  .help { display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; padding:0; margin-left:5px;
+          border-radius:50%; border:1px solid var(--muted); background:transparent; color:var(--muted); font-size:10.5px;
+          font-weight:600; line-height:1; cursor:help; vertical-align:middle; }
+  .help:hover, .help:focus-visible, .help[aria-expanded="true"] { border-color:var(--accent); color:var(--accent); outline:none; }
+  #helpPop { position:fixed; z-index:50; max-width:min(380px, calc(100vw - 32px)); padding:12px 14px; border-radius:9px;
+             background:var(--card); color:var(--fg); border:1px solid var(--line); box-shadow:0 8px 28px rgba(0,0,0,.22);
+             font-size:13px; line-height:1.5; font-weight:400; text-align:left; white-space:normal; }
+  #helpPop h3 { margin:0 0 6px; font-size:13px; }
+  #helpPop p { margin:0 0 6px; } #helpPop p:last-child, #helpPop ul:last-child { margin-bottom:0; }
+  #helpPop ul { margin:0 0 6px; padding-left:18px; } #helpPop li { margin-bottom:3px; }
+  #helpPop .tip { border-left:3px solid var(--accent); padding-left:8px; color:var(--fg); }
+  #helpPop code { font-size:12px; }
+  #helpPop.wide { max-width:min(520px, calc(100vw - 32px)); }
+  #helpPop { max-height:calc(100vh - 32px); overflow-y:auto; }
+  #helpPop ul.picks { margin:6px 0 0; padding-left:18px; }
+  #helpPop ul.picks li { margin:4px 0; }
+  #helpPop .mtable { width:100%; margin-top:6px; font-size:12px; }
+  #helpPop .mtable th { font-size:11px; padding:4px 6px; }
+  #helpPop .mtable td { padding:5px 6px; vertical-align:top; }
+  #helpPop .mtable tr.cur td { background:color-mix(in srgb, var(--accent) 10%, transparent); }
+  .tier { display:flex; align-items:center; gap:6px; }
+  .tier-label { color:var(--muted); font-size:11px; width:72px; flex:none; }
+</style>
+</head>
+<body>
+<main>
+  <h1 class="standalone">LLM Accounts <span class="muted" style="font-weight:400">· Voitta Desktop</span></h1>
+  <div class="sub">Claude Code reaches these through Voitta Desktop's LLM proxy. Each window goes to the account it picked with <code>/llm</code>, or to the default.<button type="button" class="help" data-help="launch" aria-label="Help: how Claude Code gets here">?</button></div>
+  <div id="banner"></div>
+
+  <div class="card">
+    <h2>Accounts<button type="button" class="help" data-help="accounts" aria-label="Help: accounts">?</button></h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Default<button type="button" class="help" data-help="active" aria-label="Help: default account">?</button></th><th>Account</th><th>Provider</th><th>Status<button type="button" class="help" data-help="status" aria-label="Help: status">?</button></th><th>Models<button type="button" class="help" data-help="models" aria-label="Help: models">?</button></th><th>Effort<button type="button" class="help" data-help="effort" aria-label="Help: effort">?</button></th><th></th></tr></thead>
+      <tbody id="accounts"></tbody>
+    </table></div>
+    <div id="empty" class="muted hidden" style="padding:8px 0">No accounts yet. Add one below.</div>
+  </div>
+
+  <div class="card">
+    <h2>Add an account</h2>
+    <div class="row" style="margin-bottom:6px">
+      <a class="btn primary" href="/_voitta/llm/login/claude" target="_blank" data-external>Log in with Claude</a>
+      <a class="btn primary" href="/_voitta/llm/login/openai" target="_blank" data-external>Log in with ChatGPT</a>
+    </div>
+    <div class="note">Logging in to an account that's already listed replaces its tokens and keeps your settings.</div>
+    <hr style="border:none;border-top:1px solid var(--line);margin:16px 0">
+    <h2 style="margin-bottom:4px">Claude: link + code<button type="button" class="help" data-help="invite" aria-label="Help: link and code login">?</button></h2>
+    <div class="note" style="margin-top:0">For someone else's account, or a browser on another machine. Send them the link; they sign in, approve, and send back the code Claude shows them.</div>
+    <div class="row" style="margin-top:10px">
+      <input id="inviteNote" placeholder="Who is it for? (optional)" style="flex:1;max-width:280px">
+      <button id="inviteBtn">Create link</button>
+    </div>
+    <div id="invites" style="margin-top:10px"></div>
+    <div class="row" style="margin-top:10px">
+      <input id="manualCode" class="mono" placeholder="Paste the code they send back" style="flex:1" autocomplete="off">
+      <button id="manualSubmit" class="primary">Add account</button>
+    </div>
+    <hr style="border:none;border-top:1px solid var(--line);margin:16px 0">
+    <h2 style="margin-bottom:4px">ChatGPT: link + device code<button type="button" class="help" data-help="device" aria-label="Help: ChatGPT device code login">?</button></h2>
+    <div class="note" style="margin-top:0">For someone else's ChatGPT account. Send them the link and the code; they enter it after signing in. The account appears here on its own, with nothing to paste back.</div>
+    <div class="row" style="margin-top:10px">
+      <input id="deviceNote" placeholder="Who is it for? (optional)" style="flex:1;max-width:280px">
+      <button id="deviceBtn">Create code</button>
+    </div>
+    <div id="deviceInvites" style="margin-top:10px"></div>
+    <hr style="border:none;border-top:1px solid var(--line);margin:16px 0">
+    <form id="keyForm">
+      <div class="grid">
+        <label>Provider<select id="kProvider"></select></label>
+        <label>API key<input id="kKey" type="password" autocomplete="off" required></label>
+        <label>Label (optional)<input id="kLabel"></label>
+        <label>Base URL<input id="kBase" required></label>
+      </div>
+      <div class="row" style="margin-top:10px"><button class="primary" type="submit">Add API-key account</button><button type="button" class="help" data-help="apikey" aria-label="Help: API-key accounts">?</button></div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Per-window accounts: /llm<button type="button" class="help" data-help="mod" aria-label="Help: the /llm mod">?</button></h2>
+    <div class="row">
+      <span id="modState" class="muted">Checking Claude Code…</span>
+      <button id="modInstall" class="primary hidden">Install /llm in Claude Code</button>
+    </div>
+    <pre id="modLog" class="mono hidden" style="margin-top:10px;white-space:pre-wrap"></pre>
+  </div>
+
+  <div class="card">
+    <h2>Claude Code windows<button type="button" class="help" data-help="windows" aria-label="Help: windows">?</button></h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Window</th><th>Picked with /llm</th><th>Routed to</th><th>Requests</th><th>Last request</th></tr></thead>
+      <tbody id="windows"></tbody>
+    </table></div>
+    <div id="noWindows" class="muted hidden" style="padding:8px 0">No Claude Code window has sent a request yet.</div>
+  </div>
+
+  <div class="card">
+    <h2>Recent requests<button type="button" class="help" data-help="requests" aria-label="Help: recent requests">?</button></h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Time</th><th>Account</th><th>Model</th><th>Answered by</th><th>Status</th><th>ms</th><th>Tokens in / out</th><th>Error</th></tr></thead>
+      <tbody id="requests"></tbody>
+    </table></div>
+  </div>
+</main>
+<div id="helpPop" role="tooltip" class="hidden"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let state = null;
+let editing = false;  // don't re-render rows while a model field has focus
+
+async function api(method, path, body) {
+  const r = await fetch(path, { method, headers: body ? {"Content-Type": "application/json"} : {},
+                                body: body ? JSON.stringify(body) : undefined });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok || data.error) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+
+function banner(text, cls) {
+  $("banner").innerHTML = text ? `<div class="banner ${cls}">${esc(text)}</div>` : "";
+}
+
+function statusCell(a) {
+  if (a.status === "needs_login") return `<span class="pill bad">log in again</span>`;
+  if (a.status === "limited") return `<span class="pill bad" title="${esc(a.status_detail)}">quota used up</span> <span class="muted">${esc(a.status_detail.split("; ").pop())}</span>`;
+  if (a.status === "error") return `<span class="pill warn" title="${esc(a.status_detail)}">refresh error</span>`;
+  if (a.expires_at) {
+    const mins = Math.round((a.expires_at - state.now) / 60);
+    // Access tokens are short-lived and renewed automatically; only a rejected refresh ends the session.
+    const when = mins > 0 ? `next renewal in ${mins >= 90 ? Math.round(mins / 60) + " h" : mins + " min"}` : "renewing on next request";
+    return `<span class="pill ok">signed in</span> <span class="muted" title="${when}">auto-renews</span>`;
+  }
+  return `<span class="pill ok">ok</span> <span class="muted mono" style="white-space:nowrap">${esc(a.key_hint || "")}</span>`;
+}
+
+const CUSTOM = "__custom__";
+
+function modelSelect(a, tier) {
+  const current = a.models[tier] || "";
+  const list = a.catalog?.models || [];
+  if (!list.length) {
+    // no catalog (yet): free text
+    return `<input class="model mono" data-id="${esc(a.id)}" data-tier="${tier}" value="${esc(current)}" placeholder="model id">`;
+  }
+  const opts = list.map((m) => `<option value="${esc(m.id)}" ${m.id === current ? "selected" : ""}>${esc(m.name === m.id ? m.id : `${m.name} (${m.id})`)}</option>`);
+  if (!current) {
+    opts.unshift(`<option value="" selected disabled>Pick a model</option>`);
+  } else if (!list.some((m) => m.id === current)) {
+    // only after the provider drops a model, or an id typed via "Other"; never a default
+    opts.unshift(`<option value="${esc(current)}" selected>⚠ ${esc(current)}: not offered by ${esc(providerName(a))}</option>`);
+  }
+  opts.push(`<option value="${CUSTOM}">Other model id…</option>`);
+  return `<select class="model mono" data-id="${esc(a.id)}" data-tier="${tier}">${opts.join("")}</select>`;
+}
+
+function effortSelect(a) {
+  if (!a.models) return `<span class="muted">set in Claude Code (/effort)</span>`;
+  const entry = (a.catalog?.models || []).find((m) => m.id === a.models.big);
+  const levels = entry ? entry.efforts : (a.provider === "openai" || a.provider === "openai_api" ? ["low", "medium", "high"] : []);
+  if (!levels.length) return `<span class="muted" title="This model has no reasoning-effort setting; pick a reasoning model instead.">n/a</span>`;
+  const cur = a.options?.reasoning_effort || "auto";
+  const opts = [`<option value="auto" ${cur === "auto" ? "selected" : ""}>Follow Claude Code</option>`]
+    .concat(levels.map((l) => `<option value="${esc(l)}" ${cur === l ? "selected" : ""}>${esc(l)}${entry?.default_effort === l ? " (default)" : ""}</option>`));
+  if (cur !== "auto" && !levels.includes(cur)) opts.push(`<option value="${esc(cur)}" selected>${esc(cur)} (not supported: requests will fail)</option>`);
+  return `<select class="model effort" data-id="${esc(a.id)}">${opts.join("")}</select>`;
+}
+
+function catalogNote(a) {
+  if (!a.models) return "";
+  const c = a.catalog;
+  if (!c) return `<div class="muted" style="font-size:12px">loading model list…</div>`;
+  if (c.error) return `<div class="catalog-err" title="${esc(c.error)}">model list failed: ${esc(c.error.slice(0, 80))}</div>`;
+  return `<div class="muted" style="font-size:12px">${c.models.length} models from provider</div>`;
+}
+
+function renderAccounts() {
+  const rows = state.accounts.map((a) => {
+    const models = a.models
+      ? `<div style="display:flex;flex-direction:column;gap:6px">
+           <label class="tier"><span class="tier-label">Main</span>${modelSelect(a, "big")}<button type="button" class="help" data-help="main" data-acct="${esc(a.id)}" aria-label="Help: main model">?</button></label>
+           <label class="tier"><span class="tier-label">Background</span>${modelSelect(a, "small")}<button type="button" class="help" data-help="background" data-acct="${esc(a.id)}" aria-label="Help: background model">?</button></label>
+         </div>${catalogNote(a)}`
+      : `<span class="muted">native: pick in Claude Code (/model)</span><button type="button" class="help" data-help="claudeModels" data-acct="${esc(a.id)}" aria-label="Help: Claude models">?</button>`;
+    // the plan is already part of ChatGPT labels ("me@x.com · prolite"); don't repeat it
+    const sub = [a.info?.invited_as, a.info?.plan || a.info?.organization]
+      .filter((x) => x && !a.label.includes(x)).join(" · ");
+    const extra = sub ? `<div class="muted">${esc(sub)}</div>` : "";
+    return `<tr class="${a.id === state.active ? "active" : ""}">
+      <td><input type="radio" name="active" data-act="${esc(a.id)}" ${a.id === state.active ? "checked" : ""}></td>
+      <td><b>${esc(a.label)}</b>${extra}</td>
+      <td>${esc(state.presets[a.provider]?.label || a.provider)}</td>
+      <td>${statusCell(a)}</td>
+      <td>${models}</td>
+      <td>${a.models ? `<div class="row" style="flex-wrap:nowrap;gap:0">${effortSelect(a)}<button type="button" class="help" data-help="effortRow" data-acct="${esc(a.id)}" aria-label="Help: effort for this account">?</button></div>` : effortSelect(a)}</td>
+      <td><div class="row">
+        <button class="small" data-test="${esc(a.id)}">Test</button>
+        ${a.models ? `<button class="small" data-models="${esc(a.id)}" title="Reload the model list from the provider">↻ Models</button>` : ""}
+        ${a.expires_at ? `<button class="small" data-refresh="${esc(a.id)}" title="Renew the access token now">Renew token</button>` : ""}
+        <button class="small" data-del="${esc(a.id)}">Remove</button>
+      </div></td></tr>`;
+  });
+  const asIs = `<tr class="${state.active === "as-is" ? "active" : ""}">
+      <td><input type="radio" name="active" data-act="as-is" ${state.active === "as-is" ? "checked" : ""}></td>
+      <td><b>As is</b><div class="muted">no change</div></td>
+      <td>Claude Code's own login</td>
+      <td><span class="muted">whatever Claude Code is signed in with</span></td>
+      <td><span class="muted">native: pick in Claude Code (/model)</span></td>
+      <td><span class="muted">n/a</span></td><td></td></tr>`;
+  $("accounts").innerHTML = asIs + rows.join("");
+  $("empty").classList.toggle("hidden", state.accounts.length > 0);
+}
+
+let modView = null;
+function renderMod() {
+  const m = modView;
+  if (!m) return;
+  const btn = $("modInstall");
+  if (m.error) {
+    $("modState").innerHTML = `<span class="bad">Couldn't ask Claude Code: ${esc(m.error)}</span>`;
+    btn.classList.add("hidden");
+    return;
+  }
+  if (m.installed && m.installed === m.available) {
+    $("modState").innerHTML = `<span class="pill ok">installed</span> <span class="muted">voitta-llm ${esc(m.installed)}${m.enabled ? "" : " (disabled in Claude Code)"} · type <code>/llm</code> in Claude Code</span>`;
+    btn.classList.add("hidden");
+  } else {
+    $("modState").innerHTML = m.installed
+      ? `<span class="pill warn">update available</span> <span class="muted">${esc(m.installed)} → ${esc(m.available)}</span>`
+      : `<span class="muted">Not installed in Claude Code.</span>`;
+    btn.textContent = m.installed ? "Update /llm" : "Install /llm in Claude Code";
+    btn.classList.remove("hidden");
+  }
+}
+async function loadMod() {
+  try { modView = await api("GET", "/_voitta/llm/api/mod"); } catch (err) { modView = { error: err.message }; }
+  renderMod();
+}
+$("modInstall").addEventListener("click", async () => {
+  const btn = $("modInstall");
+  btn.disabled = true; btn.textContent = "Installing…";
+  let r;
+  try {
+    const resp = await fetch("/_voitta/llm/api/mod/install", { method: "POST" });
+    r = await resp.json();
+  } catch (err) { r = { ok: false, steps: [], error: err.message }; }
+  btn.disabled = false;
+  $("modLog").textContent = (r.steps || []).map((s) => `$ ${s.command}  (exit ${s.exit})\n${s.output}`).join("\n\n") || r.error || "";
+  $("modLog").classList.toggle("hidden", r.ok);
+  banner(r.ok ? "Installed /llm. Open Claude Code windows pick it up after /reload-plugins (or a restart)." : "Install failed; the commands and their output are shown below.", r.ok ? "ok" : "bad");
+  modView = r; renderMod();
+});
+loadMod();
+
+function renderWindows() {
+  const ws = state.windows || [];
+  $("windows").innerHTML = ws.map((w) => {
+    const ago = w.last_seen ? Math.round((state.now - w.last_seen) / 60) : null;
+    return `<tr><td class="mono" title="${esc(w.session)}">${esc(w.session.slice(0, 8))}</td>
+      <td>${w.pick ? `<b>${esc(w.pick_label)}</b>` : `<span class="muted">default</span>`}</td>
+      <td>${esc(w.routed_label || "")}${w.route === "default" ? ` <span class="muted">(default)</span>` : ""}</td>
+      <td class="mono">${w.requests}</td>
+      <td class="muted">${ago == null ? "" : ago < 1 ? "just now" : `${ago} min ago`}</td></tr>`;
+  }).join("");
+  $("noWindows").classList.toggle("hidden", ws.length > 0);
+}
+
+function renderRequests() {
+  $("requests").innerHTML = state.requests.map((r) => {
+    const t = new Date(r.ts * 1000).toLocaleTimeString();
+    const model = r.upstream_model && r.upstream_model !== r.model ? `${esc(r.model)} → ${esc(r.upstream_model)}` : esc(r.model || r.path);
+    const cls = r.status == null ? "muted" : r.status < 300 ? "ok" : r.status < 500 ? "warn" : "bad";
+    const u = r.usage ? `${(r.usage.input_tokens || 0) + (r.usage.cache_read_input_tokens || 0)} / ${r.usage.output_tokens || 0}` : "";
+    return `<tr><td class="mono">${t}</td><td>${esc(r.account || "")}${r.session ? ` <span class="muted mono" title="${r.route === "window" ? "picked with /llm in window" : "default, window"} ${esc(r.session)}">${r.route === "window" ? "/llm" : "dflt"}·${esc(r.session)}</span>` : ""}</td><td class="mono">${model}</td>
+      <td class="mono" title="${esc(r.upstream ? `response id ${r.upstream.id || "?"}${r.upstream.trace ? `\ntrace ${r.upstream.trace}` : ""}` : "")}">${r.upstream ? `${esc(r.upstream.model || "?")} <span class="muted">@ ${esc(r.upstream.host)}</span>` : ""}</td>
+      <td class="${cls}">${r.status ?? "…"}</td><td class="mono">${r.ms ?? ""}</td><td class="mono">${u}</td>
+      <td class="muted" style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.error || (r.notes || []).join("\n"))}">${r.error ? esc(r.error) : (r.notes || []).length ? `<span class="muted">ⓘ ${esc(r.notes.join("; "))}</span>` : ""}</td></tr>`;
+  }).join("");
+}
+
+const HELP = {
+  launch: `<h3>How Claude Code gets here</h3>
+    <p>When Voitta Desktop is connected to Claude Code (Settings → Proxies → Connect), <code>~/.claude/settings.json</code> points <code>ANTHROPIC_BASE_URL</code> at Voitta's LLM proxy. Every request then passes Voitta's optimizers and comes here to be routed.</p>
+    <p>Claude Code keeps its own login: <b>As is</b> forwards it untouched; every other account uses its own credentials instead. Changes take effect on the next request; no restart needed.</p>
+    <p class="tip">Claude Code still shows Claude model names in its status bar. That's cosmetic: the Recent requests table shows what actually answered.</p>`,
+  accounts: `<h3>Accounts</h3>
+    <p>Every upstream you can run Claude Code on: Claude and ChatGPT subscriptions, and API-key providers.</p>
+    <p>One of them (or <b>As is</b>) is the <b>default</b>. A Claude Code window goes to the default unless it picked another account with <code>/llm</code>. Nothing is shared or rotated between accounts.</p>`,
+  active: `<h3>Default account</h3>
+    <p>Where a Claude Code window's requests go until that window picks something else with <code>/llm</code>. <b>As is</b> sends them on with Claude Code's own login, untouched.</p>
+    <p>Changing it takes effect on the next request, in every window without a pick.</p>
+    <p><b>No fallback.</b> If the account fails (quota, expired login, unsupported feature), Claude Code gets that error. Voitta never quietly tries another account.</p>`,
+  mod: `<h3>The /llm mod</h3>
+    <p>A Claude Code mod (plugin) that adds <code>/llm</code>: it shows these accounts and picks one for <b>that window only</b>. Other windows keep the default. The status line shows the window's account.</p>
+    <ul>
+      <li><code>/llm</code>: picker panel (a numbered list where no panel can be drawn, e.g. VS Code)</li>
+      <li><code>/llm deepseek</code> or <code>/llm 2</code>: pick directly</li>
+      <li><code>/llm default</code>: back to the default</li>
+    </ul>
+    <p><b>Install</b> runs <code>claude plugin marketplace add</code> for the mod folder bundled here, then <code>claude plugin install voitta-llm@voitta</code>. It installs for all your Claude Code windows; in windows that don't go through Voitta Desktop it stays silent. Open windows pick it up after <code>/reload-plugins</code> or a restart. Needs Claude Code 2.1.287 or newer.</p>`,
+  windows: `<h3>Claude Code windows</h3>
+    <p>Each window is one Claude Code session, identified by the session id Claude Code sends with every request. <code>/llm</code> in a window picks its account; <code>/llm default</code> goes back to the default.</p>
+    <p>A <code>/clear</code> or <code>--resume</code> gives the window a new session id; the /llm mod carries the pick over.</p>`,
+  status: `<h3>Status</h3>
+    <ul>
+      <li><b>signed in · auto-renews</b>: subscription login. Access tokens last a few hours and are renewed in the background; you stay signed in until the provider ends the session.</li>
+      <li><b>ok …1234</b>: API-key account (last 4 characters of the key).</li>
+      <li><b>quota used up</b>: the provider returned a usage-limit error; hover it for the reset time. Clears on the next successful request.</li>
+      <li><b>log in again</b>: the provider rejected the refresh token (logged out, password change, revoked). Log in again; the same row is updated.</li>
+      <li><b>refresh error</b>: renewing failed for another reason (often network). Requests fail until it works again.</li>
+    </ul>`,
+  models: `<h3>Main and Background</h3>
+    <p><b>Main</b>: your conversation. <b>Background</b>: Claude Code's small side jobs; a cheaper model is fine there.</p>`,
+  main: (a) => tierHelp(a, "big"),
+  background: (a) => tierHelp(a, "small"),
+  claudeModels: (a) => `<h3>Claude · ${esc(a.label)}</h3>
+    <p>Claude Code picks the model itself with <code>/model</code>; Voitta passes it through unchanged.</p>`,
+  effort: `<h3>Reasoning effort</h3>
+    <p>How long the model thinks before answering. <b>Follow Claude Code</b> uses its <code>/effort</code> setting; a fixed level overrides it for that account.</p>
+    <p>A level the Main model doesn't support fails with an error listing the supported ones; nothing is rounded.</p>
+    <p class="muted">Each row's <b>?</b> shows the levels its current Main model supports.</p>`,
+  effortRow: (a) => {
+    if (!a.models) return `<h3>Effort · ${esc(a.label)}</h3><p>Set with <code>/effort</code> in Claude Code; Anthropic applies it natively.</p>`;
+    const entry = catalogModel(a, a.models.big);
+    const name = `<code>${esc(a.models.big)}</code>`;
+    if (!entry) return `<h3>Effort · ${esc(a.label)}</h3><p>${name} isn't in ${esc(providerName(a))}'s model list, so its levels are unknown.</p>`;
+    if (!entry.efforts.length) {
+      const others = (a.catalog?.models || []).map((m) => `<code>${esc(m.id)}</code>`).join(", ");
+      return `<h3>Effort · ${esc(a.label)}</h3>
+        <p>${esc(providerName(a))} has no effort setting for ${name}, so <code>/effort</code> has no effect here.</p>
+        <p>How much it reasons depends on the model you pick: ${others}.</p>`;
+    }
+    const fails = EFFORT_LEVELS.filter((l) => !entry.efforts.includes(l));
+    const fixed = a.options?.reasoning_effort;
+    return `<h3>Effort · ${name}</h3>
+      <p>Supported: ${entry.efforts.map((l) => `<code>${esc(l)}</code>${l === entry.default_effort ? " (default)" : ""}`).join(" · ")}</p>
+      ${fails.length ? `<p>If Claude Code's <code>/effort</code> is ${fails.map((l) => `<code>${esc(l)}</code>`).join(" or ")}, requests to this account fail with an error.</p>` : ""}
+      <p>${fixed && fixed !== "auto" ? `Fixed at <code>${esc(fixed)}</code> for this account; <code>/effort</code> is ignored.` : `Currently following Claude Code's <code>/effort</code>.`}</p>
+      <p class="tip"><code>medium</code> or <code>high</code> suits most coding. Higher levels are slower and use more of your plan.</p>`;
+  },
+  invite: `<h3>Adding someone else's Claude account</h3>
+    <ul>
+      <li><b>Create link</b>: copies a ready-to-send message with the link.</li>
+      <li>They open it, sign in to <i>their</i> Claude account and click Authorize. Claude shows them a code.</li>
+      <li>They send you the code; paste it and click <b>Add account</b>.</li>
+    </ul>
+    <p>Links stay valid for 7 days. Claude's code expires within minutes, so it should be pasted soon; if it fails, they reopen the same link for a fresh code.</p>
+    <p class="tip">Also works for your own account when the browser is on a different machine than Voitta Desktop.</p>`,
+  device: `<h3>Adding someone else's ChatGPT account</h3>
+    <ul>
+      <li><b>Create code</b>: copies a ready-to-send message with the link and an 8-character code.</li>
+      <li>They open the link, sign in to <i>their</i> ChatGPT account and enter the code.</li>
+      <li>Voitta Desktop notices the approval within seconds and adds the account. Nothing comes back to you to paste.</li>
+    </ul>
+    <p>The code is OpenAI's and expires after about 15 minutes; after that, create a new one. Restarting Voitta Desktop cancels waiting codes.</p>
+    <p class="tip">Also works for your own account from a browser on another machine.</p>`,
+  apikey: () => {
+    const key = $("kProvider").value, p = state.presets[key];
+    const how = { deepseek: "Uses DeepSeek's Anthropic-compatible endpoint, so requests pass through with the fewest changes.",
+                  mistral: "Translated to Chat Completions. Mistral's list is filtered to chat models with tool calling.",
+                  openai_api: "Translated to Chat Completions, billed per token to the key's OpenAI project." }[key]
+              || "Use any service that speaks this API shape; set its base URL.";
+    return `<h3>${esc(p.label)}</h3>
+      <p>${how}</p>
+      <p>Base URL: <code>${esc(p.base_url || "(you provide)")}</code></p>
+      <p>Main and Background are filled from the provider's own model list once the account is added.</p>
+      <p class="muted">Rejected with an error outside Anthropic: Claude's web search tool${key === "deepseek" ? "" : ", and PDFs"}. Adding the same key again updates the existing row.</p>`;
+  },
+  requests: `<h3>Recent requests</h3>
+    <p>Every request any Claude Code window sent through Voitta Desktop since it started, newest first: <b>As is</b> ones too.</p>
+    <p><b>Model</b> shows <code>what Claude Code asked for → what was sent upstream</code>. That's the place to check which model actually answered.</p>
+    <p>Errors appear exactly as the provider returned them; hover a truncated one for the full text.</p>`,
+};
+
+const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
+
+const providerName = (a) => (state.presets[a.provider]?.label || a.provider).split(" (")[0];
+const catalogModel = (a, id) => (a.catalog?.models || []).find((m) => m.id === id);
+const fmtCtx = (n) => !n ? "" : n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1000)}K`;
+
+function suggestModels(a) {
+  const sug = a.catalog?.suggested || {};
+  return { main: catalogModel(a, sug.big) || null, background: catalogModel(a, sug.small) || null };
+}
+
+function tierHelp(a, tier) {
+  const isMain = tier === "big";
+  const list = a.catalog?.models || [];
+  const cur = a.models[tier];
+  const role = isMain ? "Your conversation and tool calls." : "Claude Code's small side jobs (titles, summaries, bash checks).";
+  const sug = suggestModels(a);
+  // at most two picks: the suggestion, plus the other tier's model as an alternative for Background
+  const picks = [isMain ? sug.main : sug.background, isMain ? null : sug.main]
+    .filter((m, i, arr) => m && arr.findIndex((x) => x && x.id === m.id) === i).slice(0, 2);
+  const missing = cur && list.length && !catalogModel(a, cur)
+    ? `<p class="bad"><code>${esc(cur)}</code> isn't offered by ${esc(providerName(a))}; requests will fail.</p>` : "";
+  const items = picks.map((m) => `<li><code>${esc(m.id)}</code>${m.description ? `: ${esc(m.description)}` : ""}${
+      m.id === cur ? ` <span class="ok">✓ current</span>`
+                   : ` <button class="small" data-apply="${esc(a.id)}" data-tier="${tier}" data-model="${esc(m.id)}">Use</button>`}</li>`).join("");
+  return `<h3>${isMain ? "Main" : "Background"} · ${esc(providerName(a))}</h3>
+    <p>${role}</p>${missing}
+    ${items ? `<ul class="picks">${items}</ul>` : `<p class="muted">Model list not loaded; press ↻ Models.</p>`}`;
+}
+
+// ---- help popovers: hover to peek, click to pin, Esc / outside click to close
+let helpAnchor = null, helpPinned = false;
+
+function showHelp(btn, pin) {
+  const pop = $("helpPop");
+  if (helpAnchor && helpAnchor !== btn) helpAnchor.setAttribute("aria-expanded", "false");
+  helpAnchor = btn;
+  helpPinned = pin;
+  btn.setAttribute("aria-expanded", "true");
+  const entry = HELP[btn.dataset.help];
+  const acct = btn.dataset.acct ? state.accounts.find((x) => x.id === btn.dataset.acct) : undefined;
+  pop.innerHTML = typeof entry === "function" ? entry(acct) : (entry || "");
+  pop.classList.toggle("wide", !!pop.querySelector("table"));
+  pop.classList.remove("hidden");
+  const r = btn.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight;
+  const left = Math.max(16, Math.min(r.left + r.width / 2 - w / 2, window.innerWidth - w - 16));
+  const below = r.bottom + 8;
+  pop.style.left = `${left}px`;
+  // below the icon if it fits, else above, else pinned to the viewport top (it scrolls)
+  pop.style.top = `${below + h <= window.innerHeight - 16 ? below : r.top - h - 8 >= 16 ? r.top - h - 8
+                     : Math.max(16, window.innerHeight - h - 16)}px`;
+}
+
+function hideHelp() {
+  if (helpAnchor) helpAnchor.setAttribute("aria-expanded", "false");
+  helpAnchor = null;
+  helpPinned = false;
+  $("helpPop").classList.add("hidden");
+}
+
+document.addEventListener("mouseover", (e) => {
+  const btn = e.target.closest?.(".help");
+  if (btn && !helpPinned) showHelp(btn, false);
+});
+document.addEventListener("mouseout", (e) => {
+  const btn = e.target.closest?.(".help");
+  if (btn && !helpPinned && !$("helpPop").contains(e.relatedTarget)) hideHelp();
+});
+$("helpPop").addEventListener("mouseleave", () => { if (!helpPinned) hideHelp(); });
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest(".help");
+  if (btn) {
+    e.preventDefault();  // inside a <label>, don't focus the select
+    if (helpPinned && helpAnchor === btn) hideHelp(); else showHelp(btn, true);
+  } else if (helpAnchor && !$("helpPop").contains(e.target)) {
+    hideHelp();
+  }
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideHelp(); });
+$("helpPop").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-apply]");
+  if (!b) return;
+  const a = state.accounts.find((x) => x.id === b.dataset.apply);
+  const models = { ...a.models, [b.dataset.tier]: b.dataset.model };
+  try {
+    await api("PATCH", `/_voitta/llm/api/accounts/${encodeURIComponent(a.id)}`, { models });
+    banner(`${a.label}: ${b.dataset.tier === "big" ? "Main" : "Background"} set to ${b.dataset.model}`, "ok");
+  } catch (err) { banner(err.message, "bad"); }
+  hideHelp();
+  load();
+});
+window.addEventListener("scroll", () => { if (helpAnchor) hideHelp(); }, true);
+
+async function load() {
+  state = await api("GET", "/_voitta/llm/api/state");
+  if (!$("kProvider").options.length) {
+    for (const [k, p] of Object.entries(state.presets)) {
+      if (p.auth === "api_key") $("kProvider").add(new Option(p.label, k));
+    }
+    fillPreset();
+  }
+  if (!editing && !helpAnchor) renderAccounts();
+  renderInvites();
+  renderDeviceInvites();
+  renderWindows();
+  renderRequests();
+}
+
+function fillPreset() {
+  const p = state.presets[$("kProvider").value];
+  $("kBase").value = p.base_url;
+}
+
+$("kProvider").addEventListener("change", fillPreset);
+
+$("keyForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    const r = await api("POST", "/_voitta/llm/api/accounts", {
+      provider: $("kProvider").value, api_key: $("kKey").value, label: $("kLabel").value,
+      base_url: $("kBase").value,
+    });
+    banner(`${r.replaced ? "Updated" : "Added"} ${r.account.label}`, "ok");
+    $("kKey").value = ""; $("kLabel").value = "";
+    load();
+  } catch (err) { banner(err.message, "bad"); }
+});
+
+const INVITE_MESSAGE = (url) =>
+  `Please open this link, sign in to Claude with your account and click Authorize:\n\n${url}\n\n` +
+  `Claude will then show you a code. Copy all of it and send it back to me.`;
+
+const DEVICE_MESSAGE = (d) =>
+  `Please open this link, sign in to ChatGPT with your account and enter the code ${d.user_code}:\n\n${d.url}\n\n` +
+  `The code expires in about 15 minutes. Tell me when you're done.`;
+
+let deviceJson = "";
+function renderDeviceInvites() {
+  const json = JSON.stringify(state.device_invites);
+  if (json === deviceJson && !state.device_invites.some((d) => d.status === "waiting")) return;
+  deviceJson = json;
+  $("deviceInvites").innerHTML = state.device_invites.map((d, n) => {
+    const mins = Math.max(0, Math.ceil((d.expires - state.now) / 60));
+    const status = d.status === "waiting" ? `<span class="muted">waiting for approval · ${mins} min left</span>`
+      : d.status === "added" ? `<span class="pill ok">${esc(d.detail)}</span>`
+      : `<span class="pill bad" title="${esc(d.detail)}">${d.status === "expired" ? "expired" : "failed"}</span> <span class="muted">${esc(d.detail)}</span>`;
+    const waiting = d.status === "waiting";
+    return `<div class="row" style="padding:6px 0;border-top:1px solid var(--line)">
+      <b>${esc(d.note || "Invite " + (n + 1))}</b>
+      ${waiting ? `<code style="font-size:15px;letter-spacing:1px">${esc(d.user_code)}</code>` : ""}
+      ${status}
+      <span style="flex:1"></span>
+      ${waiting ? `<button class="small" data-dcopy="${n}">Copy message</button>` : ""}
+      <button class="small" data-dcancel="${esc(d.id)}">${waiting ? "Cancel" : "Dismiss"}</button>
+    </div>`;
+  }).join("");
+}
+
+$("deviceBtn").addEventListener("click", async () => {
+  try {
+    const r = await api("POST", "/_voitta/llm/api/device-invites", { note: $("deviceNote").value });
+    $("deviceNote").value = "";
+    await copy(DEVICE_MESSAGE(r.invite), "Message with link and code");
+    load();
+  } catch (err) { banner(err.message, "bad"); }
+});
+
+$("deviceInvites").addEventListener("click", async (e) => {
+  const t = e.target;
+  if (t.dataset.dcopy) copy(DEVICE_MESSAGE(state.device_invites[t.dataset.dcopy]), "Message with link and code");
+  else if (t.dataset.dcancel) {
+    await api("DELETE", `/_voitta/llm/api/device-invites/${encodeURIComponent(t.dataset.dcancel)}`).catch((err) => banner(err.message, "bad"));
+    load();
+  }
+});
+
+// Inside Voitta Desktop's Settings this page is an iframe in a WKWebView,
+// which opens no new tabs and has no clipboard: the settings window does both.
+const EMBEDDED = window.parent !== window;
+if (EMBEDDED) document.documentElement.classList.add("embedded");
+function toApp(msg) { window.parent.postMessage({ voitta: msg }, "*"); }
+
+async function copy(text, what) {
+  if (EMBEDDED) { toApp({ copy: text }); banner(`${what} copied`, "ok"); return; }
+  try { await navigator.clipboard.writeText(text); banner(`${what} copied`, "ok"); }
+  catch { prompt(`Copy the ${what.toLowerCase()}:`, text); }
+}
+
+document.addEventListener("click", (e) => {
+  const a = e.target.closest && e.target.closest("a[href]");
+  if (!a || !EMBEDDED) return;
+  const url = new URL(a.getAttribute("href"), location.href);
+  if (a.hasAttribute("data-external") || url.origin !== location.origin) {
+    e.preventDefault();
+    toApp({ open: url.href });
+  }
+});
+
+let invitesJson = "";
+function renderInvites() {
+  const json = JSON.stringify(state.invites);
+  if (json === invitesJson) return;  // keep text selections stable between polls
+  invitesJson = json;
+  const left = (t) => { const h = (t - state.now) / 3600; return h >= 24 ? `${Math.round(h / 24)} d` : `${Math.max(1, Math.round(h))} h`; };
+  $("invites").innerHTML = state.invites.map((i, n) => `
+    <div class="row" style="padding:6px 0;border-top:1px solid var(--line)">
+      <b>${esc(i.note || "Invite " + (n + 1))}</b>
+      <span class="muted">waiting · expires in ${left(i.expires)}</span>
+      <input class="mono" readonly value="${esc(i.url)}" style="flex:1;min-width:160px" onfocus="this.select()">
+      <button class="small" data-copy-msg="${n}">Copy message</button>
+      <button class="small" data-copy-link="${n}">Copy link</button>
+      <button class="small" data-cancel="${esc(i.state)}">Cancel</button>
+    </div>`).join("");
+}
+
+$("inviteBtn").addEventListener("click", async () => {
+  try {
+    const r = await api("POST", "/_voitta/llm/api/invites", { note: $("inviteNote").value });
+    $("inviteNote").value = "";
+    await copy(INVITE_MESSAGE(r.url), "Message with link");
+    load();
+  } catch (err) { banner(err.message, "bad"); }
+});
+
+$("invites").addEventListener("click", async (e) => {
+  const t = e.target, invites = state.invites;
+  if (t.dataset.copyMsg) copy(INVITE_MESSAGE(invites[t.dataset.copyMsg].url), "Message with link");
+  else if (t.dataset.copyLink) copy(invites[t.dataset.copyLink].url, "Link");
+  else if (t.dataset.cancel) {
+    await api("DELETE", `/_voitta/llm/api/invites/${encodeURIComponent(t.dataset.cancel)}`).catch((err) => banner(err.message, "bad"));
+    load();
+  }
+});
+
+$("manualSubmit").addEventListener("click", async () => {
+  try {
+    const r = await api("POST", "/_voitta/llm/api/login/claude/manual", { code: $("manualCode").value });
+    banner(`${r.replaced ? "Updated" : "Added"} ${r.account.label}`, "ok");
+    $("manualCode").value = "";
+    load();
+  } catch (err) { banner(err.message, "bad"); }
+});
+
+$("accounts").addEventListener("click", async (e) => {
+  const t = e.target;
+  try {
+    if (t.dataset.act) {
+      await api("POST", `/_voitta/llm/api/accounts/${encodeURIComponent(t.dataset.act)}/activate`);
+    } else if (t.dataset.del) {
+      if (!confirm("Remove this account and its stored credentials?")) return;
+      await api("DELETE", `/_voitta/llm/api/accounts/${encodeURIComponent(t.dataset.del)}`);
+    } else if (t.dataset.refresh) {
+      await api("POST", `/_voitta/llm/api/accounts/${encodeURIComponent(t.dataset.refresh)}/refresh`);
+      banner("Token refreshed", "ok");
+    } else if (t.dataset.models) {
+      t.disabled = true; t.textContent = "…";
+      const r = await api("POST", `/_voitta/llm/api/accounts/${encodeURIComponent(t.dataset.models)}/models`);
+      banner(`Loaded ${r.count} models`, "ok");
+    } else if (t.dataset.test) {
+      t.disabled = true; t.textContent = "…";
+      const r = await api("POST", `/_voitta/llm/api/accounts/${encodeURIComponent(t.dataset.test)}/test`);
+      banner(r.ok ? `Test ok in ${r.ms} ms, reply: "${r.reply}"` : `Test failed (${r.status}): ${r.error}`, r.ok ? "ok" : "bad");
+    } else return;
+    load();
+  } catch (err) { banner(err.message, "bad"); load(); }
+});
+
+$("accounts").addEventListener("focusin", (e) => { if (e.target.classList.contains("model")) editing = true; });
+
+async function saveModel(el) {
+  const id = el.dataset.id;
+  const a = state.accounts.find((x) => x.id === id);
+  let value = el.value.trim();
+  if (value === CUSTOM) {
+    value = (prompt("Model id as the provider names it:", a.models[el.dataset.tier]) || "").trim();
+    if (!value) { editing = false; renderAccounts(); return; }
+  }
+  const models = { ...a.models, [el.dataset.tier]: value };
+  if (models.big === a.models.big && models.small === a.models.small) return;
+  await api("PATCH", `/_voitta/llm/api/accounts/${encodeURIComponent(id)}`, { models });
+}
+
+$("accounts").addEventListener("change", async (e) => {
+  const el = e.target;
+  if (el.tagName !== "SELECT") return;
+  try {
+    if (el.classList.contains("effort")) {
+      await api("PATCH", `/_voitta/llm/api/accounts/${encodeURIComponent(el.dataset.id)}`, { options: { reasoning_effort: el.value } });
+    } else {
+      await saveModel(el);
+    }
+  } catch (err) { banner(err.message, "bad"); }
+  editing = false; el.blur(); load();
+});
+
+$("accounts").addEventListener("focusout", async (e) => {
+  if (e.target.tagName === "SELECT") { editing = false; return; }
+  if (!e.target.classList.contains("model")) return;
+  editing = false;
+  try { await saveModel(e.target); load(); } catch (err) { banner(err.message, "bad"); }
+});
+
+const q = new URLSearchParams(location.search);
+if (q.get("added")) banner(`${q.get("replaced") === "1" ? "Re-logged in" : "Added"} ${q.get("added")}`, "ok");
+if (q.get("error")) banner(q.get("error"), "bad");
+if (q.toString()) history.replaceState(null, "", "/");
+
+load();
+setInterval(() => load().catch(() => {}), 3000);
+</script>
+</body>
+</html>

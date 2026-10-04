@@ -1,0 +1,6 @@
+{
+  "name": "voitta-llm",
+  "version": "0.2.0",
+  "description": "/llm: pick which LLM account this Claude Code window uses, through Voitta Desktop",
+  "types": "./types/index.d.ts"
+}

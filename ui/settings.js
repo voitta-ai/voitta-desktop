@@ -844,6 +844,8 @@ function cancel() {
 // Tab switching — also reveals the Connect/Disconnect button only when
 // the Proxies tab is active (it's bottom-left, intentionally tied to that
 // section since the LLM proxy port is what gets wired into Claude Code).
+var _currentTab = 'proxies';
+
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(function(t) {
     t.classList.toggle('active', t.dataset.tab === name);
@@ -853,6 +855,34 @@ function switchTab(name) {
   });
   var linkBtn = document.getElementById('claude-link-btn');
   if (linkBtn) linkBtn.style.display = (name === 'proxies') ? '' : 'none';
+  // The LLM accounts page is a wide table: widen the window while it shows.
+  if (name === 'llms' && _currentTab !== 'llms') {
+    var frame = document.getElementById('llm-frame');
+    if (!frame.src) frame.src = _llmUrl;
+    _bridge('VOITTA_SETTINGS_SIZE:wide');
+  } else if (name !== 'llms' && _currentTab === 'llms') {
+    _bridge('VOITTA_SETTINGS_SIZE:normal');
+  }
+  _currentTab = name;
+}
+
+// One title change per message; the salt makes repeats observable.
+function _bridge(command) {
+  document.title = command + '#' + Math.random().toString(36).slice(2);
+}
+
+// The embedded LLM page can't open browser tabs or reach the clipboard from
+// inside a WKWebView iframe, so it asks us and we ask the app.
+window.addEventListener('message', function(e) {
+  if (!/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(e.origin)) return;
+  var m = e.data && e.data.voitta;
+  if (!m) return;
+  if (typeof m.open === 'string') _bridge('VOITTA_OPEN_URL:' + encodeURIComponent(m.open));
+  if (typeof m.copy === 'string') _bridge('VOITTA_COPY:' + encodeURIComponent(m.copy));
+});
+
+if (typeof _initialTab === 'string' && _initialTab) {
+  document.addEventListener('DOMContentLoaded', function() { switchTab(_initialTab); });
 }
 
 // Connect/Disconnect button — fires a salt-prefixed title so KVO observes
@@ -886,8 +916,14 @@ function _setInfoState(s) {
   setPill('info-mcp-codex-pill',
           s.mcp_wired_codex ? '✓ WIRED' : '✗ OFF',
           s.mcp_wired_codex ? 'ok' : 'off');
-  var model = (s.current_model || '—').toUpperCase();
-  setPill('info-model-pill', model, 'neutral');
+  var llm = s.llm || {};
+  var def = (llm.accounts || []).filter(function(a) { return a.is_default; })[0];
+  setPill('info-default-pill', def ? def.short.toUpperCase() : '—',
+          def && def.state === 'error' ? 'off' : 'neutral');
+  // What actually answered last (an account's own model, not what Claude Code asked for).
+  var last = llm.last_answer;
+  var model = last ? last.model : (s.current_model || '—');
+  setPill('info-model-pill', String(model).toUpperCase().slice(0, 22), 'neutral');
 
   // ── Conversations subtext beneath Claude Code box ──────────────────────
   var sub = document.getElementById('info-claude-sub');
@@ -918,9 +954,39 @@ function _setInfoState(s) {
   document.getElementById('info-x-llm').style.display = s.llm_wired ? 'none' : '';
   document.getElementById('info-x-mcp').style.display = s.mcp_wired ? 'none' : '';
 
-  // ── Upstream host text ─────────────────────────────────────────────────
+  // ── LLM accounts: a dot each, the default ringed ────────────────────────
+  var acctEl = document.getElementById('info-account-dots');
+  if (acctEl) {
+    while (acctEl.firstChild) acctEl.removeChild(acctEl.firstChild);
+    var accts = llm.accounts || [];
+    var shown = Math.min(accts.length, 7);
+    for (var j = 0; j < shown; j++) {
+      var a = accts[j];
+      var g = document.createElementNS(SVG_NS, 'g');
+      var d = document.createElementNS(SVG_NS, 'circle');
+      d.setAttribute('cx', String(j * 24)); d.setAttribute('cy', '0'); d.setAttribute('r', '5');
+      d.setAttribute('class', 'backend-dot ' + a.state);
+      g.appendChild(d);
+      if (a.is_default) {
+        var ring = document.createElementNS(SVG_NS, 'circle');
+        ring.setAttribute('cx', String(j * 24)); ring.setAttribute('cy', '0'); ring.setAttribute('r', '8.5');
+        ring.setAttribute('class', 'default-ring');
+        g.appendChild(ring);
+      }
+      var t = document.createElementNS(SVG_NS, 'title');
+      t.textContent = a.label + ' (' + a.provider + ')' + (a.is_default ? ' · default' : '') +
+        (a.windows ? ' · ' + a.windows + (a.windows === 1 ? ' window' : ' windows') + ' picked it' : '') +
+        (a.status !== 'ok' ? ' · ' + a.status.replace('_', ' ') : '');
+      g.appendChild(t);
+      acctEl.appendChild(g);
+    }
+  }
   var host = document.getElementById('info-upstream-host');
-  if (host) host.textContent = s.upstream_host || 'api.anthropic.com';
+  if (host) {
+    var picked = llm.picked_windows || 0;
+    host.textContent = !def ? (s.upstream_host || 'api.anthropic.com')
+      : 'default: ' + def.short + (picked ? ' · ' + picked + ' on /llm' : '');
+  }
 
   // ── Backends: row of dots + summary ────────────────────────────────────
   var dotsEl = document.getElementById('info-backend-dots');
@@ -955,7 +1021,8 @@ function _setInfoState(s) {
   var hint = document.getElementById('info-hint');
   if (hint) {
     var msg = '';
-    if (!s.llm_wired && !s.mcp_wired) msg = 'Settings → Proxies → Connect Claude';
+    if (def && def.state === 'error') msg = 'Default LLM account needs attention — Settings → LLMs';
+    else if (!s.llm_wired && !s.mcp_wired) msg = 'Settings → Proxies → Connect Claude';
     else if (!s.llm_wired) msg = 'LLM lane off — click Connect Claude';
     else if (!s.mcp_wired) msg = 'MCP lane off — wire voitta in Claude or Codex';
     if (msg) { hint.textContent = msg; hint.setAttribute('style', ''); }

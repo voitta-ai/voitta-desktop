@@ -34,8 +34,12 @@ class AnthropicProxy:
         middlewares: list[Middleware] | None = None,
         port: int = 18900,
         upstream_url: str = DEFAULT_UPSTREAM_URL,
+        llm=None,
     ):
         self.middlewares = middlewares or []
+        # llmgw.web.LlmAccounts: picks the account each request goes to. None,
+        # or its "As is", leaves every request on the path below unchanged.
+        self.llm = llm
         self.port = port
         self.upstream_url = (upstream_url or DEFAULT_UPSTREAM_URL).rstrip("/")
         self._upstream_host = urlparse(self.upstream_url).netloc
@@ -55,6 +59,9 @@ class AnthropicProxy:
             auto_decompress=False,
         )
         self._app = web.Application(client_max_size=0)
+        if self.llm:
+            await self.llm.start()
+            self.llm.add_routes(self._app.router)  # before the catch-all below
         self._app.router.add_route("*", "/{path:.*}", self._handle)
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
@@ -66,6 +73,8 @@ class AnthropicProxy:
         """Shut down the proxy server."""
         if self._session:
             await self._session.close()
+        if self.llm:
+            await self.llm.stop()
         if self._runner:
             await self._runner.cleanup()
 
@@ -98,6 +107,7 @@ class AnthropicProxy:
         # leak from upstream-failure and middleware-failure exit paths).
         started_mws: list[Middleware] = []
         proxy_resp: ProxyResponse | None = None
+        routed = None  # an llm account's answer, when the request isn't "As is"
         try:
             # Run request middleware
             for mw in self.middlewares:
@@ -113,30 +123,45 @@ class AnthropicProxy:
                     logger.info("Middleware %s.on_request took %d ms for %s",
                                 type(mw).__name__, mw_duration_ms, proxy_req.path)
 
-            # Forward to upstream
-            upstream_url = f"{self.upstream_url}{proxy_req.path}"
-            upstream_headers = dict(proxy_req.headers)
-            upstream_headers["Host"] = self._upstream_host
-            if proxy_req.body:
-                upstream_headers["Content-Length"] = str(len(proxy_req.body))
+            decision = None
+            if self.llm and self.llm.router:
+                decision = await self.llm.router.route(
+                    proxy_req.method, proxy_req.path, proxy_req.headers, proxy_req.body)
+                routed = decision.routed
 
-            sent_kb = len(proxy_req.body or b"") / 1024
-            logger.debug("VOL send %s %.1f KB (delta %+.1f KB)",
-                         proxy_req.path.split("?")[0], sent_kb, sent_kb - recv_kb)
+            if routed is not None:
+                upstream_resp = routed
+                logger.debug("LLM %s -> %s via %s (%d)", proxy_req.path.split("?")[0],
+                             decision.entry.get("account"), decision.entry.get("route"), routed.status)
+            else:
+                # Forward to upstream ("As is")
+                upstream_url = f"{self.upstream_url}{proxy_req.path}"
+                upstream_headers = dict(proxy_req.headers)
+                upstream_headers["Host"] = self._upstream_host
+                if proxy_req.body:
+                    upstream_headers["Content-Length"] = str(len(proxy_req.body))
 
-            try:
-                upstream_resp = await self._session.request(
-                    method=proxy_req.method,
-                    url=upstream_url,
-                    headers=upstream_headers,
-                    data=proxy_req.body,
-                )
-                logger.debug("VOL resp %s -> %d (%s)",
-                             proxy_req.path.split("?")[0], upstream_resp.status,
-                             upstream_resp.headers.get("Content-Type", "unknown"))
-            except Exception as e:
-                logger.error("Upstream request failed: %s", e)
-                return web.Response(status=502, text=f"Upstream error: {e}")
+                sent_kb = len(proxy_req.body or b"") / 1024
+                logger.debug("VOL send %s %.1f KB (delta %+.1f KB)",
+                             proxy_req.path.split("?")[0], sent_kb, sent_kb - recv_kb)
+
+                try:
+                    upstream_resp = await self._session.request(
+                        method=proxy_req.method,
+                        url=upstream_url,
+                        headers=upstream_headers,
+                        data=proxy_req.body,
+                    )
+                    logger.debug("VOL resp %s -> %d (%s)",
+                                 proxy_req.path.split("?")[0], upstream_resp.status,
+                                 upstream_resp.headers.get("Content-Type", "unknown"))
+                except Exception as e:
+                    logger.error("Upstream request failed: %s", e)
+                    if decision:
+                        decision.as_is_done(502, self._upstream_host)
+                    return web.Response(status=502, text=f"Upstream error: {e}")
+                if decision:
+                    decision.as_is_done(upstream_resp.status, self._upstream_host)
 
             resp_headers = {k: v for k, v in upstream_resp.headers.items() if k.lower() not in HOP_BY_HOP}
             proxy_resp = ProxyResponse(status=upstream_resp.status, headers=resp_headers)
@@ -158,6 +183,10 @@ class AnthropicProxy:
             else:
                 return await self._buffered_response(proxy_req, proxy_resp, upstream_resp, started_at)
         finally:
+            if routed is not None:
+                # Ends the router's upstream stream; if the client went away
+                # mid-answer, the router records that (499) rather than an error.
+                await routed.aclose()
             # Synthetic 502 for paths that bailed before we built proxy_resp;
             # keeps downstream middlewares' contract intact (always paired).
             resp_for_done = proxy_resp if proxy_resp is not None else ProxyResponse(status=502, headers={})

@@ -116,6 +116,22 @@ After launching Voitta Desktop:
 
 Tokens refresh automatically in the background. Click a connected provider again to sign out.
 
+### 6. LLM accounts (optional)
+
+By default Claude Code's requests go to Anthropic with Claude Code's own
+login (**As is**). Settings → **LLMs** adds other accounts — Claude and
+ChatGPT subscriptions (browser login, or a link + code for someone else's
+account) and API-key providers (DeepSeek, Mistral, OpenAI, any
+Anthropic- or OpenAI-compatible endpoint) — and sets the **default**. The
+menu bar's **LLM ▸** submenu switches the default too.
+
+Each Claude Code window can pick its own account with `/llm`, a Claude Code
+mod (Claude Code 2.1.287+) installed with one click from the LLMs tab.
+Requests still pass every optimizer first; non-Anthropic providers are
+translated to and from the Anthropic Messages API. There is no fallback: a
+failing account returns its error to Claude Code. Accounts live in
+`~/.voitta-desktop/llm/` (mode 0600). See `llmgw/__init__.py`.
+
 ## Ports
 
 | Port | Purpose | Configured via |
@@ -169,6 +185,7 @@ Click a conversation to see a token usage chart. Click "Open conversation detail
 
 - `~/.voitta_desktop/apps.json` — OAuth apps, Jira credentials, proxy ports
 - `~/.voitta_desktop/logs/` — Debug logs, request JSONL
+- `~/.voitta-desktop/llm/` — LLM accounts and credentials, `/llm` window picks, open invites (mode 0600)
 - `~/.voitta-desktop/state/objects.db` — Removed tool results, images and calls, retrievable via `get_vt_object`
 
 Every restart deletes the previous runs' conversations: the request JSONL,

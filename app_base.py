@@ -122,6 +122,7 @@ class AppBase:
         from optimizers.tool_result import ToolResultOptimizer
         from optimizers.tool_use import ToolUseOptimizer
         from proxy import AnthropicProxy
+        from llmgw.web import LlmAccounts
 
         time_cfg = self._config.get("time", {})
         bash_cfg = self._config.get("bash", {})
@@ -162,6 +163,9 @@ class AppBase:
             tracker=self._tracker,
         )
         self._cache_sim = CacheSimulator(tracker=self._tracker)
+        # LLM accounts: which upstream each Claude Code window's requests go
+        # to, after the middleware above. "As is" (the default) changes nothing.
+        self._llm = LlmAccounts(port=self.llm_proxy_port)
         self._proxy = AnthropicProxy(
             middlewares=[
                 self._request_logger,
@@ -171,6 +175,7 @@ class AppBase:
             ],
             port=self.llm_proxy_port,
             upstream_url=self.llm_upstream_url,
+            llm=self._llm,
         )
         self._proxy_running = False
 

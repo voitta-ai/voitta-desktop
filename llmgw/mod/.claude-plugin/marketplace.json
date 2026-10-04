@@ -1,0 +1,13 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "voitta",
+  "description": "Voitta Desktop's Claude Code mods",
+  "owner": { "name": "Voitta" },
+  "plugins": [
+    {
+      "name": "voitta-llm",
+      "description": "/llm: pick which LLM account this Claude Code window uses, through Voitta Desktop",
+      "source": "./voitta-llm"
+    }
+  ]
+}

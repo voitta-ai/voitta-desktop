@@ -26,7 +26,9 @@ Voitta Desktop is a macOS menu-bar app that runs two local proxies:
 
   • LLM Proxy — intercepts Claude API calls, optimizes context (image
     stripping, stale file-read removal, bash output compression),
-    visualizes per-conversation token usage and savings.
+    visualizes per-conversation token usage and savings, and routes each
+    Claude Code window to a Claude or ChatGPT subscription or an API-key
+    provider (DeepSeek, Mistral, ...).
 
   • MCP Auth Proxy — single FastMCP endpoint that aggregates RAG, Google
     Workspace, Jira, and other backends with automatic OAuth2 injection.
@@ -48,6 +50,7 @@ sources = [
     "runtime.py",
     "lifecycle.py",
     "auth",
+    "llmgw",
     "mcpproxy",
     "middleware",
     "optimizers",
