@@ -366,6 +366,12 @@ function renderModels() {
     [(m.llm || {}).route === "window" ? "picked with /llm" : "default"],
     [am.big || "—", "mono"], [am.small || "—", "mono"]] }]));
 
+  pane.appendChild(el("h4", null, "System prompt and tools"));
+  pane.appendChild(el("div", "note", m.context_versions
+    ? m.context_versions + " version" + (m.context_versions === 1 ? "" : "s")
+      + " recorded; shown at the top of the Conversation tab."
+    : "Unavailable: Voitta did not record them for this conversation."));
+
   pane.appendChild(el("h4", null, "Routing journal"));
   const R = state.routing || {};
   if (R.error) { pane.appendChild(el("div", "note", R.error)); return; }
@@ -476,6 +482,31 @@ window._voittaPing = () => {
       loadCurrentTab(true);
     }
   });
+};
+
+/* ── System prompt & tools: pick a recorded version ─────────────────────────── */
+const _renderTranscriptShared = renderTranscript;
+renderTranscript = function () {
+  _renderTranscriptShared();
+  const T = state.transcript || {};
+  const versions = T.context_versions || [];
+  if (versions.length < 2 || !T.overhead) return;
+  const row = el("div", "ctxPick");
+  row.appendChild(el("span", null, versions.length + " recorded versions of the system prompt and tools:"));
+  const sel = el("select");
+  for (const v of versions) sel.appendChild(new Option(v.label + (v.model ? " · " + short(v.model) : ""), String(v.i)));
+  sel.value = String(T.context_version);
+  sel.onchange = () => {
+    const i = Number(sel.value);
+    RPC.call("context", { session: sessionOf(state.selected), version: i }).then((r) => {
+      if (r.error || !state.transcript) return;
+      state.transcript.overhead = r.overhead;
+      state.transcript.context_version = i;
+      renderTranscript();
+    });
+  };
+  row.appendChild(sel);
+  $("scroll").insertBefore(row, $("scroll").firstChild);
 };
 
 /* ── Init ──────────────────────────────────────────────────────────────────── */

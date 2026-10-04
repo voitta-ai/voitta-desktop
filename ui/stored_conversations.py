@@ -231,8 +231,22 @@ class StoredConversationsMixin:
             except (ValueError, FileNotFoundError) as e:
                 return {"empty": str(e)}
             result = _transcripts.parse(path, full_history=True)
-            conversations.annotate_turns(result["turns"], conversations.routing(folder, conv_id.split("@")[0]))
+            sid, _, agent = conv_id.partition("@")
+            conversations.annotate_turns(result["turns"], conversations.routing(folder, sid))
             result["conv_id"] = conv_id
+            # The system prompt and tools are not in Claude Code's transcript;
+            # Voitta's recorded versions, or a plain "unavailable".
+            try:
+                versions = conversations.context_versions(folder, sid)
+                i = conversations.default_version(versions, agent or None)
+                result["context_versions"] = versions
+                result["context_version"] = i
+                result["overhead"] = conversations.context_view(folder, sid, i) if i is not None else None
+            except Exception:
+                logger.warning("context for %s unreadable", sid[:8], exc_info=True)
+                result["overhead"] = None
+            if not result.get("overhead"):
+                result["note"] = conversations.UNAVAILABLE
             return result
         if method == "image":
             hit = _transcripts.get_image(self._stored_path(str(params.get("conv_id", ""))),
@@ -243,6 +257,9 @@ class StoredConversationsMixin:
         if method == "raw":
             return {"json": _transcripts.raw_entry(self._stored_path(str(params.get("conv_id", ""))),
                                                    str(params.get("uuid", "")))}
+        if method == "context":
+            sid, i = str(params.get("session", "")), int(params.get("version", 0))
+            return {"overhead": conversations.context_view(folder, sid, i), "version": i}
         if method == "routing":
             return {"records": conversations.routing(folder, str(params.get("session", "")))}
         if method == "delete":

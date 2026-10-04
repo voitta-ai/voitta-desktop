@@ -596,3 +596,46 @@ class TranscriptStore:
         except OSError:
             pass
         return "(entry not found)"
+
+
+def context_overhead(system_raw, tools_raw, cap: int = 16_000) -> dict | None:
+    """A request's system prompt blocks and tool definitions, as the
+    transcript viewer's CONTEXT block shows them (texts capped at ``cap``)."""
+    system_blocks = []
+    raw = system_raw
+    if isinstance(raw, str):
+        raw = [{"type": "text", "text": raw}]
+    for block in raw or []:
+        if not isinstance(block, dict):
+            continue
+        text = block.get("text", "")
+        system_blocks.append({
+            "text": text[:cap],
+            "chars": len(text),
+            "cache": bool(block.get("cache_control")),
+        })
+
+    tools = []
+    tools_chars = 0
+    for tool in tools_raw or []:
+        if not isinstance(tool, dict):
+            continue
+        desc = tool.get("description", "")
+        schema_chars = len(json.dumps(tool.get("input_schema", {})))
+        tools_chars += len(json.dumps(tool))
+        tools.append({
+            "name": tool.get("name", "?"),
+            "desc": desc[:cap],
+            "desc_chars": len(desc),
+            "schema_chars": schema_chars,
+            "cache": bool(tool.get("cache_control")),
+        })
+
+    if not system_blocks and not tools:
+        return None
+    return {
+        "system": system_blocks,
+        "system_chars": sum(b["chars"] for b in system_blocks),
+        "tools": tools,
+        "tools_chars": tools_chars,
+    }

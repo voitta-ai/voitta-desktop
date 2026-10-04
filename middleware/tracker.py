@@ -61,6 +61,10 @@ class ConversationTracker(Middleware):
         # session id -> {first-message hash -> conversation id}
         self._threads: dict[str, dict[str, str]] = {}
         self.transcripts = transcripts or TranscriptStore()
+        # Called with (request headers, system, tools, model) for every tracked
+        # request, before the optimizers changed it; set by Voitta's LLM
+        # accounts to keep each window's system prompt and tools. Must not block.
+        self.on_context = None
 
     @staticmethod
     def _first_seed(body: dict) -> str:
@@ -465,6 +469,11 @@ class ConversationTracker(Middleware):
         # these in full; transcripts never contain them.
         conv.system_raw = body.get("system")
         conv.tools_raw = body.get("tools")
+        if self.on_context is not None:
+            try:
+                self.on_context(orig_request.headers, conv.system_raw, conv.tools_raw, body.get("model"))
+            except Exception:
+                logger.warning("context listener failed", exc_info=True)
         if conv.label == "conversation" and turns:
             from .parsing import _turn_label
             label = _turn_label(turns[0].blocks)

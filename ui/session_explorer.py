@@ -36,6 +36,7 @@ from AppKit import (
 from Foundation import NSMakeRect, NSObject, NSSize, NSTimer, NSRunLoop
 from WebKit import WKWebView, WKWebViewConfiguration, WKWebsiteDataStore
 
+from middleware.transcripts import context_overhead
 from runtime import runtime
 from ui.chart import generate_chart_html, _safe_json
 from ui.conv_payload import build_chart_args
@@ -378,45 +379,7 @@ class SessionExplorerMixin:
         if conv is None or (conv.system_raw is None and not conv.tools_raw):
             return None
 
-        cap = self._TEXT_CAP
-        system_blocks = []
-        raw = conv.system_raw
-        if isinstance(raw, str):
-            raw = [{"type": "text", "text": raw}]
-        for block in raw or []:
-            if not isinstance(block, dict):
-                continue
-            text = block.get("text", "")
-            system_blocks.append({
-                "text": text[:cap],
-                "chars": len(text),
-                "cache": bool(block.get("cache_control")),
-            })
-
-        tools = []
-        tools_chars = 0
-        for tool in conv.tools_raw or []:
-            if not isinstance(tool, dict):
-                continue
-            desc = tool.get("description", "")
-            schema_chars = len(json.dumps(tool.get("input_schema", {})))
-            tools_chars += len(json.dumps(tool))
-            tools.append({
-                "name": tool.get("name", "?"),
-                "desc": desc[:cap],
-                "desc_chars": len(desc),
-                "schema_chars": schema_chars,
-                "cache": bool(tool.get("cache_control")),
-            })
-
-        if not system_blocks and not tools:
-            return None
-        return {
-            "system": system_blocks,
-            "system_chars": sum(b["chars"] for b in system_blocks),
-            "tools": tools,
-            "tools_chars": tools_chars,
-        }
+        return context_overhead(conv.system_raw, conv.tools_raw, self._TEXT_CAP)
 
     def _explorer_image(self, conv_id: str, uuid: str, seq: int) -> dict:
         path = self._transcript_path(conv_id)

@@ -298,3 +298,117 @@ def test_menu_hook_needs_no_runtime(tmp_path, monkeypatch):
         assert Host()._stored_menu_title() == "Stored conversations…"
     finally:
         conv._listeners.clear()
+
+
+# ---- system prompt and tools (not in Claude Code's transcript) ------------------------------
+
+from llmgw.context import ContextRecorder, read_index  # noqa: E402
+from middleware.tracker import ConversationTracker  # noqa: E402
+
+SYSTEM = [{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1; cch=abc123;"},
+          {"type": "text", "text": "You are Claude Code.", "cache_control": {"type": "ephemeral"}}]
+TOOLS = [{"name": "Bash", "description": "Run a command", "input_schema": {"type": "object"}}]
+HDRS = {"X-Claude-Code-Session-Id": SESSION}
+
+
+def test_recorder_keeps_each_distinct_version_once(tmp_path):
+    rc = ContextRecorder(tmp_path / "context")
+    rc.record(SESSION, None, SYSTEM, TOOLS, "claude-opus-5-5")
+    # same prompt, new billing hash: not a new version
+    rc.record(SESSION, None, [{**SYSTEM[0], "text": "x-anthropic-billing-header: cc_version=2.1; cch=ffff00;"},
+                              SYSTEM[1]], TOOLS, "claude-opus-5-5")
+    rc.record(SESSION, None, SYSTEM, TOOLS + [{"name": "mcp__x", "input_schema": {}}], "claude-opus-5-5")
+    rc.record(SESSION, "agent9", SYSTEM, TOOLS, "claude-haiku-4-5")     # a subagent: its own line
+    rows = read_index(rc.dir_for(SESSION))
+    assert [(r["agent"], r["tools_count"]) for r in rows] == [(None, 1), (None, 2), ("agent9", 1)]
+    files = sorted(p.name for p in rc.dir_for(SESSION).iterdir())
+    assert len([f for f in files if f.startswith("system-")]) == 1 and len([f for f in files if f.startswith("tools-")]) == 2
+    assert all(stat.S_IMODE(p.stat().st_mode) == 0o600 for p in rc.dir_for(SESSION).iterdir())
+    # a restart remembers what was already kept
+    ContextRecorder(tmp_path / "context").record(SESSION, None, SYSTEM, TOOLS, "claude-opus-5-5")
+    assert len(read_index(rc.dir_for(SESSION))) == 3
+    # nothing to name a folder after, or nothing to keep: nothing happens
+    rc.submit(None, {"x-claude-code-session-id": "../../etc"}, SYSTEM, TOOLS, "m")
+    rc.submit(None, HDRS, None, None, "m")
+    assert sorted(p.name for p in (tmp_path / "context").iterdir()) == [SESSION]
+
+
+async def test_recorder_failure_never_reaches_the_request(tmp_path):
+    import asyncio
+    rc = ContextRecorder(tmp_path / "file-not-dir")
+    (tmp_path / "file-not-dir").write_text("in the way")      # mkdir will fail inside the worker
+    rc.submit(asyncio.get_running_loop(), HDRS, SYSTEM, TOOLS, "m")
+    await asyncio.sleep(0.2)                                   # logged, not raised
+
+    # and a listener that raises does not break the tracker
+    tracker = ConversationTracker()
+    tracker.on_context = lambda *a: (_ for _ in ()).throw(RuntimeError("boom"))
+    from middleware.base import ProxyRequest, ProxyResponse
+    req = ProxyRequest(method="POST", path="/v1/messages", headers=dict(HDRS),
+                       body=json.dumps({"model": "claude-opus-5-5", "max_tokens": 10, "system": SYSTEM, "tools": TOOLS,
+                                        "messages": [{"role": "user", "content": "hi"}]}).encode())
+    await tracker.on_request(req)
+    await tracker.on_response_done(req, ProxyResponse(status=200, headers={}))
+    assert tracker.conversations                               # tracked as usual
+
+
+async def test_recorded_through_the_proxy_and_kept_by_store(tmp_path, claude):
+    import asyncio
+    projects, transcript = claude
+    fake = FakeUpstream()
+    upstream = TestServer(fake.app())
+    await upstream.start_server()
+    port = _free_port()
+    llm = LlmAccounts(port, data_dir=tmp_path / "llm", claude_projects=[projects])
+    tracker = ConversationTracker()
+    tracker.on_context = llm.record_context
+    proxy = AnthropicProxy(middlewares=[tracker], port=port, upstream_url=str(upstream.make_url("")).rstrip("/"), llm=llm)
+    await proxy.start()
+    client = Client(port)
+    try:
+        r = await client.post("/v1/messages", headers=HDRS, json={
+            "model": "claude-opus-5-5", "max_tokens": 10, "system": SYSTEM, "tools": TOOLS,
+            "messages": [{"role": "user", "content": "hi"}]})
+        assert r.status == 200
+        sent = fake.requests[-1]["body"]
+        assert sent["system"] == SYSTEM and sent["tools"] == TOOLS   # the request itself is untouched
+        for _ in range(50):
+            if read_index(llm.context.dir_for(SESSION)):
+                break
+            await asyncio.sleep(0.05)
+        assert [r_["model"] for r_ in read_index(llm.context.dir_for(SESSION))] == ["claude-opus-5-5"]
+
+        r = await client.post("/_voitta/llm/api/conversations", json={"session": SESSION})
+        assert r.status == 200
+        folder = tmp_path / "conversations"
+        assert conv.load_meta(folder, SESSION)["context_versions"] == 1
+        [v] = conv.context_versions(folder, SESSION)
+        assert conv.context_parts(folder, SESSION, 0) == (SYSTEM, TOOLS)
+        view = conv.context_view(folder, SESSION, 0)
+        assert [t["name"] for t in view["tools"]] == ["Bash"] and view["system"][1]["cache"] is True
+        md = conv.to_markdown(folder, SESSION)
+        assert "## Context (system prompt and tools)" in md and "You are Claude Code." in md
+        assert conv.UNAVAILABLE not in md
+        assert json.loads(conv.to_json(folder, SESSION))["context"][0]["tools"] == TOOLS
+    finally:
+        await client.close()
+        await proxy.stop()
+        await upstream.close()
+
+
+def test_unavailable_when_nothing_was_recorded(tmp_path, claude):
+    _, transcript = claude
+    store(tmp_path, transcript)                                  # no context_dir
+    folder = tmp_path / "conversations"
+    assert conv.load_meta(folder, SESSION)["context_versions"] == 0
+    assert conv.context_versions(folder, SESSION) == [] and conv.default_version([], None) is None
+    assert f"> {conv.UNAVAILABLE}" in conv.to_markdown(folder, SESSION)
+    assert json.loads(conv.to_json(folder, SESSION))["context"] is None
+
+    from ui.stored_conversations import StoredConversationsMixin
+
+    class Host(StoredConversationsMixin):
+        class _llm:
+            conversations_dir = folder
+    t = Host()._stored_rpc("transcript", {"conv_id": SESSION})
+    assert t["overhead"] is None and t["note"] == conv.UNAVAILABLE and t["context_versions"] == []

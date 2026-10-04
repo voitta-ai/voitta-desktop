@@ -25,6 +25,7 @@ import aiohttp
 from aiohttp import web
 
 from . import config, conversations, oauth, providers
+from .context import ContextRecorder
 from .router import _SAFE_ID, Router, RoutingJournal
 from .store import AS_IS, AccountStore, SessionPicks, public_view
 
@@ -61,6 +62,7 @@ class LlmAccounts:
         self.picks = SessionPicks(data_dir / "sessions.json")
         self.pending = oauth.PendingLogins(data_dir / "invites.json")
         self.journal = RoutingJournal(data_dir / "routes")
+        self.context = ContextRecorder(data_dir / "context")
         # Beside llm/, not inside it: ~/.voitta-desktop/conversations.
         self.conversations_dir = conversations_dir or data_dir.parent / "conversations"
         self.claude_projects = claude_projects
@@ -80,6 +82,7 @@ class LlmAccounts:
         self.router = Router(self.store, self.picks, self.http, ui_url=self.ui_url, self_origins=self.self_origins,
                              journal=self.journal)
         await asyncio.to_thread(self.journal.prune)
+        await asyncio.to_thread(self.context.prune)
         self._refresher = asyncio.create_task(self._refresh_loop(), name="llm-token-refresh")
 
     async def stop(self):
@@ -405,6 +408,10 @@ class LlmAccounts:
         log.info("window %s: %s", session_id[:8], account_id or "default")
         return web.json_response(self._llm_view(session_id))
 
+    def record_context(self, headers: dict, system, tools, model):
+        """The tracker's listener: keep this window's system prompt and tools."""
+        self.context.submit(asyncio.get_running_loop(), headers, system, tools, model)
+
     # ---- /voitta-store: keep this window's conversation --------------------------
 
     @_same_origin
@@ -427,7 +434,8 @@ class LlmAccounts:
         routing = self.journal.read(session_id)
 
         meta = await asyncio.to_thread(conversations.store, self.conversations_dir, session_id, transcript,
-                                       routing, claude_code=claude_code, llm=llm)
+                                       routing, claude_code=claude_code, llm=llm,
+                                       context_dir=self.context.dir_for(session_id))
         log.info("stored conversation %s: %s", session_id[:8], meta["counts"])
         return web.json_response({"path": str(self.conversations_dir / session_id), "bytes": meta["bytes"],
                                   **meta["counts"]})

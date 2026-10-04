@@ -158,6 +158,7 @@ class VoittaDesktopApp(
         # LLM accounts: which upstream each Claude Code window's requests go
         # to, after the middleware above. "As is" (the default) changes nothing.
         self._llm = LlmAccounts(port=self.llm_proxy_port)
+        self._tracker.on_context = self._llm.record_context
         self._proxy = AnthropicProxy(
             middlewares=[self._request_logger, self._tracker, self._optimizer_pipeline, self._cache_sim],
             port=self.llm_proxy_port,

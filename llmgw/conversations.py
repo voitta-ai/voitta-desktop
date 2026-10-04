@@ -14,6 +14,8 @@ One folder per window::
         transcript.jsonl     Claude Code's transcript, byte for byte
         subagents/…          its subagent transcripts, byte for byte
         routing.jsonl        Voitta's routing journal for the window
+        context/             the system prompts and tool sets the window sent
+                             (llmgw/context.py; absent when none were recorded)
 
 Storing again replaces the folder with the newer, longer copy. The folder is
 outside the app bundle and outside what the startup purge clears, so it
@@ -33,7 +35,9 @@ import uuid
 import zipfile
 from pathlib import Path
 
-from middleware.transcripts import active_chain
+from middleware.transcripts import active_chain, context_overhead
+
+from . import context as ctx
 
 log = logging.getLogger("voitta-desktop.llm")
 
@@ -210,7 +214,7 @@ def _swap_in(folder: Path, session_id: str, tmp: Path) -> Path:
 
 
 def store(folder: Path, session_id: str, transcript: Path, routing: list[dict], *,
-          claude_code: dict, llm: dict) -> dict:
+          claude_code: dict, llm: dict, context_dir: Path | None = None) -> dict:
     """Copy one window's conversation into ``folder``; returns its meta."""
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = folder / f".tmp-{session_id}-{uuid.uuid4().hex[:8]}"
@@ -230,8 +234,16 @@ def store(folder: Path, session_id: str, transcript: Path, routing: list[dict], 
                         unreadable += bad
         _private_write(tmp / "routing.jsonl",
                        "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in routing).encode())
+        versions = 0
+        if context_dir is not None and (context_dir / "index.jsonl").is_file():
+            (tmp / "context").mkdir(mode=0o700)
+            for p in context_dir.iterdir():
+                if p.is_file() and (p.name == "index.jsonl" or re.fullmatch(r"(system|tools)-[0-9a-f]{16}\.json", p.name)):
+                    _private_copy(p, tmp / "context" / p.name)
+            versions = len(ctx.read_index(tmp / "context"))
         meta = _meta(session_id, records, subagents, routing, unreadable,
                      claude_code=claude_code, llm=llm, source=str(transcript))
+        meta["context_versions"] = versions
         meta["bytes"] = _dir_bytes(tmp)
         _private_write(tmp / "meta.json", json.dumps(meta, ensure_ascii=False, indent=1).encode())
         _swap_in(folder, session_id, tmp)
@@ -335,6 +347,48 @@ def transcript_path(folder: Path, session_id: str, agent: str | None = None) -> 
 def routing(folder: Path, session_id: str) -> list[dict]:
     p = conversation_dir(folder, session_id) / "routing.jsonl"
     return _read_jsonl(p)[0] if p.is_file() else []
+
+
+UNAVAILABLE = ("System prompt and tool definitions: unavailable — Voitta did not record them for this "
+               "conversation. Claude Code never writes them to its transcript; Voitta keeps them for "
+               "windows that send requests through it since October 4, 2026.")
+
+
+def context_versions(folder: Path, session_id: str) -> list[dict]:
+    """The window's recorded system prompt / tool set combinations, oldest first."""
+    out = []
+    for i, r in enumerate(ctx.read_index(conversation_dir(folder, session_id) / "context")):
+        who = f"subagent {r['agent']}" if r.get("agent") else "main"
+        when = time.strftime("%b %d %H:%M", time.localtime(r["ts"])) if r.get("ts") else "?"
+        out.append({"i": i, "agent": r.get("agent"), "ts": r.get("ts"), "model": r.get("model"),
+                    "system_chars": r.get("system_chars"), "tools_count": r.get("tools_count"),
+                    "label": f"v{i + 1} · {when} · {who} · {r.get('tools_count', 0)} tools"})
+    return out
+
+
+def default_version(versions: list[dict], agent: str | None) -> int | None:
+    """Latest version of the main conversation (or of this subagent, if known)."""
+    if not versions:
+        return None
+    if agent:
+        mine = [v for v in versions if v["agent"] and (v["agent"] == agent or f"agent-{v['agent']}" == agent)]
+        if mine:
+            return mine[-1]["i"]
+    main = [v for v in versions if not v["agent"]]
+    return (main or versions)[-1]["i"]
+
+
+def context_parts(folder: Path, session_id: str, i: int) -> tuple:
+    d = conversation_dir(folder, session_id) / "context"
+    rows = ctx.read_index(d)
+    if not 0 <= i < len(rows):
+        raise IndexError(f"no context version {i + 1}")
+    return ctx.load_part(d, "system", rows[i].get("system")), ctx.load_part(d, "tools", rows[i].get("tools"))
+
+
+def context_view(folder: Path, session_id: str, i: int, cap: int = 16_000) -> dict | None:
+    system, tools = context_parts(folder, session_id, i)
+    return context_overhead(system, tools, cap)
 
 
 def delete(folder: Path, session_ids: list[str]) -> int:
@@ -481,6 +535,22 @@ def _transcript_md(records: list[dict], journal: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
+def _context_md(folder: Path, session_id: str) -> str:
+    versions = context_versions(folder, session_id)
+    if not versions:
+        return f"> {UNAVAILABLE}"
+    parts = ["## Context (system prompt and tools)"]
+    for v in versions:
+        system, tools = context_parts(folder, session_id, v["i"])
+        sys_text = system if isinstance(system, str) else "\n\n".join(
+            b.get("text", "") for b in system or [] if isinstance(b, dict))
+        tool_lines = "\n".join(f"- `{t.get('name')}` — {(t.get('description') or '').splitlines()[0][:160] if t.get('description') else ''}"
+                               for t in tools or [] if isinstance(t, dict))
+        parts.append(_details(f"{v['label']} · {v.get('model') or '?'}",
+                              "**System prompt**\n\n" + _fence(sys_text) + "\n\n**Tools**\n\n" + (tool_lines or "(none)")))
+    return "\n\n".join(parts)
+
+
 def to_markdown(folder: Path, session_id: str) -> str:
     meta = load_meta(folder, session_id)
     journal = routing(folder, session_id)
@@ -497,6 +567,8 @@ def to_markdown(folder: Path, session_id: str) -> str:
         f"- Answered by (routed requests): {fmt_counts((meta.get('models') or {}).get('answered_by'))}",
         f"- Window's LLM: {acct.get('label') or 'As is'} ({(meta.get('llm') or {}).get('route') or 'default'})",
         "",
+        _context_md(folder, session_id),
+        "",
         _transcript_md(records, journal),
     ]
     for agent in meta.get("subagents") or []:
@@ -512,6 +584,9 @@ def to_json(folder: Path, session_id: str) -> bytes:
     d = conversation_dir(folder, session_id)
     doc = {**{k: v for k, v in meta.items() if k not in ("format", "bytes")}, "format": FORMAT,
            "routing": routing(folder, session_id),
+           "context": [{**v, "system": context_parts(folder, session_id, v["i"])[0],
+                        "tools": context_parts(folder, session_id, v["i"])[1]}
+                       for v in context_versions(folder, session_id)] or None,
            "transcript": _read_jsonl(d / "transcript.jsonl")[0],
            "subagents": {a["id"]: _read_jsonl(transcript_path(folder, session_id, a["id"]))[0]
                          for a in meta.get("subagents") or []}}
