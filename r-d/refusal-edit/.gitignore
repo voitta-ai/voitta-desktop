@@ -1,0 +1,3 @@
+# Laid down by `claude plugin test` / hot reload for the editor; not part of the mod.
+.claude-plugin/types/
+tsconfig.json

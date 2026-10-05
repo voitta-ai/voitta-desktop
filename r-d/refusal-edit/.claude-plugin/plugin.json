@@ -1,0 +1,14 @@
+{
+  "name": "refusal-edit",
+  "version": "0.2.0",
+  "description": "When the model refuses a prompt, explains why and puts the prompt back in the box to edit.",
+  "userConfig": {
+    "recovery": {
+      "type": "string",
+      "title": "After a refusal",
+      "description": "rewind: open the built-in rewind menu on the refused prompt (no compaction). drop: remove the refused turn and refill the box automatically. keep: only refill the box.",
+      "options": ["rewind", "drop", "keep"],
+      "default": "rewind"
+    }
+  }
+}
