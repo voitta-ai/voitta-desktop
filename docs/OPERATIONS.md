@@ -752,13 +752,17 @@ flowchart TB
         C2 & C3 --> C4["ensure ENABLE_TOOL_SEARCH=true<br/>(only if absent)"]
     end
     subgraph disconnect["plan_disconnect"]
-        D1["restore saved gateway URL<br/>(or drop ANTHROPIC_BASE_URL)"]
+        D1["restore saved gateway URL<br/>(or set ANTHROPIC_BASE_URL =<br/>https://api.anthropic.com)"]
     end
 ```
 
 Enforcement is intent-based (`claude_link.armed` in apps.json):
 
 - **startup** — if armed and not already wired, re-apply the connect plan;
+- **disconnect** — writes a value rather than deleting the key. Claude Code
+  applies changed or added `env` keys to running sessions within seconds,
+  but a removed key stays in their environment, so deleting it would leave
+  every running session pointed at the proxy after Quit;
 - **quit** — `atexit` (which rumps also fires on Cmd-Q) always strips Voitta
   from settings.json, armed or not, so a crashed session leaves at most one
   stale link that the next start reconciles.
