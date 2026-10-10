@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from aiohttp import web, ClientSession, ClientTimeout, TCPConnector
 
 from middleware import Middleware, ProxyRequest, ProxyResponse
+from middleware.base import decompress
 
 # Regex to normalize volatile cch= hash in billing header so caching works
 _CCH_RE = re.compile(r'cch=[0-9a-f]+')
@@ -168,7 +169,8 @@ class AnthropicProxy:
                     logger.error("Middleware %s.on_response_done failed for %s: %s",
                                  type(mw).__name__, proxy_req.path, e, exc_info=True)
 
-    def _dump_failure(self, proxy_req: ProxyRequest, status: int, resp_body: bytes) -> None:
+    def _dump_failure(self, proxy_req: ProxyRequest, status: int, resp_body: bytes,
+                      encoding: str) -> None:
         """Best-effort dump of a rejected /v1/messages request + upstream error.
 
         Writes the post-optimization request body (what we actually sent
@@ -185,11 +187,17 @@ class AnthropicProxy:
             except Exception:
                 req_json = None
 
+            # The body is still Content-Encoded (auto_decompress=False), and
+            # Anthropic serves errors brotli-compressed. Decoding the raw
+            # bytes as UTF-8 turns them into noise.
             try:
-                err_json = json.loads(resp_body) if resp_body else None
+                err_text = decompress(resp_body, encoding) if resp_body else None
+            except Exception as e:
+                err_text = f"<undecodable {encoding!r} body, {len(resp_body)} bytes: {e}>"
+            try:
+                err_json = json.loads(err_text) if err_text else None
             except Exception:
-                err_json = (resp_body[:4096].decode("utf-8", "replace")
-                            if resp_body else None)
+                err_json = err_text[:4096]
 
             # Strip credentials from the captured headers.
             safe_headers = {
@@ -211,8 +219,18 @@ class AnthropicProxy:
                 ),
             }
 
-            path = logs_dir / f"fail_{status}_{time.strftime('%Y%m%d_%H%M%S')}.json"
-            path.write_text(json.dumps(record, indent=2))
+            # Exclusive create: Claude Code retries a 400 immediately, and
+            # with a per-second name the retry's dump overwrote the original.
+            stem = f"fail_{status}_{time.strftime('%Y%m%d_%H%M%S')}"
+            n = 0
+            while True:
+                path = logs_dir / (f"{stem}.json" if n == 0 else f"{stem}_{n}.json")
+                try:
+                    with path.open("x") as f:
+                        f.write(json.dumps(record, indent=2))
+                    break
+                except FileExistsError:
+                    n += 1
             logger.error("Upstream %d on %s — dumped rejected request to %s",
                          status, proxy_req.path.split("?")[0], path)
         except Exception as e:
@@ -268,7 +286,8 @@ class AnthropicProxy:
         # path a 4xx/5xx on /v1/messages takes. Dump BEFORE response
         # middleware so we record the raw upstream error, not a rewritten one.
         if proxy_resp.status >= 400 and "/v1/messages" in proxy_req.path:
-            self._dump_failure(proxy_req, proxy_resp.status, body)
+            self._dump_failure(proxy_req, proxy_resp.status, body,
+                               upstream_resp.headers.get("Content-Encoding", ""))
 
         for mw in self.middlewares:
             mw_started_at = time.monotonic()
