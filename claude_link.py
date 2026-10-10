@@ -159,6 +159,14 @@ def _load_claude_user_config() -> dict:
         return {}
 
 
+# What Disconnect writes when there is no saved original to restore. Deleting
+# ANTHROPIC_BASE_URL instead would not disconnect anything that is running:
+# Claude Code applies changed or added `env` keys to live sessions within
+# seconds, but a removed key stays in their process environment. Those
+# sessions would keep calling our port after Quit (or a crash) and fail.
+ANTHROPIC_DEFAULT_URL = "https://api.anthropic.com"
+
+
 def _our_url(our_port: int) -> str:
     return f"http://127.0.0.1:{our_port}"
 
@@ -281,7 +289,9 @@ def plan_disconnect(cfg: dict, our_port: int) -> Plan:
     Behaviour:
         - If VOITTA_ANTHROPIC_BASE_URL exists → restore its value as
           ANTHROPIC_BASE_URL and remove the VOITTA_ key.
-        - Otherwise → remove ANTHROPIC_BASE_URL entirely.
+        - Otherwise → set ANTHROPIC_BASE_URL to ANTHROPIC_DEFAULT_URL.
+          Not removed: running sessions ignore a removed key (see
+          ANTHROPIC_DEFAULT_URL).
         - ENABLE_TOOL_SEARCH is left alone (we don't track whether we
           added it, and "true" is harmless when not connected).
         - Caller (apply_changes) drops the "env" key entirely if it
@@ -300,11 +310,11 @@ def plan_disconnect(cfg: dict, our_port: int) -> Plan:
     else:
         # Either nothing was saved, or what was saved is one of our own URLs
         # from an earlier port. Restoring that would point Claude Code at a
-        # dead port; removing the key is what actually disconnects.
+        # dead port; the default is what actually disconnects.
         if voitta_saved is not None:
             changes.append(Change("env.VOITTA_ANTHROPIC_BASE_URL", voitta_saved, None))
-        if current_base is not None:
-            changes.append(Change("env.ANTHROPIC_BASE_URL", current_base, None))
+        if current_base != ANTHROPIC_DEFAULT_URL:
+            changes.append(Change("env.ANTHROPIC_BASE_URL", current_base, ANTHROPIC_DEFAULT_URL))
 
     return Plan(target="disconnect", claude_changes=changes)
 
