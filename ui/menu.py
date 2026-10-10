@@ -80,7 +80,9 @@ class VoittaDesktopApp(
         self._auth_lock = threading.Lock()
         self._auth = {}
 
-        # Load config
+        # Load config. No apps.json yet means a fresh install, which gets
+        # Settings opened for it (see _install_entry_points).
+        first_run = not CONFIG_PATH.exists()
         self._config = self._load_or_migrate_config()
         mcp_proxy_cfg = self._config.get("mcp_proxy", {})
         llm_proxy_cfg = self._config.get("llm_proxy", {})
@@ -192,6 +194,39 @@ class VoittaDesktopApp(
         lifecycle.register_cleanup(self._disarm_claude_link_on_quit,
                                    "disarm_claude_link")
         lifecycle.install_appkit_termination_observer()
+        self._install_entry_points(first_run)
+
+    def _install_entry_points(self, first_run: bool) -> None:
+        """Give the user a way in that does not depend on the status item.
+
+        macOS silently skips status items that do not fit: on a notched
+        MacBook with a busy menu bar the dog is never drawn, and with no Dock
+        icon and no window the app is then unreachable. So Settings opens on
+        first launch, and whenever the app is launched again while running
+        (Finder, Spotlight, ``open -a``), which AppKit delivers as a reopen.
+
+        The reopen hook is AppKit's delegate method, added to rumps' delegate
+        class before run() sets the delegate, since AppKit may cache which
+        optional delegate methods exist at that point.
+        """
+        import objc
+        import rumps.rumps as rumps_impl
+        from PyObjCTools import AppHelper
+
+        app = self
+
+        def reopen(_delegate, _sender, _has_visible_windows):
+            app.show_settings(None)
+            let_appkit_handle = False  # nothing for its default to reopen
+            return let_appkit_handle
+
+        objc.classAddMethods(rumps_impl.NSApp, [objc.selector(
+            reopen,
+            selector=b"applicationShouldHandleReopen:hasVisibleWindows:",
+            signature=b"Z@:@Z",
+        )])
+        if first_run:
+            AppHelper.callAfter(self.show_settings, None)
 
     def _resolve_port(self, label: str, port: int) -> int:
         """If `port` is taken, ask the user whether to switch to an
