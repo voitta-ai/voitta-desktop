@@ -13,19 +13,20 @@ from urllib.parse import urlparse
 import httpx
 
 from fastmcp import FastMCP as FastMCPServer
-from fastmcp.server.providers.proxy import ProxyClient, StatefulProxyClient
+from fastmcp.server.providers.proxy import ProxyClient
 from fastmcp.client.transports import StreamableHttpTransport, StdioTransport
 from fastmcp.utilities.types import Image
 
 from optimizers.image import vt_object_store
-from .resilient import ResilientFastMCPProxy
+from .resilient import ResilientFastMCPProxy, VoittaStatefulProxyClient
 
 logger = logging.getLogger("voitta-desktop.mcp")
 
 
 # ── Auth-factory builders, one per auth.type ─────────────────────────────────
 #
-# HTTP factories return a thunk that builds a StatefulProxyClient. fastmcp
+# HTTP factories return a thunk that builds a StatefulProxyClient (our
+# VoittaStatefulProxyClient, whose teardown can't take the server down). fastmcp
 # keys one upstream connection per *server session* off that client
 # (StatefulProxyClient.new_stateful) and tears it down on the session's own
 # exit stack — so a Claude Code window pays DNS + TLS + MCP initialize once,
@@ -113,7 +114,7 @@ def _make_transport(url: str, headers: dict) -> StreamableHttpTransport:
 def _make_static_headers_factory(url: str, headers: dict):
     """Static headers — used by none/bearer/api_key/basic/custom_headers."""
     def factory():
-        return StatefulProxyClient(_make_transport(url, dict(headers)))
+        return VoittaStatefulProxyClient(_make_transport(url, dict(headers)))
     return factory
 
 
@@ -137,7 +138,7 @@ def _make_voitta_rag_legacy_factory(app_ref, url: str):
             if profile.get("name"):
                 headers[f"X-Auth-Name-{suffix}"] = profile["name"]
         logger.debug("voitta_rag_legacy factory: url=%s, %d headers", url, len(headers))
-        return StatefulProxyClient(_make_transport(url, headers))
+        return VoittaStatefulProxyClient(_make_transport(url, headers))
     return factory
 
 
@@ -159,7 +160,7 @@ def _make_oauth_app_factory(app_ref, url: str, backend: str, app_type: str):
                     headers["X-Auth-Name"] = profile["name"]
         logger.debug("oauth_app factory: url=%s, backend=%s, headers=%s",
                      url, backend, list(headers.keys()))
-        return StatefulProxyClient(_make_transport(url, headers))
+        return VoittaStatefulProxyClient(_make_transport(url, headers))
     return factory
 
 
@@ -355,6 +356,25 @@ def tool_tree_groups(mcp_servers: list[dict]) -> list[tuple[str, str]]:
 from fastmcp.server.middleware import Middleware as FastMCPMiddleware
 
 
+def login_rejection(exc: BaseException) -> str | None:
+    """"401 Unauthorized" (or 403) if ``exc``, or anything it wraps, is a
+    backend refusing our credentials; None otherwise."""
+    seen, stack = set(), [exc]
+    while stack:
+        e = stack.pop()
+        if e is None or id(e) in seen:
+            continue
+        seen.add(id(e))
+        if isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (401, 403):
+            return f"{e.response.status_code} {e.response.reason_phrase}"
+        text = str(e)
+        if "401 Unauthorized" in text or "invalid_token" in text:
+            return "401 Unauthorized"
+        stack.extend(getattr(e, "exceptions", None) or ())
+        stack.extend((e.__cause__, e.__context__))
+    return None
+
+
 class ToolGateMiddleware(FastMCPMiddleware):
     """Shows a tool gate popup on external tools/list requests.
 
@@ -389,12 +409,41 @@ class ToolGateMiddleware(FastMCPMiddleware):
     # client's own retries, which is what the slot is for.
     ANON_KEY = "<no-session>"
 
+    # A backend that rejects our credentials (an expired Google login, say)
+    # fails every tool call; say so once an hour per backend.
+    AUTH_WARN_WINDOW_S = 3600.0
+
     def __init__(self, app_ref):
         super().__init__()
         self._app_ref = app_ref
         # session key -> (disabled tool names, answered at)
         self._answers: dict[str, tuple[set[str], float]] = {}
         self._lock: asyncio.Lock | None = None
+        self._auth_warned: dict[str, float] = {}
+
+    async def on_call_tool(self, context, call_next):
+        try:
+            return await call_next(context)
+        except Exception as e:
+            self._warn_if_login_rejected(getattr(context.message, "name", "") or "", e)
+            raise
+
+    def _warn_if_login_rejected(self, tool: str, exc: BaseException):
+        why = login_rejection(exc)
+        if not why:
+            return
+        prefixes = [(s.get("prefix") or "").strip() for s in getattr(self._app_ref, "mcp_servers", None) or []]
+        prefix = max((p for p in prefixes if p and tool.startswith(p + "_")), key=len, default="")
+        server = next((s for s in self._app_ref.mcp_servers if (s.get("prefix") or "").strip() == prefix), {}) \
+            if prefix else {}
+        backend = server.get("name") or prefix or "?"
+        now = time.monotonic()
+        if now - self._auth_warned.get(backend, -self.AUTH_WARN_WINDOW_S) < self.AUTH_WARN_WINDOW_S:
+            return
+        self._auth_warned[backend] = now
+        logger.warning("[%s] the backend rejected Voitta's credentials (%s) on %s; its tools fail until it is "
+                       "signed in again (Settings → Accounts). Repeats are not logged for an hour.",
+                       backend, why, tool or "a tool call")
 
     def rearm(self) -> None:
         """Forget every remembered answer so the next listing re-prompts."""
@@ -718,17 +767,17 @@ async def serve_mcp_proxy(app_ref, port: int) -> None:
     """Build the proxy and serve it on the caller's event loop.
 
     ``FastMCP.run()`` creates and owns an event loop, which is why this used
-    to need a thread of its own. ``run_http_async`` is the same server
-    without that — it awaits on whatever loop is already running, so the MCP
-    proxy shares the one in runtime.py with everything else.
+    to need a thread of its own. The host awaits on whatever loop is already
+    running, so the MCP proxy shares the one in runtime.py with everything
+    else. It is fastmcp's HTTP app under our own uvicorn server, watched and
+    rebuilt in place if it breaks (see health.py); the menu bar reads
+    ``app_ref._mcp_health``.
     """
-    main_server = build_mcp_proxy(app_ref, port)
-    await main_server.run_http_async(
-        transport="streamable-http",
-        host="127.0.0.1",
-        port=port,
-        show_banner=False,
-    )
+    from .health import McpServerHost
+    host = McpServerHost(app_ref, port, build_mcp_proxy)
+    app_ref._mcp_host = host
+    app_ref._mcp_health = host.health
+    await host.serve()
 
 
 def run_mcp_proxy(app_ref, port: int) -> None:

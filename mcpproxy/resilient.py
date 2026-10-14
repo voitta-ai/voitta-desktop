@@ -31,6 +31,32 @@ REFRESH_TIMEOUT_S = 30.0
 from paths import TOOL_CACHE_DIR
 
 
+class VoittaStatefulProxyClient(StatefulProxyClient):
+    """A per-session upstream client whose teardown can't take down the MCP server.
+
+    fastmcp closes a server session's upstream connection on that session's
+    exit stack (``StatefulProxyClient.new_stateful`` → ``_disconnect(force=True)``)
+    and lets an error from the upstream's teardown escape into it. On
+    2026-10-13 a backend answered a closing session's disconnect with
+    "Timed out while waiting for response"; the error broke the session's
+    unwinding half-way, and the StreamableHTTP session manager died with it:
+    every MCP request answered 500 until Voitta was restarted.
+
+    The error is logged here, naming the backend, and the connection is
+    dropped; the session then closes normally. Nothing is retried, and errors
+    the session's tool calls already returned are untouched.
+    """
+
+    backend_name = "?"
+
+    async def _disconnect(self, force: bool = False):
+        try:
+            await super()._disconnect(force=force)
+        except Exception as e:
+            logger.warning("[%s] closing its connection failed (%s: %s); the connection was dropped",
+                           self.backend_name, type(e).__name__, e)
+
+
 def _cache_path(backend_name: str, kind: str) -> Path:
     safe_name = re.sub(r"[^\w\-]", "_", backend_name).lower()
     return TOOL_CACHE_DIR / f"{safe_name}_{kind}.json"
@@ -111,6 +137,8 @@ class ResilientProxyProvider(ProxyProvider):
         # factory, is what keeps ``new_stateful``'s get_context() call out of
         # the request-less paths where it would raise.
         probe = client_factory()
+        if isinstance(probe, VoittaStatefulProxyClient):
+            probe.backend_name = backend_name  # copied into every per-session client
         if isinstance(probe, StatefulProxyClient):
             self._tool_client_factory = probe.new_stateful
         else:

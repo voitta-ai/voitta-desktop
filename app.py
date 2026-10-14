@@ -79,6 +79,15 @@ def _configure_logging(log_dir: Path) -> None:
     logging.getLogger("voitta-desktop.optimizers").setLevel(logging.INFO)
     # Silence MCP SDK post-cancellation SSE spam.
     logging.getLogger("mcp.client.streamable_http").setLevel(logging.CRITICAL)
+    # The MCP server's own story, which the WARNING root dropped: backends at
+    # start, sessions opening and closing, health changes and rebuilds
+    # (mcpproxy/health.py), and the session manager starting, shutting down
+    # (the 2026-10-13 outage began with exactly that line) or a session going
+    # idle. uvicorn's errors reach this file at all only because health.py
+    # runs it without its stderr logging config.
+    logging.getLogger("voitta-desktop.mcp").setLevel(logging.INFO)
+    logging.getLogger("mcp.server.streamable_http_manager").setLevel(logging.INFO)
+    logging.getLogger("uvicorn.error").setLevel(logging.INFO)
 
 
 def main() -> None:

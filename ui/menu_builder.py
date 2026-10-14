@@ -32,6 +32,12 @@ class MenuBuilderMixin:
     def _build_menu(self):
         menu_list = []
 
+        # MCP server health: hidden unless it is broken or recently recovered
+        # (ui/mcp_health_badge.py); clicking shows desktop.log in Finder.
+        self._mcp_alert_item = rumps.MenuItem("MCP server", callback=self._reveal_desktop_log)
+        self._mcp_alert_item._menuitem.setHidden_(True)
+        menu_list.append(self._mcp_alert_item)
+
         # ── Auth section ─────────────────────────────────────────────────────
         auth_header = rumps.MenuItem("── Auth ─────────────────────────────────")
         auth_header.set_callback(self._noop)

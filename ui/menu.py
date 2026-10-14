@@ -50,6 +50,7 @@ from ui._native import (
 )
 from ui.auth_flows import AuthFlowsMixin
 from ui.menu_builder import MenuBuilderMixin
+from ui.mcp_health_badge import describe, style_alert_item, style_status_button
 from ui.mcp_lifecycle import MCPLifecycleMixin, OAUTH_REDIRECT_PORT
 from ui.session_explorer import SessionExplorerMixin
 from ui.settings_window import SettingsWindowMixin
@@ -440,6 +441,22 @@ class VoittaDesktopApp(
             title.appendAttributedString_(icon_str)
 
         button.setAttributedTitle_(title)
+        self._show_mcp_health(button)
+
+    def _show_mcp_health(self, button):
+        health = getattr(self, "_mcp_health", None)
+        tooltip, line, broken = describe(health.snapshot() if health is not None else None)
+        style_status_button(button, broken, tooltip)
+        item = getattr(self, "_mcp_alert_item", None)
+        if item is not None:
+            style_alert_item(item._menuitem, line, broken)
+
+    def _reveal_desktop_log(self, _sender=None):
+        from AppKit import NSWorkspace
+        from Foundation import NSURL
+        from paths import LOG_DIR
+        NSWorkspace.sharedWorkspace().activateFileViewerSelectingURLs_(
+            [NSURL.fileURLWithPath_(str(LOG_DIR / "desktop.log"))])
 
     # ── About ────────────────────────────────────────────────────────────────
 
