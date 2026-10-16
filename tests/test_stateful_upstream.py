@@ -71,10 +71,11 @@ def test_stdio_factories_stay_ephemeral() -> None:
 
 # -- the seam -----------------------------------------------------------------
 
-def test_provider_keeps_ephemeral_factory_for_its_own_calls() -> None:
+def test_provider_uses_a_closing_client_for_its_own_calls() -> None:
     prov = ResilientProxyProvider(_stateful_factory, backend_name="t")
-    # The base factory the provider lists/handshakes with is untouched…
-    assert prov.client_factory is _stateful_factory
+    # The provider lists/handshakes with a plain ProxyClient, which closes on
+    # exit; a StatefulProxyClient would leave each connection open…
+    assert type(prov.client_factory()) is ProxyClient
     # …and the one it builds tools with is the session-bound method.
     assert prov._tool_client_factory.__name__ == "new_stateful"
     assert prov._tool_client_factory is not _stateful_factory

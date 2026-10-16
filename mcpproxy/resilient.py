@@ -27,6 +27,9 @@ logger = logging.getLogger("voitta-desktop.mcp")
 LISTING_TIMEOUT_S = 6.0
 LISTING_FIRST_FILL_TIMEOUT_S = 15.0
 REFRESH_TIMEOUT_S = 30.0
+# Background (stale-while-revalidate) refreshes of one listing kind start at
+# most this often. The manual "Refresh LLM Tools" action is not limited.
+REFRESH_MIN_INTERVAL_S = 60.0
 
 from paths import TOOL_CACHE_DIR
 
@@ -141,6 +144,14 @@ class ResilientProxyProvider(ProxyProvider):
             probe.backend_name = backend_name  # copied into every per-session client
         if isinstance(probe, StatefulProxyClient):
             self._tool_client_factory = probe.new_stateful
+            # StatefulProxyClient.__aexit__ is a no-op: its connection is only
+            # closed by a server session's exit stack. The provider's own
+            # one-shot calls have no session, so with that client every listing
+            # left its connection open — one per tool call, through the
+            # background refresh. On 2026-10-16 that was 504 open connections
+            # to kvm.voitta.ai, and nginx refused every new one. They get a
+            # plain ProxyClient on a fresh transport, which closes on exit.
+            self.client_factory = lambda: ProxyClient(client_factory().transport)
         else:
             self._tool_client_factory = client_factory
         self._backend_name = backend_name
@@ -265,9 +276,17 @@ class ResilientProxyProvider(ProxyProvider):
         """
         if not hasattr(self, "_refresh_tasks"):
             self._refresh_tasks: dict[str, asyncio.Task] = {}
+            self._refresh_started: dict[str, float] = {}
         existing = self._refresh_tasks.get(kind)
         if existing and not existing.done():
             return
+        # Tools are listed on every tool call, so without this each call opened
+        # a second connection to the backend. Counted from the attempt, so a
+        # backend that is down is not retried on every call either.
+        now = time.monotonic()
+        if now - self._refresh_started.get(kind, float("-inf")) < REFRESH_MIN_INTERVAL_S:
+            return
+        self._refresh_started[kind] = now
         async def _run():
             try:
                 await asyncio.wait_for(coro_factory(), timeout=LISTING_TIMEOUT_S)
