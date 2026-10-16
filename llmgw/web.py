@@ -477,7 +477,13 @@ class LlmAccounts:
     @_same_origin
     async def mod_install(self, request):
         """Register the bundled marketplace (re-registering it if it points
-        somewhere else, e.g. an older copy), then install or update the mod."""
+        somewhere else, e.g. an older copy), then install or update the mod.
+        ``{"reinstall": true}`` uninstalls it first (keeping its data): a plain
+        install of an installed plugin does nothing."""
+        try:
+            reinstall = bool((await request.json()).get("reinstall")) if request.can_read_body else False
+        except (ValueError, AttributeError):
+            reinstall = False
         steps = []
 
         async def run(*args):
@@ -493,6 +499,8 @@ class LlmAccounts:
             plan.append(("marketplace", "remove", MOD_MARKETPLACE))
             registered = None
         plan.append(("marketplace", "update", MOD_MARKETPLACE) if registered else ("marketplace", "add", here))
+        if reinstall and (await self._mod_view()).get("installed"):
+            plan.append(("uninstall", f"{MOD_NAME}@{MOD_MARKETPLACE}", "--keep-data"))
         plan.append(("install", f"{MOD_NAME}@{MOD_MARKETPLACE}"))
         for args in plan:
             code, _ = await run(*args)
@@ -502,7 +510,7 @@ class LlmAccounts:
         if view["installed"] != view["available"]:
             await run("update", f"{MOD_NAME}@{MOD_MARKETPLACE}")
             view = await self._mod_view()
-        log.info("mod install: %s", [(s["command"], s["exit"]) for s in steps])
+        log.info("mod %s: %s", "reinstall" if reinstall else "install", [(s["command"], s["exit"]) for s in steps])
         return web.json_response({"ok": view["installed"] == view["available"], "steps": steps, **view})
 
     def _windows_view(self) -> list[dict]:

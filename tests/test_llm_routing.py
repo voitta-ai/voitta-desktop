@@ -532,3 +532,44 @@ async def test_routed_requests_keep_the_middleware_chain(tmp_path):
         await client.close()
         await proxy.stop()
         await upstream.close()
+
+
+async def test_mod_reinstall_uninstalls_first_and_keeps_data(tmp_path, monkeypatch):
+    """A plain `claude plugin install` of an installed plugin does nothing,
+    so Reinstall must uninstall it (keeping its data) before installing."""
+    from llmgw import web as web_mod
+    llm = LlmAccounts(_free_port(), data_dir=tmp_path / "llm")
+    calls, installed = [], {"v": "0.3.0"}
+    available = json.loads((web_mod.MOD_DIR / web_mod.MOD_NAME / ".claude-plugin" / "plugin.json").read_text())["version"]
+    installed["v"] = available
+
+    async def fake_claude(*args):
+        calls.append(args)
+        if args[:2] == ("marketplace", "list"):
+            return 0, json.dumps([{"name": "voitta", "path": str(web_mod.MOD_DIR)}])
+        if args[0] == "list":
+            v = installed["v"]
+            return 0, json.dumps([{"id": "voitta-llm@voitta", "version": v, "enabled": True}] if v else [])
+        if args[0] == "uninstall":
+            installed["v"] = None
+        if args[0] == "install":
+            installed["v"] = available
+        return 0, "ok"
+
+    monkeypatch.setattr(llm, "_claude", fake_claude)
+
+    class Req:
+        def __init__(self, body):
+            self.body, self.can_read_body = body, body is not None
+        async def json(self):
+            return self.body
+
+    r = json.loads((await llm.mod_install.__wrapped__(llm, Req({"reinstall": True}))).text)
+    done = [c for c in calls if c[0] in ("marketplace", "uninstall", "install") and c[:2] != ("marketplace", "list")]
+    assert done == [("marketplace", "update", "voitta"), ("uninstall", "voitta-llm@voitta", "--keep-data"),
+                    ("install", "voitta-llm@voitta")]
+    assert r["ok"] and r["installed"] == available
+
+    calls.clear()
+    r = json.loads((await llm.mod_install.__wrapped__(llm, Req(None))).text)  # plain install: no uninstall
+    assert not [c for c in calls if c[0] == "uninstall"] and r["ok"]

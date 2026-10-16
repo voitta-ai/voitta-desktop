@@ -269,7 +269,8 @@ function renderMod() {
   }
   if (m.installed && m.installed === m.available) {
     $("modState").innerHTML = `<span class="pill ok">installed</span> <span class="muted">voitta-llm ${esc(m.installed)}${m.enabled ? "" : " (disabled in Claude Code)"} · type <code>/llm</code> in Claude Code</span>`;
-    btn.classList.add("hidden");
+    btn.textContent = "Reinstall /llm";
+    btn.classList.remove("hidden");
   } else {
     $("modState").innerHTML = m.installed
       ? `<span class="pill warn">update available</span> <span class="muted">${esc(m.installed)} → ${esc(m.available)}</span>`
@@ -284,16 +285,18 @@ async function loadMod() {
 }
 $("modInstall").addEventListener("click", async () => {
   const btn = $("modInstall");
-  btn.disabled = true; btn.textContent = "Installing…";
+  const reinstall = !!(modView && modView.installed && modView.installed === modView.available);
+  btn.disabled = true; btn.textContent = reinstall ? "Reinstalling…" : "Installing…";
   let r;
   try {
-    const resp = await fetch("/_voitta/llm/api/mod/install", { method: "POST" });
+    const resp = await fetch("/_voitta/llm/api/mod/install", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reinstall }) });
     r = await resp.json();
   } catch (err) { r = { ok: false, steps: [], error: err.message }; }
   btn.disabled = false;
   $("modLog").textContent = (r.steps || []).map((s) => `$ ${s.command}  (exit ${s.exit})\n${s.output}`).join("\n\n") || r.error || "";
   $("modLog").classList.toggle("hidden", r.ok);
-  banner(r.ok ? "Installed /llm. Open Claude Code windows pick it up after /reload-plugins (or a restart)." : "Install failed; the commands and their output are shown below.", r.ok ? "ok" : "bad");
+  banner(r.ok ? `${reinstall ? "Reinstalled" : "Installed"} /llm. Open Claude Code windows pick it up after /reload-plugins (or a restart).` : `${reinstall ? "Reinstall" : "Install"} failed; the commands and their output are shown below.`, r.ok ? "ok" : "bad");
   modView = r; renderMod();
 });
 loadMod();
