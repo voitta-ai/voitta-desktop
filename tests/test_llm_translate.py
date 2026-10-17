@@ -2,7 +2,7 @@ import pytest
 import json
 
 from llmgw.common import OAI_SIGNATURE_PREFIX, Unsupported
-from llmgw.sse import MessageBuilder
+from llmgw.sse import MessageBuilder, iter_sse
 from llmgw.translate_chat import ChatStreamTranslator, _alnum9, to_chat_request
 from llmgw.translate_responses import ResponsesStreamTranslator, to_responses_request
 
@@ -206,3 +206,22 @@ def test_portable_pattern_respells_nul_only():
     assert props["paths"]["items"]["pattern"] == r"^[^\x00]*$"
     assert props["pattern"] == {"type": "string"}
     assert notes == [r"Artifact: regex ^[^\0]*$ sent as ^[^\x00]*$"]
+
+class _Chunks:
+    """A response whose body arrives in the given chunks."""
+
+    def __init__(self, *chunks: bytes):
+        self.content = self
+        self._chunks = chunks
+
+    async def iter_any(self):
+        for c in self._chunks:
+            yield c
+
+async def test_iter_sse_reassembles_lines_across_chunks():
+    big = "x" * 300_000
+    resp = _Chunks(b"event: a\r", b"\ndata: 1\r\n\r\n",                      # CRLF split across chunks
+                   b'data: {"v": "', big[:100_000].encode(), big[100_000:].encode(), b'"}\n',
+                   b"\n: comment\ndata: \xc3", b"\xa9\n\ndata: tail")               # UTF-8 split, no final newline
+    got = [ev async for ev in iter_sse(resp)]
+    assert got == [("a", "1"), (None, json.dumps({"v": big})), (None, "é"), (None, "tail")]

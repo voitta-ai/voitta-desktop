@@ -144,6 +144,23 @@ async def test_codex_subscription_with_refresh(env, monkeypatch):
                                                      "summary": [{"type": "summary_text", "text": "Thinking it over."}]}
 
 
+async def test_codex_completed_event_over_512k_still_ends_the_stream(env):
+    """aiohttp's line reader refused SSE lines over 512 KiB, so the stream died
+    after the tool call but before message_delta/message_stop: Claude Code said
+    "Connection lost mid-response" on every turn of a long session."""
+    fake, store, client, base = env
+    use(store, "openai", "u:acc", "me@x.com",
+        {"access_token": "t", "account_id": "acc-1", "expires_at": time.time() + 3600},
+        base_url=f"{base}/codex", models={"big": "gpt-5.5", "small": "gpt-5.5"})
+    fake.completed_padding = 2 * 1024 * 1024
+
+    r = await client.post("/v1/messages", json=body(True))
+    events = parse_sse(await r.text())
+    assert r.status == 200
+    assert [e["type"] for e in events][-2:] == ["message_delta", "message_stop"]
+    assert events[-2]["delta"]["stop_reason"] == "tool_use"
+    assert events[-2]["usage"]["output_tokens"] == 9
+
 async def test_claude_passthrough_swaps_auth_and_strips_foreign_thinking(env):
     fake, store, client, base = env
     use(store, "claude", "u:o", "me@x.com",
@@ -573,3 +590,26 @@ async def test_mod_reinstall_uninstalls_first_and_keeps_data(tmp_path, monkeypat
     calls.clear()
     r = json.loads((await llm.mod_install.__wrapped__(llm, Req(None))).text)  # plain install: no uninstall
     assert not [c for c in calls if c[0] == "uninstall"] and r["ok"]
+
+async def test_malformed_upstream_stream_ends_with_an_error_event():
+    """An aiohttp parse error is not a ClientError: it used to cut the stream
+    without telling Claude Code why."""
+    from aiohttp.http_exceptions import LineTooLong
+    from llmgw.router import Router
+
+    class Resp:
+        def release(self):
+            pass
+
+    class Translator:
+        usage = {}
+
+    async def events():
+        yield {"type": "message_start", "message": {}}
+        raise LineTooLong(b"data: ...", 524288)
+
+    entry = {}
+    out = [chunk async for chunk in Router._stream_out(None, Resp(), events(), entry, Translator())]
+    last = parse_sse(out[-1].decode())[-1]
+    assert last["type"] == "error" and "upstream stream broke" in last["error"]["message"]
+    assert entry["error"].startswith("upstream stream broke")

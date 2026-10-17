@@ -122,10 +122,10 @@
   </div>
 
   <div class="card">
-    <h2>Per-window accounts: /llm<button type="button" class="help" data-help="mod" aria-label="Help: the /llm mod">?</button></h2>
+    <h2>Claude Code mod: /llm and /voitta-store<button type="button" class="help" data-help="mod" aria-label="Help: the voitta-llm mod">?</button></h2>
     <div class="row">
       <span id="modState" class="muted">Checking Claude Code…</span>
-      <button id="modInstall" class="primary hidden">Install /llm in Claude Code</button>
+      <button id="modInstall" class="primary hidden">Install /llm and /voitta-store</button>
     </div>
     <pre id="modLog" class="mono hidden" style="margin-top:10px;white-space:pre-wrap"></pre>
   </div>
@@ -268,14 +268,14 @@ function renderMod() {
     return;
   }
   if (m.installed && m.installed === m.available) {
-    $("modState").innerHTML = `<span class="pill ok">installed</span> <span class="muted">voitta-llm ${esc(m.installed)}${m.enabled ? "" : " (disabled in Claude Code)"} · type <code>/llm</code> in Claude Code</span>`;
-    btn.textContent = "Reinstall /llm";
+    $("modState").innerHTML = `<span class="pill ok">installed</span> <span class="muted">voitta-llm ${esc(m.installed)}${m.enabled ? "" : " (disabled in Claude Code)"} · type <code>/llm</code> or <code>/voitta-store</code> in Claude Code</span>`;
+    btn.textContent = "Reinstall /llm and /voitta-store";
     btn.classList.remove("hidden");
   } else {
     $("modState").innerHTML = m.installed
       ? `<span class="pill warn">update available</span> <span class="muted">${esc(m.installed)} → ${esc(m.available)}</span>`
       : `<span class="muted">Not installed in Claude Code.</span>`;
-    btn.textContent = m.installed ? "Update /llm" : "Install /llm in Claude Code";
+    btn.textContent = m.installed ? "Update /llm and /voitta-store" : "Install /llm and /voitta-store";
     btn.classList.remove("hidden");
   }
 }
@@ -296,7 +296,7 @@ $("modInstall").addEventListener("click", async () => {
   btn.disabled = false;
   $("modLog").textContent = (r.steps || []).map((s) => `$ ${s.command}  (exit ${s.exit})\n${s.output}`).join("\n\n") || r.error || "";
   $("modLog").classList.toggle("hidden", r.ok);
-  banner(r.ok ? `${reinstall ? "Reinstalled" : "Installed"} /llm. Open Claude Code windows pick it up after /reload-plugins (or a restart).` : `${reinstall ? "Reinstall" : "Install"} failed; the commands and their output are shown below.`, r.ok ? "ok" : "bad");
+  banner(r.ok ? `${reinstall ? "Reinstalled" : "Installed"} /llm and /voitta-store. Open Claude Code windows pick it up after /reload-plugins (or a restart).` : `${reinstall ? "Reinstall" : "Install"} failed; the commands and their output are shown below.`, r.ok ? "ok" : "bad");
   modView = r; renderMod();
 });
 loadMod();
@@ -339,14 +339,15 @@ const HELP = {
     <p>Where a Claude Code window's requests go until that window picks something else with <code>/llm</code>. <b>As is</b> sends them on with Claude Code's own login, untouched.</p>
     <p>Changing it takes effect on the next request, in every window without a pick.</p>
     <p><b>No fallback.</b> If the account fails (quota, expired login, unsupported feature), Claude Code gets that error. Voitta never quietly tries another account.</p>`,
-  mod: `<h3>The /llm mod</h3>
-    <p>A Claude Code mod (plugin) that adds <code>/llm</code>: it shows these accounts and picks one for <b>that window only</b>. Other windows keep the default. The status line shows the window's account.</p>
+  mod: `<h3>The voitta-llm mod</h3>
+    <p>A Claude Code mod (plugin) with two commands. <code>/llm</code> shows these accounts and picks one for <b>that window only</b>. Other windows keep the default. The status line shows the window's account.</p>
     <ul>
       <li><code>/llm</code>: picker panel (a numbered list where no panel can be drawn, e.g. VS Code)</li>
       <li><code>/llm deepseek</code> or <code>/llm 2</code>: pick directly</li>
       <li><code>/llm default</code>: back to the default</li>
+      <li><code>/voitta-store</code>: keep the window's whole conversation in Voitta Desktop (menu: Stored conversations)</li>
     </ul>
-    <p><b>Install</b> runs <code>claude plugin marketplace add</code> for the mod folder bundled here, then <code>claude plugin install voitta-llm@voitta</code>. It installs for all your Claude Code windows; in windows that don't go through Voitta Desktop it stays silent. Open windows pick it up after <code>/reload-plugins</code> or a restart. Needs Claude Code 2.1.287 or newer.</p>`,
+    <p><b>Install</b> runs <code>claude plugin marketplace add</code> for the mod folder bundled here, then <code>claude plugin install voitta-llm@voitta</code>. It installs for all your Claude Code windows; in windows that don't go through Voitta Desktop it stays silent. <b>Reinstall</b> uninstalls it first, keeping its data. Open windows pick it up after <code>/reload-plugins</code> or a restart. Needs Claude Code 2.1.287 or newer.</p>`,
   windows: `<h3>Claude Code windows</h3>
     <p>Each window is one Claude Code session, identified by the session id Claude Code sends with every request. <code>/llm</code> in a window picks its account; <code>/llm default</code> goes back to the default.</p>
     <p>A <code>/clear</code> or <code>--resume</code> gives the window a new session id; the /llm mod carries the pick over.</p>`,

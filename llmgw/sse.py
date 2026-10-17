@@ -11,10 +11,25 @@ import json
 import aiohttp
 
 
+async def _lines(content: aiohttp.StreamReader):
+    """The body's lines, however long. aiohttp's own line reader refuses lines
+    over 2 × read_bufsize, and a Responses ``response.completed`` event carries
+    the whole response on one line: past 512 KiB on long sessions."""
+    tail: list[bytes] = []
+    async for chunk in content.iter_any():
+        *ends, rest = chunk.split(b"\n")
+        for end in ends:
+            yield b"".join([*tail, end])
+            tail = []
+        if rest:
+            tail.append(rest)
+    if tail:
+        yield b"".join(tail)
+
 async def iter_sse(resp: aiohttp.ClientResponse):
     """Yield ``(event, data)`` pairs from an upstream SSE response."""
     event, data = None, []
-    async for raw in resp.content:
+    async for raw in _lines(resp.content):
         line = raw.decode("utf-8").rstrip("\r\n")
         if not line:
             if data:

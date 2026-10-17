@@ -24,6 +24,9 @@ class FakeUpstream:
     def __init__(self):
         self.requests: list[dict] = []  # {"path", "headers", "body"}
         self.fail_next: tuple[int, dict] | None = None  # (status, json body) for the next request
+        # Characters of filler in the final response.completed event: the real
+        # one carries the whole response on one line, over 512 KiB on long sessions.
+        self.completed_padding = 0
 
     def app(self) -> web.Application:
         app = web.Application()
@@ -155,7 +158,7 @@ class FakeUpstream:
             await send({"type": "response.output_item.done", "output_index": 1,
                         "item": {"id": "msg_1", "type": "message"}})
         await send({"type": "response.completed", "response": {
-            "id": "resp_1", "status": "completed",
+            "id": "resp_1", "status": "completed", "instructions": "x" * self.completed_padding,
             "usage": {"input_tokens": 100, "output_tokens": 9, "input_tokens_details": {"cached_tokens": 60}}}})
         return resp
 

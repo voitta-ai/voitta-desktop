@@ -558,7 +558,10 @@ class Router:
                     if ev["type"] == "error":
                         entry["error"] = ev["error"]["message"]
                     yield sse.encode(ev)
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            # HttpProcessingError (a malformed upstream response) is not a
+            # ClientError; uncaught, it cut the stream with no error event.
+            except (aiohttp.ClientError, aiohttp.http_exceptions.HttpProcessingError,
+                    asyncio.TimeoutError) as e:
                 entry["error"] = f"upstream stream broke: {e}"
                 yield sse.encode(sse.error_body(502, entry["error"]))
             entry["usage"] = translator.usage
