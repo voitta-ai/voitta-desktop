@@ -767,10 +767,26 @@ Enforcement is intent-based (`claude_link.armed` in apps.json):
   from settings.json, armed or not, so a crashed session leaves at most one
   stale link that the next start reconciles.
 
-MCP wiring (`mcpServers.voitta` in `~/.claude.json` / settings.json, and
-`[mcp_servers.voitta]` in `~/.codex/config.toml`) is **detected and shown**
-in the Settings Info diagram but registered by the user/CLI, not written by
-the app.
+Connect also registers the MCP proxy as the user-scope `voitta` server by
+running `claude mcp add --transport http --scope user voitta
+http://127.0.0.1:18765/mcp`, and Disconnect removes it with `claude mcp
+remove`. Claude Code rewrites `~/.claude.json` constantly, so the app uses
+its CLI instead of editing the file; it finds `claude` on PATH or in the
+installers' usual locations, because an app started from Finder has no login
+shell PATH. A `voitta` server that doesn't point at a loopback `/mcp` URL is
+the user's and is left alone. Quit removes the registration only while the
+link is armed, so a server registered by hand survives. If the CLI is
+missing or fails, `settings.json` is still written and Settings shows the
+command to run. `mcpServers` in `settings.json` is ignored by Claude Code,
+so the Info diagram checks `~/.claude.json` only. Codex
+(`[mcp_servers.voitta]` in `~/.codex/config.toml`) is detected, not written.
+
+The optimizers that replace content with `get_vt_object` references (tool
+use, tool result, image) run only when the request shows the client can
+resolve them: a `mcp__*__get_vt_object` tool in `tools`, or that name on a
+line of its own in a user or system text block, which is where Claude Code
+lists deferred tools when tool search is on. Sessions started before the
+registration, or clients without the MCP proxy, keep their full history.
 
 ---
 

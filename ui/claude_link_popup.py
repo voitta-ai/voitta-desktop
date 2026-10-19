@@ -34,6 +34,15 @@ def _change_rows_html(plan: Plan) -> str:
             "new": c.new,
             "kind": c.kind,
         })
+    if plan.mcp_change is not None:
+        c = plan.mcp_change
+        rows.append({
+            "scope": "Claude Code MCP servers (claude mcp, user scope)",
+            "label": c.label,
+            "old": c.old,
+            "new": c.new,
+            "kind": c.kind,
+        })
     if plan.voitta_upstream_change is not None:
         c = plan.voitta_upstream_change
         rows.append({
@@ -267,7 +276,8 @@ class ClaudeLinkPopup:
 
     def open(self, plan: Plan, *, title: str, ok_label: str):
         screen = NSScreen.mainScreen().frame()
-        rows = len(plan.claude_changes) + (1 if plan.voitta_upstream_change else 0)
+        rows = (len(plan.claude_changes) + (1 if plan.voitta_upstream_change else 0)
+                + (1 if plan.mcp_change else 0))
         width, height = 580, max(280, 150 + rows * 60)
         x = (screen.size.width - width) / 2
         y = (screen.size.height - height) / 2

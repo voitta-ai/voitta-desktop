@@ -6,6 +6,12 @@ to compute and apply the diff. Two side-effect surfaces:
   • ~/.claude/settings.json — the file Claude Code reads on startup. We
     rewrite the `env` block to point ANTHROPIC_BASE_URL at our local proxy.
 
+  • Claude Code's user-scope MCP servers (~/.claude.json) — Connect
+    registers our MCP proxy as `voitta` by running `claude mcp add`, so
+    that sessions can resolve the get_vt_object references the optimizer
+    leaves behind. Claude Code rewrites ~/.claude.json constantly, so we go
+    through its own CLI rather than editing the file.
+
   • voitta-desktop's apps.json (llm_proxy.upstream_url) — when we connect
     over the top of an existing ANTHROPIC_BASE_URL (e.g. corporate gateway),
     we INHERIT that URL as our own upstream, so the chain becomes:
@@ -16,11 +22,15 @@ to compute and apply the diff. Two side-effect surfaces:
     Disconnect can put settings.json back exactly the way it was.
 
 Disconnect leaves voitta-desktop's apps.json alone (per the user's "leave
-voitta desktop as is" rule). Only ~/.claude/settings.json is restored.
+voitta desktop as is" rule). It restores ~/.claude/settings.json and removes
+the MCP registration.
 """
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
@@ -56,10 +66,13 @@ class Plan:
     target: str  # "connect" or "disconnect"
     claude_changes: list[Change] = field(default_factory=list)
     voitta_upstream_change: Change | None = None
+    # The user-scope `voitta` MCP server (URL), applied via `claude mcp`.
+    mcp_change: Change | None = None
 
     @property
     def is_noop(self) -> bool:
-        return not self.claude_changes and self.voitta_upstream_change is None
+        return (not self.claude_changes and self.voitta_upstream_change is None
+                and self.mcp_change is None)
 
 
 # ── settings.json I/O ────────────────────────────────────────────────────────
@@ -103,28 +116,26 @@ def is_voitta_connected(cfg: dict, our_port: int) -> bool:
     return env.get("ANTHROPIC_BASE_URL") == _our_url(our_port)
 
 
-def is_mcp_wired(cfg: dict, mcp_port: int) -> bool:
-    """True iff Claude Code's MCP config points at our MCP proxy.
+def is_mcp_wired(mcp_port: int) -> bool:
+    """True iff Claude Code's user-scope MCP config points at our MCP proxy.
 
-    Claude Code merges mcpServers from two locations:
-      • ~/.claude/settings.json — passed in as ``cfg``
-      • ~/.claude.json          — where ``claude mcp add`` writes (HTTP entries)
-    Either being correct is enough — that's the same merge Claude Code does
-    at startup.
+    Only ~/.claude.json counts. Claude Code ignores ``mcpServers`` in a
+    settings file (checked with 2.1.296: a server passed that way never
+    reached the request).
     """
-    target = _our_mcp_url(mcp_port)
-    sources: list[dict] = []
-    if isinstance(cfg, dict):
-        sources.append(cfg)
-    sources.append(_load_claude_user_config())
-    for source in sources:
-        servers = source.get("mcpServers")
-        if not isinstance(servers, dict):
-            continue
-        voitta = servers.get("voitta")
-        if isinstance(voitta, dict) and voitta.get("url") == target:
-            return True
-    return False
+    return _registered_mcp_url() == _our_mcp_url(mcp_port)
+
+
+def _registered_mcp_url() -> str | None:
+    """URL of the user-scope `voitta` MCP server, or None if absent."""
+    servers = _load_claude_user_config().get("mcpServers")
+    voitta = servers.get("voitta") if isinstance(servers, dict) else None
+    return voitta.get("url") if isinstance(voitta, dict) else None
+
+
+def _has_mcp_registration() -> bool:
+    servers = _load_claude_user_config().get("mcpServers")
+    return isinstance(servers, dict) and "voitta" in servers
 
 
 def is_codex_mcp_wired(mcp_port: int) -> bool:
@@ -210,10 +221,50 @@ def _our_mcp_url(mcp_port: int) -> str:
     return f"http://127.0.0.1:{mcp_port}/mcp"
 
 
+def _is_one_of_our_mcp_urls(url: str | None) -> bool:
+    """True if ``url`` has the shape of our MCP proxy URL, on any port.
+
+    Same reasoning as ``_is_one_of_our_urls``: the port can move. Anything
+    else registered as `voitta` (a remote Voitta server, say) is the user's
+    and is left alone.
+    """
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "http"
+        and parsed.hostname in ("127.0.0.1", "localhost")
+        and parsed.path.rstrip("/") == "/mcp"
+        and not parsed.query
+    )
+
+
+def _plan_mcp_connect(mcp_port: int) -> Change | None:
+    current = _registered_mcp_url()
+    ours = _our_mcp_url(mcp_port)
+    if current == ours:
+        return None
+    if current is None and not _has_mcp_registration():
+        return Change("mcpServers.voitta", None, ours)
+    if _is_one_of_our_mcp_urls(current):
+        return Change("mcpServers.voitta", current, ours)
+    return None  # someone else's server called `voitta`
+
+
+def _plan_mcp_disconnect() -> Change | None:
+    current = _registered_mcp_url()
+    if _is_one_of_our_mcp_urls(current):
+        return Change("mcpServers.voitta", current, None)
+    return None
+
 # ── Plan builders ────────────────────────────────────────────────────────────
 
 
-def plan_connect(cfg: dict, our_port: int, voitta_upstream: str) -> Plan:
+def plan_connect(cfg: dict, our_port: int, voitta_upstream: str,
+                 mcp_port: int | None = None) -> Plan:
     """Compute the Connect plan.
 
     Inputs:
@@ -230,6 +281,8 @@ def plan_connect(cfg: dict, our_port: int, voitta_upstream: str) -> Plan:
           trust it as the canonical original (recovery from dirty state).
         - ENABLE_TOOL_SEARCH: only added if not already present. Existing
           values are left alone.
+        - With ``mcp_port``, register our MCP proxy as the user-scope
+          `voitta` server, unless a `voitta` server that isn't ours exists.
     """
     env = _env_block(cfg)
     our_url = _our_url(our_port)
@@ -277,10 +330,11 @@ def plan_connect(cfg: dict, our_port: int, voitta_upstream: str) -> Plan:
         target="connect",
         claude_changes=changes,
         voitta_upstream_change=voitta_upstream_change,
+        mcp_change=_plan_mcp_connect(mcp_port) if mcp_port is not None else None,
     )
 
 
-def plan_disconnect(cfg: dict, our_port: int) -> Plan:
+def plan_disconnect(cfg: dict, our_port: int, mcp: bool = False) -> Plan:
     """Compute the Disconnect plan.
 
     Restores ~/.claude/settings.json as closely as possible to its
@@ -296,6 +350,8 @@ def plan_disconnect(cfg: dict, our_port: int) -> Plan:
           added it, and "true" is harmless when not connected).
         - Caller (apply_changes) drops the "env" key entirely if it
           becomes empty.
+        - With ``mcp``, remove the user-scope `voitta` MCP server if it
+          points at our MCP proxy (any port).
     """
     env = _env_block(cfg)
     changes: list[Change] = []
@@ -316,14 +372,19 @@ def plan_disconnect(cfg: dict, our_port: int) -> Plan:
         if current_base != ANTHROPIC_DEFAULT_URL:
             changes.append(Change("env.ANTHROPIC_BASE_URL", current_base, ANTHROPIC_DEFAULT_URL))
 
-    return Plan(target="disconnect", claude_changes=changes)
+    return Plan(
+        target="disconnect",
+        claude_changes=changes,
+        mcp_change=_plan_mcp_disconnect() if mcp else None,
+    )
 
 
 # ── Apply ────────────────────────────────────────────────────────────────────
 
 
 def apply_changes(plan: Plan) -> None:
-    """Write plan.claude_changes to ~/.claude/settings.json.
+    """Write plan.claude_changes to ~/.claude/settings.json, then apply
+    plan.mcp_change through `claude mcp`.
 
     The file is rewritten in full (not patched line-by-line) — we read it,
     mutate the env block, write it back. All other top-level keys
@@ -333,12 +394,19 @@ def apply_changes(plan: Plan) -> None:
     by writing apps.json, since it owns the in-memory config object that
     needs to stay in sync.
     """
+    if plan.claude_changes:
+        _write_env_changes(plan.claude_changes)
+    if plan.mcp_change is not None:
+        apply_mcp_change(plan.mcp_change)
+
+
+def _write_env_changes(changes: list[Change]) -> None:
     cfg = load_claude_settings()
     env = _env_block(cfg)
     # Work on a copy so we don't mutate cfg["env"] if it was a non-dict.
     env = dict(env)
 
-    for change in plan.claude_changes:
+    for change in changes:
         if not change.label.startswith("env."):
             continue
         key = change.label[len("env."):]
@@ -358,6 +426,70 @@ def apply_changes(plan: Plan) -> None:
     CLAUDE_SETTINGS_PATH.write_text(json.dumps(cfg, indent=2) + "\n")
 
 
+# ── `claude mcp` ─────────────────────────────────────────────────────────────
+
+# Where the installers put `claude`. An app started from Finder or launchd
+# does not get the login shell's PATH, so shutil.which alone misses these.
+_CLAUDE_CANDIDATES = (
+    Path.home() / ".local" / "bin" / "claude",
+    Path.home() / ".claude" / "local" / "claude",
+    Path("/opt/homebrew/bin/claude"),
+    Path("/usr/local/bin/claude"),
+)
+
+
+class McpCliError(RuntimeError):
+    """`claude mcp` is missing or failed. settings.json is already written
+    by the time this is raised."""
+
+
+def find_claude_cli() -> str | None:
+    found = shutil.which("claude")
+    if found:
+        return found
+    for path in _CLAUDE_CANDIDATES:
+        if os.access(path, os.X_OK):
+            return str(path)
+    return None
+
+
+def mcp_add_command(url: str) -> list[str]:
+    return ["claude", "mcp", "add", "--transport", "http", "--scope", "user", "voitta", url]
+
+
+def _run_claude(args: list[str]) -> None:
+    cli = find_claude_cli()
+    if cli is None:
+        raise McpCliError("claude CLI not found")
+    env = dict(os.environ)
+    # An npm-installed `claude` is a node script; give it a PATH that finds
+    # node even when we were started without the login shell's PATH.
+    env["PATH"] = os.pathsep.join(
+        [str(Path(cli).parent), "/opt/homebrew/bin", "/usr/local/bin", env.get("PATH", "")]
+    )
+    try:
+        result = subprocess.run(
+            [cli, *args], cwd=Path.home(), env=env,
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise McpCliError(f"claude {' '.join(args[:2])} failed: {e}") from e
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise McpCliError(f"claude {' '.join(args[:2])} failed: {detail}")
+
+
+def apply_mcp_change(change: Change) -> None:
+    """Apply a ``mcpServers.voitta`` change through `claude mcp`.
+
+    Raises McpCliError if the CLI is missing or fails.
+    """
+    if change.old is not None:
+        _run_claude(["mcp", "remove", "--scope", "user", "voitta"])
+    if change.new is not None:
+        _run_claude(mcp_add_command(change.new)[1:])
+
+
 # ── Convenience wrappers ─────────────────────────────────────────────────────
 #
 # The load → check → plan → apply sequence was open-coded in three places
@@ -365,30 +497,33 @@ def apply_changes(plan: Plan) -> None:
 # which is how the TUI ended up importing two functions that did not exist.
 # One definition, three callers.
 
-def arm_claude_link(our_port: int, voitta_upstream: str) -> bool:
-    """Point ~/.claude/settings.json at our proxy. Returns True if it changed.
+def arm_claude_link(our_port: int, voitta_upstream: str,
+                    mcp_port: int | None = None) -> bool:
+    """Point ~/.claude/settings.json at our proxy, and with ``mcp_port``
+    register our MCP proxy. Returns True if anything changed.
 
     Idempotent: already-connected settings are left alone.
     """
     cfg = load_claude_settings()
+    plan = plan_connect(cfg, our_port, voitta_upstream, mcp_port)
     if is_voitta_connected(cfg, our_port):
-        return False
-    plan = plan_connect(cfg, our_port, voitta_upstream)
+        plan = Plan(target="connect", mcp_change=plan.mcp_change)
     if plan.is_noop:
         return False
     apply_changes(plan)
     return True
 
 
-def disarm_claude_link(our_port: int) -> bool:
-    """Strip our proxy from ~/.claude/settings.json. Returns True if it changed.
+def disarm_claude_link(our_port: int, mcp: bool = False) -> bool:
+    """Strip our proxy from ~/.claude/settings.json, and with ``mcp`` remove
+    our MCP registration. Returns True if anything changed.
 
     Idempotent: settings that aren't wired to us are left alone.
     """
     cfg = load_claude_settings()
+    plan = plan_disconnect(cfg, our_port, mcp)
     if not is_voitta_connected(cfg, our_port):
-        return False
-    plan = plan_disconnect(cfg, our_port)
+        plan = Plan(target="disconnect", mcp_change=plan.mcp_change)
     if plan.is_noop:
         return False
     apply_changes(plan)

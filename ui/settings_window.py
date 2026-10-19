@@ -404,7 +404,7 @@ class SettingsWindowMixin:
 
         cfg = load_claude_settings()
         llm_wired = is_voitta_connected(cfg, self.llm_proxy_port)
-        mcp_wired_claude = is_mcp_wired(cfg, self.mcp_proxy_port)
+        mcp_wired_claude = is_mcp_wired(self.mcp_proxy_port)
         mcp_wired_codex = is_codex_mcp_wired(self.mcp_proxy_port)
         mcp_wired = mcp_wired_claude or mcp_wired_codex
 
@@ -484,6 +484,7 @@ class SettingsWindowMixin:
         from claude_link import (
             load_claude_settings, settings_file_is_malformed,
             is_voitta_connected, plan_connect, plan_disconnect, apply_changes,
+            McpCliError, mcp_add_command,
         )
         from ui.claude_link_popup import ClaudeLinkPopup
 
@@ -502,11 +503,11 @@ class SettingsWindowMixin:
         currently_linked = is_voitta_connected(cfg, port)
 
         if currently_linked:
-            plan = plan_disconnect(cfg, port)
+            plan = plan_disconnect(cfg, port, mcp=True)
             title = "Disconnect Claude"
             ok_label = "Disconnect"
         else:
-            plan = plan_connect(cfg, port, self.llm_upstream_url)
+            plan = plan_connect(cfg, port, self.llm_upstream_url, self.mcp_proxy_port)
             title = "Connect Claude"
             ok_label = "Connect"
 
@@ -514,8 +515,13 @@ class SettingsWindowMixin:
         self._claude_link_popup = popup
 
         def _on_confirm():
+            mcp_error = None
             try:
                 apply_changes(plan)
+            except McpCliError as e:
+                # settings.json is written; only the MCP registration failed.
+                logger.warning("Claude link MCP registration failed: %s", e)
+                mcp_error = e
             except Exception as e:
                 logger.error("Claude link apply failed: %s", e, exc_info=True)
                 _notify("Voitta Desktop", "Claude link failed", str(e)[:200])
@@ -562,6 +568,17 @@ class SettingsWindowMixin:
 
             verb = "Connected" if plan.target == "connect" else "Disconnected"
             _notify("Voitta Desktop", verb + " Claude Code", "~/.claude/settings.json")
+            if mcp_error is not None:
+                change = plan.mcp_change
+                if change.new is not None:
+                    manual = " ".join(mcp_add_command(change.new))
+                else:
+                    manual = "claude mcp remove --scope user voitta"
+                alert = NSAlert.alloc().init()
+                alert.setMessageText_("MCP registration was not changed")
+                alert.setInformativeText_(f"{mcp_error}\n\nRun this instead:\n{manual}")
+                alert.addButtonWithTitle_("OK")
+                _show_modal(alert)
 
         popup.set_handlers(_on_confirm, lambda: None)
         popup.open(plan, title=title, ok_label=ok_label)

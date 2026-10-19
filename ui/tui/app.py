@@ -500,13 +500,18 @@ class TUIApp(App, AppBase):
     # ── Actions ─────────────────────────────────────────────────────
 
     def action_toggle_arm(self) -> None:
-        from claude_link import arm_claude_link, disarm_claude_link
-        if self.claude_link_armed:
-            disarm_claude_link(self.llm_proxy_port)
-            self.claude_link_armed = False
-        else:
-            arm_claude_link(self.llm_proxy_port, self.llm_upstream_url)
-            self.claude_link_armed = True
+        from claude_link import McpCliError, arm_claude_link, disarm_claude_link
+        try:
+            if self.claude_link_armed:
+                self.claude_link_armed = False
+                disarm_claude_link(self.llm_proxy_port, mcp=True)
+            else:
+                self.claude_link_armed = True
+                arm_claude_link(self.llm_proxy_port, self.llm_upstream_url,
+                                self.mcp_proxy_port)
+        except McpCliError as e:
+            # settings.json is already written; only `claude mcp` failed.
+            self.notify(f"MCP registration: {e}", severity="warning")
         self._config.setdefault("claude_link", {})["armed"] = self.claude_link_armed
         self._save_config()
         self.query_one("#status-bar", StatusBar).refresh_stats(self)

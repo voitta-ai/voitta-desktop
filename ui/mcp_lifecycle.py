@@ -455,7 +455,8 @@ class MCPLifecycleMixin:
             return
         try:
             from claude_link import arm_claude_link
-            if arm_claude_link(self.llm_proxy_port, self.llm_upstream_url):
+            if arm_claude_link(self.llm_proxy_port, self.llm_upstream_url,
+                               self.mcp_proxy_port):
                 logger.info("claude_link: re-armed on startup")
         except Exception as e:
             logger.warning("claude_link: re-arm failed: %s", e)
@@ -464,10 +465,13 @@ class MCPLifecycleMixin:
         """Strip Voitta from ~/.claude/settings.json on quit. Best-effort —
         never raises (any failure is logged and swallowed so it can't block
         shutdown). Always runs, regardless of the armed flag, so a user who
-        force-quit after toggling Disconnect still gets a clean settings.json."""
+        force-quit after toggling Disconnect still gets a clean settings.json.
+
+        The MCP registration is removed only while armed: a `voitta` server
+        the user registered by hand, without Connect, must survive a quit."""
         try:
             from claude_link import disarm_claude_link
-            if disarm_claude_link(self.llm_proxy_port):
+            if disarm_claude_link(self.llm_proxy_port, mcp=self.claude_link_armed):
                 logger.info("claude_link: disarmed on quit")
         except Exception as e:
             logger.warning("claude_link: disarm failed: %s", e)
