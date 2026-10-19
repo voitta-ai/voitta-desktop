@@ -2,6 +2,7 @@
 
 import base64
 import logging
+import re
 
 from middleware.base import Middleware, ProxyRequest
 from middleware.models import parse_image_dimensions
@@ -185,6 +186,10 @@ class BaseOptimizer(Middleware):
     """
 
     chart_key: str = ""
+    # True if what this optimizer strips is replaced by a get_vt_object
+    # reference. The pipeline skips such optimizers for a client that has
+    # no tool to resolve the reference.
+    emits_refs: bool = False
 
     def __init__(self, keep_turns: int = 5):
         self.keep_turns = keep_turns
@@ -271,6 +276,42 @@ class BaseOptimizer(Middleware):
         Override in subclasses. Only modify messages before threshold_msg_idx.
         """
         raise NotImplementedError
+
+
+# How Claude Code names the get_vt_object tool of an MCP server, whatever
+# name the user registered the server under.
+_VT_TOOL_RE = re.compile(r"^mcp__[A-Za-z0-9_-]+__get_vt_object$", re.MULTILINE)
+
+
+def can_resolve_refs(body: dict) -> bool:
+    """True if the client sending ``body`` has a get_vt_object tool.
+
+    Without one, a reference the optimizer leaves in place of stripped
+    content is unrecoverable: the content is simply gone for that session.
+
+    With tool search on (Connect enables ENABLE_TOOL_SEARCH), Claude Code
+    does not put MCP tools in ``tools``. It sends ToolSearch and lists the
+    deferred tool names, one per line, in a text block of a ``system``-role
+    entry in ``messages`` (Claude Code 2.1.296), so both places are checked.
+    User messages are checked too, which is where hook and reminder text
+    has lived before. Assistant text is not, so the model writing the name
+    on a line of its own cannot switch stripping on.
+    """
+    for tool in body.get("tools") or []:
+        if isinstance(tool, dict) and _VT_TOOL_RE.match(tool.get("name") or ""):
+            return True
+    for msg in body.get("messages") or []:
+        if not isinstance(msg, dict) or msg.get("role") not in ("user", "system"):
+            continue
+        content = msg.get("content")
+        texts = [content] if isinstance(content, str) else [
+            b.get("text") for b in content or []
+            if isinstance(b, dict) and b.get("type") == "text"
+        ]
+        for text in texts:
+            if isinstance(text, str) and "get_vt_object" in text and _VT_TOOL_RE.search(text):
+                return True
+    return False
 
 
 class OptimizerPipeline(Middleware):
@@ -446,7 +487,15 @@ class OptimizerPipeline(Middleware):
             else []
         )
 
+        resolvable = can_resolve_refs(pre_body) if pre_body else False
+        if not resolvable:
+            logger.debug("No get_vt_object tool in request: skipping "
+                         "reference-emitting optimizers")
         for o in self.optimizers:
+            if o.emits_refs and not resolvable:
+                o.last_stripped_ids = {}
+                o.last_stripped_msg_indices = {}
+                continue
             request = await o.on_request(request)
 
         # Post-optimization check. If we introduced problems that weren't

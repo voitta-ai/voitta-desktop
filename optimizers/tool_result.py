@@ -71,6 +71,7 @@ class ToolResultOptimizer(BaseOptimizer):
     """
 
     chart_key = "tool_result"
+    emits_refs = True
 
     def __init__(self, keep_turns: int = TOOL_RESULT_KEEP_TURNS):
         super().__init__(keep_turns=keep_turns)
