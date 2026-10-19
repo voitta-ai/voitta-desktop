@@ -80,7 +80,8 @@ class Conversation:
             "model": "claude-haiku-4-5-20251001",
             "max_tokens": 256,
             "system": [{"type": "text", "text": "You are a coding agent."}],
-            "tools": [{"name": "Bash", "input_schema": {"type": "object"}}],
+            "tools": [{"name": "Bash", "input_schema": {"type": "object"}},
+                      {"name": "mcp__voitta__get_vt_object", "input_schema": {"type": "object"}}],
             "messages": [json.loads(json.dumps(m)) for m in self.messages],  # deep copy
         }
 
