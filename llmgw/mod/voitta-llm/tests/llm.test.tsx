@@ -169,3 +169,89 @@ test('/voitta-store failing says so briefly and stores nothing', async ($, on) =
   expect(gw.toasts[0]?.timeoutMs).toBe(5000)
   expect(r.text).toBeUndefined()
 })
+
+// ---- /mcp: this window's own tools ---------------------------------------------
+
+const WINDOW = '4242@Fri_Oct_23_22:26:07_2026'
+
+/** A fake Voitta for /mcp: the popup's start answer, then the status answers in turn. */
+function voittaPopup(on: On, opts: {
+  start?: Record<string, unknown> | 404; statuses?: string[]; down?: boolean; noBase?: boolean; noWindow?: boolean
+} = {}) {
+  const seen: string[] = []   // in order: 'start', 'status', 'mcp opened'
+  const toasts: string[] = []
+  const bodies: unknown[] = []
+  const statuses = [...(opts.statuses ?? [])]
+  mock.env(on, opts.noBase ? {} : { ANTHROPIC_BASE_URL: GW })
+  on('process.run', () => (opts.noWindow
+    ? { deny: 'cannot start /bin/sh' }
+    : { value: { exitCode: 0, stdout: `${WINDOW}\n`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('ui.toast', (_$, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('http.fetch', (_$, e) => {
+    if (opts.down) return { deny: 'connect ECONNREFUSED' }
+    const url = new URL(e.url)
+    if (url.pathname === '/_voitta/llm/api/tool-popup' && e.init?.method === 'POST') {
+      seen.push('start')
+      bodies.push(JSON.parse(e.init.body ?? '{}'))
+      if (opts.start === 404) return { value: { status: 404, ok: false, headers: {}, text: 'Not Found' } }
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(opts.start ?? { status: 'waiting', id: 'p1' }) } }
+    }
+    expect(url.pathname).toBe('/_voitta/llm/api/tool-popup/p1')
+    expect(url.searchParams.get('wait')).toBe('5')
+    seen.push('status')
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ status: statuses.shift() ?? 'waiting' }) } }
+  })
+  // Claude Code's own /mcp, beneath the mod: it opens only when the hook lets it.
+  on('command.run', (_$, e) => {
+    seen.push(`${e.command} opened`)
+    return { text: '(the /mcp menu)' }
+  })
+  return { seen, toasts, bodies }
+}
+
+test('/mcp waits for the tool popup, then opens; the answer applied shows briefly', async ($, on) => {
+  const v = voittaPopup(on, { statuses: ['waiting', 'waiting', 'applied'] })
+  await $.command.run({ command: 'mcp', args: '' })
+  expect(v.bodies).toEqual([{ window: WINDOW }])
+  expect(v.seen).toEqual(['start', 'status', 'status', 'status', 'mcp opened'])
+  expect(v.toasts).toEqual(["Voitta: this window's tools updated"])
+})
+
+test('/mcp: popup cancelled → /mcp opens, nothing said', async ($, on) => {
+  const v = voittaPopup(on, { statuses: ['unchanged'] })
+  await $.command.run({ command: 'mcp', args: '' })
+  expect(v.seen).toEqual(['start', 'status', 'mcp opened'])
+  expect(v.toasts).toEqual([])
+})
+
+for (const [why, opts, toasts] of [
+  ['the popup is not in use (Claude Code popups not silenced)', { start: { status: 'not_needed' } }, []],
+  ['an older Voitta without the popup', { start: 404 as const }, []],
+  ['Voitta not running', { down: true }, []],
+  ['another popup already open', { start: { status: 'busy' } }, ['Voitta: another tool popup is open']],
+  ["this window's connection is not identifiable", { start: { status: 'not_linked' } },
+    ["Voitta can't tell this window's MCP connection; Reinstall /llm in Settings → LLMs, then open a new window"]],
+] as const) {
+  test(`/mcp opens at once when ${why}`, async ($, on) => {
+    const v = voittaPopup(on, opts as Parameters<typeof voittaPopup>[1])
+    await $.command.run({ command: 'mcp', args: '' })
+    expect(v.seen.filter(s => s === 'status')).toEqual([])
+    expect(v.seen.at(-1)).toBe('mcp opened')
+    expect(v.toasts).toEqual([...toasts])
+  })
+}
+
+test('/mcp in a window that does not go through Voitta: untouched, nothing asked', async ($, on) => {
+  const v = voittaPopup(on, { noBase: true })
+  await $.command.run({ command: 'mcp', args: '' })
+  expect(v.seen).toEqual(['mcp opened'])
+})
+
+test('/mcp when the window id cannot be worked out: untouched, nothing asked', async ($, on) => {
+  const v = voittaPopup(on, { noWindow: true })
+  await $.command.run({ command: 'mcp', args: '' })
+  expect(v.seen).toEqual(['mcp opened'])
+})

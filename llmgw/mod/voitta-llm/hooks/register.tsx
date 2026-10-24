@@ -13,6 +13,13 @@ import type { LlmOption, LlmView, StoredConversation } from '../types'
 // /voitta-store: Voitta Desktop copies this window's whole conversation (Claude
 // Code's transcript, subagents, which account and model answered each request)
 // into its own folder. A one-second toast, nothing left on screen.
+//
+// /mcp (Claude Code's own menu): when Voitta applies the saved tool selection
+// silently to Claude Code, typing /mcp first shows Voitta's tool popup for this
+// window only; the answer applies to this window right away, in memory, and
+// /mcp opens once it is given. Anything else (no Voitta, an older Voitta, the
+// popup not in use, this window's MCP connection not identifiable) lets /mcp
+// open untouched.
 
 type Engine = Parameters<Hook<'command.run'>>[0]
 
@@ -79,6 +86,67 @@ async function storeConversation($: Engine): Promise<StoredConversation> {
   return call<StoredConversation>($, 'POST', '/_voitta/llm/api/conversations', {
     session, model, cwd, transcript_path: transcriptPath,
   })
+}
+
+// This window's id as Voitta's MCP server knows it: "<Claude Code pid>@<its
+// start time>". Voitta's headersHelper for the voitta MCP entry prints the same
+// (llmgw/window_header.py, same shell lines; a test keeps them identical).
+const WINDOW_ID_SH = "p=$PPID\ncase \"$(ps -o comm= -p \"$p\" 2>/dev/null)\" in\n  sh|*/sh|bash|*/bash|zsh|*/zsh|dash|*/dash|-*) p=$(ps -o ppid= -p \"$p\" 2>/dev/null | tr -d ' ') ;;\nesac\ns=$(ps -o lstart= -p \"$p\" 2>/dev/null)\ns=$(echo $s | tr ' ' '_')\nprintf '%s@%s' \"$p\" \"$s\""
+
+async function windowId($: Engine): Promise<string | null> {
+  try {
+    const r = await $.process.run(['/bin/sh', '-c', WINDOW_ID_SH], { timeoutMs: 5000 })
+    const id = r.stdout.trim()
+    return r.exitCode === 0 && /^\d{1,9}@[A-Za-z0-9_:]{1,64}$/.test(id) ? id : null
+  } catch {
+    return null
+  }
+}
+
+type PopupState = { status: string; id?: string; detail?: string }
+
+async function popupCall($: Engine, base: string, path: string, body?: unknown): Promise<PopupState | null> {
+  try {
+    const r = await $.http.fetch(base + path, body === undefined ? undefined : {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    })
+    return r.ok ? (JSON.parse(r.text) as PopupState) : null
+  } catch {
+    return null
+  }
+}
+
+// Shows Voitta's tool popup for this window and waits for the answer. Never
+// throws: every failure just lets /mcp open as it would have.
+async function windowTools($: Engine): Promise<void> {
+  let base: string
+  try {
+    base = await gatewayUrl($)
+  } catch {
+    return
+  }
+  const window = await windowId($)
+  if (!window) return
+  const start = await popupCall($, base, '/_voitta/llm/api/tool-popup', { window })
+  if (!start) return
+  if (start.status === 'busy') {
+    $.ui.toast('Voitta: another tool popup is open', { timeoutMs: 3000 })
+    return
+  }
+  if (start.status === 'not_linked') {
+    $.ui.toast("Voitta can't tell this window's MCP connection; Reinstall /llm in Settings → LLMs, then open a new window",
+      { timeoutMs: 5000 })
+    return
+  }
+  if (start.status !== 'waiting' || !start.id) return
+  // Long-polls of 5 s (one request is cut off at 30 s); about ten minutes in all.
+  for (let i = 0; i < 120; i++) {
+    const state = await popupCall($, base, `/_voitta/llm/api/tool-popup/${start.id}?wait=5`)
+    if (!state) return
+    if (state.status === 'waiting') continue
+    if (state.status === 'applied') $.ui.toast("Voitta: this window's tools updated", { timeoutMs: 2000 })
+    return
+  }
 }
 
 async function show($: Engine, v: LlmView) {
@@ -225,6 +293,11 @@ export const register: Register = on => {
 
   // Nothing in the transcript: a one-second toast says it worked; a failure
   // stays a little longer so it can be read.
+  on('command.run', { command: 'mcp' }, async ($, e, next) => {
+    await windowTools($)
+    return next(e)
+  })
+
   on('command.run', { command: 'voitta-store' }, async $ => {
     try {
       await storeConversation($)

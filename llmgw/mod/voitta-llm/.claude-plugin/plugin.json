@@ -1,6 +1,6 @@
 {
   "name": "voitta-llm",
-  "version": "0.3.0",
-  "description": "Per-window LLM account (/llm) and conversation storage (/voitta-store) for Voitta Desktop",
+  "version": "0.4.0",
+  "description": "Per-window LLM account (/llm), conversation storage (/voitta-store) and per-window tools (/mcp) for Voitta Desktop",
   "types": "./types/index.d.ts"
 }

@@ -2,15 +2,18 @@
 
 import asyncio
 import base64
+import contextvars
 import json
 import logging
 import os
 import re
 import shutil
 import time
+import weakref
 from urllib.parse import urlparse
 
 import httpx
+import mcp.types
 
 from fastmcp import FastMCP as FastMCPServer
 from fastmcp.server.providers.proxy import ProxyClient
@@ -375,6 +378,49 @@ def login_rejection(exc: BaseException) -> str | None:
     return None
 
 
+# Per-window tools (the voitta-llm mod's /mcp hook). Claude Code runs the MCP
+# entry's headersHelper (llmgw: claude-window-header) on every connection; it
+# names the Claude Code process the connection belongs to as "<pid>@<start>".
+# The mod computes the same id for its own window, so /mcp can give exactly
+# that window its own tool list.
+WINDOW_HEADER = "x-voitta-claude-window"
+_WINDOW_ID = re.compile(r"\d{1,9}@[A-Za-z0-9_:]{1,64}")
+
+# Set only while the gate itself sends a tool-list-changed notice to one window.
+_OWN_TOOLS_NOTICE: contextvars.ContextVar[bool] = contextvars.ContextVar("voitta_own_tools_notice", default=False)
+
+
+def _guard_tool_list_notices(session) -> None:
+    """Let a session carry a tool-list-changed notice only when the gate sends
+    it to that one window. Anything else that tries (a library update that
+    starts broadcasting on backend mounts, say) is dropped and logged; that
+    broadcast is what made every window re-list and re-prompt in April
+    (696c7b7)."""
+    if getattr(session, "_voitta_notice_guard", False):
+        return
+    original = session.send_notification
+
+    async def send_notification(notification, related_request_id=None):
+        root = getattr(notification, "root", notification)
+        if isinstance(root, mcp.types.ToolListChangedNotification) and not _OWN_TOOLS_NOTICE.get():
+            logger.warning("tool_gate: dropped a tool-list-changed notice Voitta did not send itself")
+            return None
+        return await original(notification, related_request_id)
+
+    session.send_notification = send_notification
+    session._voitta_notice_guard = True
+
+
+def _window_from_request() -> str | None:
+    try:
+        from fastmcp.server.dependencies import get_http_request
+        value = get_http_request().headers.get(WINDOW_HEADER) or ""
+    except Exception:
+        return None
+    value = value.strip()
+    return value if _WINDOW_ID.fullmatch(value) else None
+
+
 class ToolGateMiddleware(FastMCPMiddleware):
     """Shows a tool gate popup on external tools/list requests.
 
@@ -420,6 +466,86 @@ class ToolGateMiddleware(FastMCPMiddleware):
         self._answers: dict[str, tuple[set[str], float]] = {}
         self._lock: asyncio.Lock | None = None
         self._auth_warned: dict[str, float] = {}
+        # Per-window tools: which Claude Code window each MCP session belongs
+        # to (only sessions that may be refreshed: header present, client
+        # Claude Code, its popup suppressed), in memory only.
+        self._session_window: "weakref.WeakKeyDictionary[object, str]" = weakref.WeakKeyDictionary()
+        self._window_sessions: dict[str, "weakref.WeakSet[object]"] = {}
+
+    # ---- per-window tools (the voitta-llm mod's /mcp) -------------------------
+
+    @property
+    def _window_choices(self) -> dict[str, set[str]]:
+        """window -> disabled tool names, chosen with /mcp. Kept on the app so a
+        rebuilt MCP server (health.py) doesn't drop them; never written to disk."""
+        choices = getattr(self._app_ref, "_window_tool_choices", None)
+        if choices is None:
+            choices = {}
+            try:
+                self._app_ref._window_tool_choices = choices
+            except Exception:
+                pass
+        return choices
+
+    async def on_initialize(self, context, call_next):
+        try:
+            session = context.fastmcp_context.session
+            _guard_tool_list_notices(session)
+            params = getattr(context.message, "params", None)
+            client = (params.clientInfo.name if params and params.clientInfo else "") or ""
+            window = _window_from_request()
+            if window and self._silent_client(client) == "claude":
+                tools_cap = session._init_options.capabilities.tools
+                if tools_cap is not None:
+                    # Only this connection hears that its tool list can change.
+                    tools_cap.listChanged = True
+                self._session_window[session] = window
+                self._window_sessions.setdefault(window, weakref.WeakSet()).add(session)
+                logger.info("tool_gate: Claude Code window %s connected (its tools can be set with /mcp)",
+                            window.split("@")[0])
+        except Exception:
+            logger.debug("tool_gate: on_initialize bookkeeping failed", exc_info=True)
+        return await call_next(context)
+
+    def window_status(self, window: str) -> str | None:
+        """Why /mcp can't show this window's popup, or None if it can."""
+        if getattr(self._app_ref, "terminal_mode", False) or not getattr(self._app_ref, "suppress_claude_popup", False):
+            return "not_needed"
+        if not _WINDOW_ID.fullmatch(window or "") or not list(self._window_sessions.get(window, ())):
+            return "not_linked"
+        from ui.tool_gate import gate_is_open
+        if gate_is_open():
+            return "busy"
+        return None
+
+    async def window_popup(self, window: str) -> dict:
+        """Show the tool popup for one Claude Code window and apply the answer
+        to that window only: remembered in memory, then a tool-list-changed
+        notice to its connection(s) so it re-lists right away."""
+        from ui.tool_gate import show_tool_gate
+        saved = set(getattr(self._app_ref, "disabled_tools", set()))
+        current = self._window_choices.get(window, saved)
+        meta = {"For": "this Claude Code window only", "Kept": "until the window closes or Voitta restarts"}
+        result = await show_tool_gate(self._app_ref._build_tool_tree(), current, meta,
+                                      title="Tools for this Claude Code window",
+                                      heading="Tools for this Claude Code window")
+        if result is None:
+            logger.info("tool_gate: window %s kept its tools (popup cancelled)", window.split("@")[0])
+            return {"status": "unchanged"}
+        self._window_choices[window] = set(result)
+        refreshed = 0
+        for session in list(self._window_sessions.get(window, ())):
+            token = _OWN_TOOLS_NOTICE.set(True)
+            try:
+                await session.send_tool_list_changed()
+                refreshed += 1
+            except Exception as e:
+                logger.info("tool_gate: window %s: a closed connection skipped (%s)", window.split("@")[0], e)
+            finally:
+                _OWN_TOOLS_NOTICE.reset(token)
+        logger.info("tool_gate: window %s has its own tools now (%d disabled); %d connection(s) told to re-list",
+                    window.split("@")[0], len(result), refreshed)
+        return {"status": "applied", "disabled": len(result), "refreshed": refreshed}
 
     async def on_call_tool(self, context, call_next):
         try:
@@ -510,10 +636,14 @@ class ToolGateMiddleware(FastMCPMiddleware):
         silent = self._silent_client(client_name)
         if silent:
             tools = await call_next(context)
-            disabled = set(getattr(self._app_ref, "disabled_tools", set()))
+            session = self._session_of(context) if silent == "claude" else None
+            window = self._session_window.get(session) if session is not None else None
+            choice = self._window_choices.get(window) if window else None
+            disabled = choice if choice is not None else set(getattr(self._app_ref, "disabled_tools", set()))
             filtered = [t for t in tools if t.name not in disabled]
-            logger.info("tool_gate: %s silent pass (%d/%d tools, client=%s)",
-                        silent, len(filtered), len(tools), client_name)
+            logger.info("tool_gate: %s silent pass (%d/%d tools, client=%s%s)",
+                        silent, len(filtered), len(tools), client_name,
+                        f", window {window.split('@')[0]}'s own tools" if choice is not None else "")
             return filtered
 
         # Serialize popup access — second request waits for first popup to finish
@@ -529,6 +659,13 @@ class ToolGateMiddleware(FastMCPMiddleware):
                 return [t for t in tools if t.name not in disabled]
 
             return await self._show_gate(context, call_next, client_name, session_id)
+
+    @staticmethod
+    def _session_of(context):
+        try:
+            return context.fastmcp_context.session
+        except Exception:
+            return None
 
     def _get_client_info(self, context) -> tuple[str | None, str | None]:
         """Extract client name and session ID from context."""

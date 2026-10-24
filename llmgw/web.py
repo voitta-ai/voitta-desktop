@@ -16,6 +16,7 @@ import hashlib
 import json
 import logging
 import os
+import secrets
 import shutil
 import time
 import urllib.parse
@@ -24,7 +25,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-from . import config, conversations, oauth, providers
+from . import config, conversations, oauth, providers, window_header
 from .context import ContextRecorder
 from .router import _SAFE_ID, Router, RoutingJournal
 from .store import AS_IS, AccountStore, SessionPicks, public_view
@@ -67,6 +68,11 @@ class LlmAccounts:
         self.conversations_dir = conversations_dir or data_dir.parent / "conversations"
         self.claude_projects = claude_projects
         self.device_invites: dict[str, dict] = {}
+        # /mcp per-window tool popups (the voitta-llm mod); the app sets
+        # tool_gate to a callable returning the MCP server's ToolGateMiddleware.
+        self.tool_gate = None
+        self._popups: dict[str, dict] = {}
+        self.window_header_script = window_header.script_path(data_dir.parent)
         self.http: aiohttp.ClientSession | None = None
         self.router: Router | None = None
         self._openai_runner: web.AppRunner | None = None
@@ -117,6 +123,8 @@ class LlmAccounts:
         r.add_post(p + "/api/conversations", self.store_conversation)
         r.add_get(p + "/api/mod", self.mod_status)
         r.add_post(p + "/api/mod/install", self.mod_install)
+        r.add_post(p + "/api/tool-popup", self.tool_popup_start)
+        r.add_get(p + "/api/tool-popup/{id}", self.tool_popup_status)
         r.add_post(p + "/api/accounts/{id}/refresh", self.refresh)
         r.add_post(p + "/api/accounts/{id}/test", self.test_account)
         r.add_post(p + "/api/accounts/{id}/models", self.refresh_models)
@@ -448,17 +456,20 @@ class LlmAccounts:
         return shutil.which("claude", path=path)
 
     async def _claude(self, *args: str) -> tuple[int, str]:
+        return await self._claude_cmd("plugin", *args)
+
+    async def _claude_cmd(self, *args: str) -> tuple[int, str]:
         claude = self._claude_bin()
         if not claude:
             return 127, "Claude Code (the `claude` command) was not found in PATH or " + ", ".join(_CLAUDE_DIRS)
         proc = await asyncio.create_subprocess_exec(
-            claude, "plugin", *args, stdin=asyncio.subprocess.DEVNULL,
+            claude, *args, stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
         try:
             out, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
         except asyncio.TimeoutError:
             proc.kill()
-            return 124, f"claude plugin {' '.join(args)} timed out"
+            return 124, f"claude {' '.join(args[:3])} timed out"
         return proc.returncode, out.decode(errors="replace").strip()
 
     async def _mod_view(self) -> dict:
@@ -468,7 +479,8 @@ class LlmAccounts:
             return {"error": out[-500:], "available": available, "installed": None}
         mine = next((p for p in json.loads(out) if p["id"] == f"{MOD_NAME}@{MOD_MARKETPLACE}"), None)
         return {"available": available, "installed": mine and mine["version"],
-                "enabled": bool(mine and mine["enabled"]), "error": None}
+                "enabled": bool(mine and mine["enabled"]), "error": None,
+                "window_header": window_header.status(self.window_header_script)}
 
     @_same_origin
     async def mod_status(self, request):
@@ -510,8 +522,64 @@ class LlmAccounts:
         if view["installed"] != view["available"]:
             await run("update", f"{MOD_NAME}@{MOD_MARKETPLACE}")
             view = await self._mod_view()
+        # /mcp per-window tools need the voitta MCP entry to name its window.
+        _, header_steps = await window_header.ensure_on_voitta_entry(self.window_header_script, self._claude_cmd)
+        steps += header_steps
+        view = await self._mod_view()
         log.info("mod %s: %s", "reinstall" if reinstall else "install", [(s["command"], s["exit"]) for s in steps])
         return web.json_response({"ok": view["installed"] == view["available"], "steps": steps, **view})
+
+    # ---- /mcp: one Claude Code window's own tools (the voitta-llm mod) ---------
+
+    def _gate(self):
+        try:
+            return self.tool_gate() if self.tool_gate else None
+        except Exception:
+            return None
+
+    @_same_origin
+    async def tool_popup_start(self, request):
+        try:
+            window = str((await request.json()).get("window") or "")
+        except (ValueError, AttributeError):
+            return web.json_response({"error": "expected {\"window\": \"<pid>@<start>\"}"}, status=400)
+        gate = self._gate()
+        if gate is None or not hasattr(gate, "window_popup"):
+            return web.json_response({"status": "not_linked", "detail": "Voitta's MCP server is not running"})
+        why = gate.window_status(window)
+        if why:
+            log.info("/mcp tools popup for window %s: %s", window.split("@")[0], why)
+            return web.json_response({"status": why})
+        self._prune_popups()
+        popup_id = secrets.token_hex(8)
+        task = asyncio.create_task(gate.window_popup(window), name=f"tool-popup-{popup_id}")
+        self._popups[popup_id] = {"task": task, "created": time.time()}
+        return web.json_response({"id": popup_id, "status": "waiting"})
+
+    @_same_origin
+    async def tool_popup_status(self, request):
+        entry = self._popups.get(request.match_info["id"])
+        if entry is None:
+            return web.json_response({"status": "unknown"}, status=404)
+        task = entry["task"]
+        try:
+            wait = max(0.0, min(float(request.query.get("wait") or 0), 20.0))
+        except ValueError:
+            wait = 0.0
+        if not task.done() and wait:
+            await asyncio.wait({task}, timeout=wait)  # never cancels the popup
+        if not task.done():
+            return web.json_response({"status": "waiting"})
+        try:
+            return web.json_response(task.result())
+        except Exception as e:
+            log.exception("/mcp tools popup failed")
+            return web.json_response({"status": "error", "detail": f"{type(e).__name__}: {e}"})
+
+    def _prune_popups(self):
+        cutoff = time.time() - 600
+        for pid in [k for k, v in self._popups.items() if v["task"].done() and v["created"] < cutoff]:
+            del self._popups[pid]
 
     def _windows_view(self) -> list[dict]:
         picks = self.picks.all()

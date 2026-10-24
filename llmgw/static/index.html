@@ -258,6 +258,18 @@ function renderAccounts() {
 }
 
 let modView = null;
+// /mcp per-window tools need the voitta MCP entry to name its window.
+const WINDOW_TOOLS = {
+  set: ["ok", "ready: with “Suppress popup for Claude Code” on, <code>/mcp</code> first sets this window's own tools (new windows)"],
+  missing: ["warn", "not set up yet: Reinstall adds Voitta's header script to the <code>voitta</code> MCP entry"],
+  other_helper: ["warn", "off: the <code>voitta</code> MCP entry already has a headersHelper of your own, so Voitta leaves it alone"],
+  no_entry: ["muted", "off: no user-level <code>voitta</code> MCP entry in Claude Code"],
+  not_http: ["muted", "off: the <code>voitta</code> MCP entry is not an HTTP server"],
+};
+function windowToolsLine(m) {
+  const w = WINDOW_TOOLS[m.window_header];
+  return w ? `<div class="note" style="margin-top:6px">/mcp per-window tools: <span class="${w[0] === "muted" ? "muted" : w[0]}">${w[1]}</span></div>` : "";
+}
 function renderMod() {
   const m = modView;
   if (!m) return;
@@ -268,7 +280,7 @@ function renderMod() {
     return;
   }
   if (m.installed && m.installed === m.available) {
-    $("modState").innerHTML = `<span class="pill ok">installed</span> <span class="muted">voitta-llm ${esc(m.installed)}${m.enabled ? "" : " (disabled in Claude Code)"} · type <code>/llm</code> or <code>/voitta-store</code> in Claude Code</span>`;
+    $("modState").innerHTML = `<span class="pill ok">installed</span> <span class="muted">voitta-llm ${esc(m.installed)}${m.enabled ? "" : " (disabled in Claude Code)"} · type <code>/llm</code> or <code>/voitta-store</code> in Claude Code</span>` + windowToolsLine(m);
     btn.textContent = "Reinstall /llm and /voitta-store";
     btn.classList.remove("hidden");
   } else {

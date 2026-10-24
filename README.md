@@ -139,6 +139,15 @@ subagents, and which account and model answered each request) to
 byte, plus `meta.json` and the routing record). A one-second toast confirms
 it; storing again replaces that window's copy with the newer one.
 
+With **Suppress popup for Claude Code** on, the mod's `/mcp` hook first shows
+Voitta's tool popup for **that window only**; the answer applies to the window
+at once (no reconnect) and lasts until it closes or Voitta restarts, while other
+windows keep the saved selection. It needs Voitta's header script
+(`~/.voitta-desktop/bin/claude-window-header`) on the user-level `voitta` MCP
+entry, which **Install / Reinstall** in Settings → LLMs adds with `claude mcp`;
+it applies to windows opened after that. Windows without the mod are
+unchanged.
+
 **Stored conversations…** in the menu bar (with the count) opens a window to
 browse them: search titles, projects and models; sort; filter by project. A
 conversation shows its whole history, compacted turns included, with each

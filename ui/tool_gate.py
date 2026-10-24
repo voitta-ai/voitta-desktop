@@ -20,7 +20,8 @@ from WebKit import WKWebView, WKWebViewConfiguration, WKWebsiteDataStore
 logger = logging.getLogger("voitta-desktop.tool_gate")
 
 
-def _build_html(tool_groups: list[dict], disabled_tools: set[str], meta: dict | None = None) -> str:
+def _build_html(tool_groups: list[dict], disabled_tools: set[str], meta: dict | None = None,
+                heading: str = "MCP Tools — Select tools to expose") -> str:
     """Build the tool gate popup HTML."""
     groups_json = json.dumps(tool_groups)
     disabled_json = json.dumps(sorted(disabled_tools))
@@ -124,7 +125,7 @@ def _build_html(tool_groups: list[dict], disabled_tools: set[str], meta: dict | 
 </style>
 </head>
 <body>
-<h2>MCP Tools — Select tools to expose</h2>
+<h2>{heading}</h2>
 <div class="meta">
   {"".join(f'<span class="meta-label">{k}</span><span class="meta-value">{v}</span>' for k, v in meta.items())}
 </div>
@@ -440,6 +441,8 @@ async def show_tool_gate(
     disabled_tools: set[str],
     meta: dict | None = None,
     on_result=None,
+    title: str = "MCP Tools Gate",
+    heading: str = "MCP Tools — Select tools to expose",
 ) -> list[str] | None:
     """Show the tool gate popup and await the user's answer.
 
@@ -465,7 +468,7 @@ async def show_tool_gate(
 
     def _show():
         global _gate_window
-        html = _build_html(tool_groups, disabled_tools, meta)
+        html = _build_html(tool_groups, disabled_tools, meta, heading)
 
         screen = NSScreen.mainScreen().frame()
         width, height = 480, 520
@@ -477,7 +480,7 @@ async def show_tool_gate(
         window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             frame, mask, NSBackingStoreBuffered, False
         )
-        window.setTitle_("MCP Tools Gate")
+        window.setTitle_(title)
         window.setReleasedWhenClosed_(False)
         window.setLevel_(NSFloatingWindowLevel)
 
