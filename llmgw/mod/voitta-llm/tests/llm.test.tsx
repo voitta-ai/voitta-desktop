@@ -212,13 +212,12 @@ function voittaPopup(on: On, opts: {
   return { seen, toasts, bodies }
 }
 
-test('/mcp waits for the tool popup; OK ends it there, without the menu', async ($, on) => {
+test('/mcp waits for the tool popup, then opens; the answer applied shows briefly', async ($, on) => {
   const v = voittaPopup(on, { statuses: ['waiting', 'waiting', 'applied'] })
-  const r = await $.command.run({ command: 'mcp', args: '' })
+  await $.command.run({ command: 'mcp', args: '' })
   expect(v.bodies).toEqual([{ window: WINDOW }])
-  expect(v.seen).toEqual(['start', 'status', 'status', 'status'])   // the menu never opens
-  expect(r.text).toBe("Voitta: this window's tools updated")
-  expect(v.toasts).toEqual([])
+  expect(v.seen).toEqual(['start', 'status', 'status', 'status', 'mcp opened'])
+  expect(v.toasts).toEqual(["Voitta: this window's tools updated"])
 })
 
 test('/mcp: popup cancelled → /mcp opens, nothing said', async ($, on) => {
