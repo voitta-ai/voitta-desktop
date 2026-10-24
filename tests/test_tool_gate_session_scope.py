@@ -119,3 +119,47 @@ def test_cancel_is_remembered_as_everything_disabled(gate):
     gate._remember("sess-a", all_names)
 
     assert gate._recall("sess-a")[0] == all_names
+
+
+# ---- which clients skip the popup -------------------------------------------------
+
+class _Ctx:
+    def __init__(self, client):
+        self.client = client
+
+
+@pytest.mark.parametrize("codex, claude, client, expected", [
+    (True, False, "codex-mcp-client", "codex"),
+    (True, False, "claude-code", None),          # the defaults: Claude Code still asks
+    (True, True, "claude-code", "claude"),
+    (False, True, "codex-mcp-client", None),
+    (True, True, "cursor", None),               # anything else always asks
+    (True, True, None, None),
+])
+def test_silent_clients(codex, claude, client, expected):
+    app = _App()
+    app.suppress_codex_popup, app.suppress_claude_popup = codex, claude
+    assert ToolGateMiddleware(app)._silent_client(client) == expected
+
+
+@pytest.mark.asyncio
+async def test_suppressed_claude_code_applies_saved_selection_without_popup(monkeypatch):
+    app = _App()
+    app.suppress_claude_popup = True
+    app.disabled_tools = {"b_off"}
+    gate = ToolGateMiddleware(app)
+    monkeypatch.setattr(gate, "_get_client_info", lambda ctx: ("claude-code", "sess-1"))
+
+    async def no_popup(*a, **kw):
+        raise AssertionError("the popup must not open")
+    monkeypatch.setattr(gate, "_show_gate", no_popup)
+
+    class _T:
+        def __init__(self, name):
+            self.name = name
+
+    async def call_next(_ctx):
+        return [_T("b_on"), _T("b_off")]
+
+    tools = await gate.on_list_tools(object(), call_next)
+    assert [t.name for t in tools] == ["b_on"]

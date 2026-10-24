@@ -10,7 +10,7 @@ The host (VoittaDesktopApp) needs to expose:
   self._auth, self._auth_lock, self._config, self._tracker,
   self._optimizer_pipeline, self._mcp_backends, self._bash_compressor,
   self._tool_result_optimizer, self._image_optimizer, self._thinking_optimizer,
-  self.disabled_tools, self.suppress_codex_popup, self.claude_link_armed,
+  self.disabled_tools, self.suppress_codex_popup, self.suppress_claude_popup, self.claude_link_armed,
   self.mcp_servers,
   self.llm_proxy_port, self.mcp_proxy_port, self.llm_upstream_url,
   self._init_active_defaults, self._sync_edit_mcp_env, self._sync_jira_mcp_env,
@@ -346,6 +346,7 @@ class SettingsWindowMixin:
         self.disabled_tools = set(new_config.get("disabled_tools", []))
         tools_cfg = new_config.get("tools", {})
         self.suppress_codex_popup = bool(tools_cfg.get("suppress_codex_popup", True))
+        self.suppress_claude_popup = bool(tools_cfg.get("suppress_claude_popup", False))
         self.claude_link_armed = claude_link_armed(new_config)
 
         opt_cfg = new_config.get("optimizer", {})

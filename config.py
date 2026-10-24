@@ -251,6 +251,9 @@ def _default_config() -> dict:
             # is applied silently. Other clients (Claude Code, etc.) still
             # see the popup. Default True per user preference.
             "suppress_codex_popup": True,
+            # Same for Claude Code windows (clientInfo "claude-code"), off by
+            # default: they get the popup unless the user turns this on.
+            "suppress_claude_popup": False,
         },
         "claude_link": {
             # Tracks user intent for the Connect Claude button. Set True the

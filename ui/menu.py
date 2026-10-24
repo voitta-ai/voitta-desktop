@@ -110,6 +110,7 @@ class VoittaDesktopApp(
         self.disabled_tools = set(self._config.get("disabled_tools", []))
         tools_cfg = self._config.get("tools", {})
         self.suppress_codex_popup = bool(tools_cfg.get("suppress_codex_popup", True))
+        self.suppress_claude_popup = bool(tools_cfg.get("suppress_claude_popup", False))
         self.claude_link_armed = claude_link_armed(self._config)
         self._mcp_tools = {}
         self._mcp_upstream_instructions: dict[str, str] = {}

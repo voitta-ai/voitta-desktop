@@ -475,6 +475,17 @@ class ToolGateMiddleware(FastMCPMiddleware):
             self._lock = asyncio.Lock()
         return self._lock
 
+    def _silent_client(self, client_name) -> str | None:
+        """"codex" or "claude" when this client's popup is suppressed."""
+        if not isinstance(client_name, str):
+            return None
+        name = client_name.lower()
+        if name.startswith("codex") and getattr(self._app_ref, "suppress_codex_popup", True):
+            return "codex"
+        if name.startswith("claude") and getattr(self._app_ref, "suppress_claude_popup", False):
+            return "claude"
+        return None
+
     async def on_list_tools(self, context, call_next):
         # Terminal mode: no interactive popup — apply stored disabled_tools
         # silently, identical to the Codex fast path.
@@ -490,19 +501,19 @@ class ToolGateMiddleware(FastMCPMiddleware):
             logger.warning("tool_gate: pass-through (%s)", client_name or "no session")
             return await call_next(context)
 
-        # Codex fast path — signs every handshake and reconnects often, so
-        # an interactive popup is friction for no security gain. When
-        # suppression is on (default), filter using the saved disabled_tools
-        # silently and skip the popup entirely. Match on the clientInfo.name
-        # prefix Codex sends ("codex-mcp-client", "codex", etc.).
-        if (getattr(self._app_ref, "suppress_codex_popup", True)
-                and isinstance(client_name, str)
-                and client_name.lower().startswith("codex")):
+        # Silent pass: apply the saved disabled_tools and skip the popup for
+        # clients the user opted out of being asked about — Codex (on by
+        # default: it signs every handshake and reconnects often, so a popup
+        # is friction for no security gain) and Claude Code (off by default).
+        # Matched on the clientInfo.name prefix ("codex-mcp-client",
+        # "claude-code", ...).
+        silent = self._silent_client(client_name)
+        if silent:
             tools = await call_next(context)
             disabled = set(getattr(self._app_ref, "disabled_tools", set()))
             filtered = [t for t in tools if t.name not in disabled]
-            logger.info("tool_gate: codex silent pass (%d/%d tools, client=%s)",
-                        len(filtered), len(tools), client_name)
+            logger.info("tool_gate: %s silent pass (%d/%d tools, client=%s)",
+                        silent, len(filtered), len(tools), client_name)
             return filtered
 
         # Serialize popup access — second request waits for first popup to finish

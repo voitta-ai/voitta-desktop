@@ -628,6 +628,8 @@ function loadProxy() {
   var tools = config.tools || {};
   // Default true — Codex signs its handshake, no need to confirm every time.
   document.getElementById('suppress_codex_popup').checked = tools.suppress_codex_popup !== false;
+  // Default false — Claude Code windows get the popup unless this is on.
+  document.getElementById('suppress_claude_popup').checked = tools.suppress_claude_popup === true;
 }
 
 function collectAll() {
@@ -675,6 +677,7 @@ function collectAll() {
   };
   config.tools = {
     suppress_codex_popup: document.getElementById('suppress_codex_popup').checked,
+    suppress_claude_popup: document.getElementById('suppress_claude_popup').checked,
   };
   config.disabled_tools = collectDisabledTools();
   return config;
