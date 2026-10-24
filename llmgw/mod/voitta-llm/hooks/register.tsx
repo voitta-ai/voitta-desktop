@@ -118,35 +118,37 @@ async function popupCall($: Engine, base: string, path: string, body?: unknown):
 
 // Shows Voitta's tool popup for this window and waits for the answer. Never
 // throws: every failure just lets /mcp open as it would have.
-async function windowTools($: Engine): Promise<void> {
+// True when the popup was answered with OK and this window's tools are set:
+// /mcp then ends there, without Claude Code's menu.
+async function windowTools($: Engine): Promise<boolean> {
   let base: string
   try {
     base = await gatewayUrl($)
   } catch {
-    return
+    return false
   }
   const window = await windowId($)
-  if (!window) return
+  if (!window) return false
   const start = await popupCall($, base, '/_voitta/llm/api/tool-popup', { window })
-  if (!start) return
+  if (!start) return false
   if (start.status === 'busy') {
     $.ui.toast('Voitta: another tool popup is open', { timeoutMs: 3000 })
-    return
+    return false
   }
   if (start.status === 'not_linked') {
     $.ui.toast("Voitta can't tell this window's MCP connection; Reinstall /llm in Settings → LLMs, then open a new window",
       { timeoutMs: 5000 })
-    return
+    return false
   }
-  if (start.status !== 'waiting' || !start.id) return
+  if (start.status !== 'waiting' || !start.id) return false
   // Long-polls of 5 s (one request is cut off at 30 s); about ten minutes in all.
   for (let i = 0; i < 120; i++) {
     const state = await popupCall($, base, `/_voitta/llm/api/tool-popup/${start.id}?wait=5`)
-    if (!state) return
+    if (!state) return false
     if (state.status === 'waiting') continue
-    if (state.status === 'applied') $.ui.toast("Voitta: this window's tools updated", { timeoutMs: 2000 })
-    return
+    return state.status === 'applied'
   }
+  return false
 }
 
 async function show($: Engine, v: LlmView) {
@@ -293,8 +295,12 @@ export const register: Register = on => {
 
   // Nothing in the transcript: a one-second toast says it worked; a failure
   // stays a little longer so it can be read.
+  // OK in the popup ends /mcp there, with one line: Claude Code's menu has
+  // nothing left to do. Cancel, or no popup at all, opens the menu as usual.
   on('command.run', { command: 'mcp' }, async ($, e, next) => {
-    await windowTools($)
+    if (await windowTools($)) {
+      return { text: "Voitta: this window's tools updated" }
+    }
     return next(e)
   })
 

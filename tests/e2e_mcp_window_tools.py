@@ -145,7 +145,10 @@ SCRIPT = window_header.ensure_script(TMP / "bin" / "claude-window-header")
 MCP_CFG = TMP / "mcp.json"
 MCP_CFG.write_text(json.dumps({"mcpServers": {"voitta": {
     "type": "http", "url": f"http://127.0.0.1:{MCP_PORT}/mcp", "headersHelper": str(SCRIPT)}}}))
-SETTINGS = json.dumps({"env": {"ANTHROPIC_BASE_URL": f"http://127.0.0.1:{LLM_PORT}"}})
+# The user's installed voitta-llm would load in every test window too (and run
+# its own /mcp hook beside this repo's copy); turn it off in these windows only.
+SETTINGS = json.dumps({"env": {"ANTHROPIC_BASE_URL": f"http://127.0.0.1:{LLM_PORT}"},
+                       "enabledPlugins": {"voitta-llm@voitta": False}})
 
 ENV = dict(os.environ, PATH=os.path.expanduser("~/.local/bin") + ":" + os.environ["PATH"], TERM="xterm-256color")
 for k in [k for k in ENV if k.startswith(("CLAUDE", "AI_AGENT")) or k == "CLAUDECODE"]:
@@ -299,10 +302,15 @@ try:
     a.buf = b""
     a.send(b"/mcp", 1.0)
     a.send(b"\r", 0.5)
-    menu_opened = a.wait_for(r"voitta", 60)
-    t_menu = time.time()
-    a.send(b"\x1b", 1.0)
-    a.send(b"\x1b", 1.0)
+    # The terminal draws the result line without spaces ("thiswindow'stoolsupdated"),
+    # and "Manage MCP servers" is also /mcp's own line in the typeahead: look for
+    # the menu's section headings instead.
+    said_updated = a.wait_for(r"this\s*window's\s*tools\s*updated", 60)
+    t_done = time.time()
+    a.pump(3)
+    menu_opened = bool(re.search(r"User\s*MCPs|Built-in\s*MCPs", a.text()))   # OK ends /mcp: no menu
+    if menu_opened:
+        a.send(b"\x1b", 1.0)
     b.pump(4)
     a.pump(2)
     window_popups = [p for p in POPUPS[p0:] if p["title"].startswith("Tools for this")]
@@ -311,16 +319,16 @@ try:
     a_after = [x for x in a_lists if x["t"] > t_mcp]
     b_after = [x for x in b_lists if x["t"] > t_mcp]
     inits_a = [x for x in INITS if x["window"] == wa and x["t"] >= t0]
-    ok = (len(POPUPS) - p0 == 1 and len(window_popups) == 1 and menu_opened
-          and window_popups[0]["t"] < t_menu
+    ok = (len(POPUPS) - p0 == 1 and len(window_popups) == 1 and said_updated and not menu_opened
+          and window_popups[0]["t"] < t_done
           and bool(a_after) and a_after[-1]["tools"] == ["pong"]
           and len(inits_a) == 1                                   # no reconnect: same connection re-listed
           and not b_after and all(x["tools"] == ["ping", "pong"] for x in b_lists))
-    results.append(report("phase 3: /mcp in window A → one popup, then the menu; A re-lists on the same "
-                          "connection without ping; B untouched",
+    results.append(report("phase 3: /mcp in window A → one popup, OK ends /mcp with one line (no menu); "
+                          "A re-lists on the same connection without ping; B untouched",
                           ok, f"popups {len(POPUPS) - p0}, A listings after /mcp {[x['tools'] for x in a_after]}, "
                               f"A connections {len(inits_a)}, B listings after /mcp {len(b_after)}, "
-                              f"menu opened {menu_opened}"))
+                              f"said 'updated' {said_updated}, menu opened {menu_opened}"))
     for x in (a, b):
         x.close()
 finally:
