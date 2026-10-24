@@ -156,6 +156,15 @@ fi
 # briefcase create — downloads CPython support package, installs deps into
 # the bundle's standalone Python. Idempotent if no spec changes.
 APP_DIR="$ROOT/build/voitta_desktop/macos/app/Voitta Desktop.app"
+# A bundle left half-made (an interrupted build, or a packaging step that
+# moved it) still has its folder but lacks the app code or the Python it
+# runs; `briefcase update` then dies on the missing Contents/Resources/app.
+# Treat that like no bundle: start build/ for this app over and create it.
+if [ -d "$APP_DIR" ] && [ "$CLEAN" -eq 0 ] && \
+   { [ ! -d "$APP_DIR/Contents/Resources/app" ] || [ ! -d "$APP_DIR/Contents/Frameworks/Python.framework" ]; }; then
+  echo "[build_app] $APP_DIR is incomplete; recreating it..."
+  rm -rf "$ROOT/build/voitta_desktop/macos/app"
+fi
 if [ ! -d "$APP_DIR" ] || [ "$CLEAN" -eq 1 ]; then
   echo "[build_app] briefcase create..."
   "$VENV/bin/briefcase" create macOS app --no-input
