@@ -171,6 +171,7 @@ class AppBase:
         self._llm = LlmAccounts(port=self.llm_proxy_port)
         self._tracker.on_context = self._llm.record_context
         self._llm.tool_gate = lambda: getattr(self, "_tool_gate", None)  # /mcp per-window tools
+        self._llm.mcp_url = f"http://127.0.0.1:{self.mcp_proxy_port}/mcp"
         self._proxy = AnthropicProxy(
             middlewares=[
                 self._request_logger,

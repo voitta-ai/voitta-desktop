@@ -53,6 +53,7 @@ from ui.menu_builder import MenuBuilderMixin
 from ui.mcp_health_badge import describe, style_alert_item, style_status_button
 from ui.mcp_lifecycle import MCPLifecycleMixin, OAUTH_REDIRECT_PORT
 from ui.session_explorer import SessionExplorerMixin
+from ui.actions import ActionsMixin
 from ui.settings_window import SettingsWindowMixin
 from ui.stored_conversations import StoredConversationsMixin
 
@@ -68,7 +69,7 @@ ICON_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 
 class VoittaDesktopApp(
     AuthFlowsMixin, MCPLifecycleMixin, SessionExplorerMixin, MenuBuilderMixin,
-    SettingsWindowMixin, StoredConversationsMixin, rumps.App, AppBase,
+    SettingsWindowMixin, StoredConversationsMixin, ActionsMixin, rumps.App, AppBase,
 ):
     """The macOS menu bar driver.
 
@@ -162,6 +163,7 @@ class VoittaDesktopApp(
         self._llm = LlmAccounts(port=self.llm_proxy_port)
         self._tracker.on_context = self._llm.record_context
         self._llm.tool_gate = lambda: getattr(self, "_tool_gate", None)  # /mcp per-window tools
+        self._llm.mcp_url = f"http://127.0.0.1:{self.mcp_proxy_port}/mcp"
         self._proxy = AnthropicProxy(
             middlewares=[self._request_logger, self._tracker, self._optimizer_pipeline, self._cache_sim],
             port=self.llm_proxy_port,

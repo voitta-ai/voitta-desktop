@@ -71,6 +71,8 @@ class LlmAccounts:
         # /mcp per-window tool popups (the voitta-llm mod); the app sets
         # tool_gate to a callable returning the MCP server's ToolGateMiddleware.
         self.tool_gate = None
+        # The MCP proxy URL Claude Code should use ("voitta" entry); set by the app.
+        self.mcp_url: str | None = None
         self._popups: dict[str, dict] = {}
         self.window_header_script = window_header.script_path(data_dir.parent)
         self.http: aiohttp.ClientSession | None = None
@@ -488,14 +490,24 @@ class LlmAccounts:
 
     @_same_origin
     async def mod_install(self, request):
-        """Register the bundled marketplace (re-registering it if it points
-        somewhere else, e.g. an older copy), then install or update the mod.
-        ``{"reinstall": true}`` uninstalls it first (keeping its data): a plain
-        install of an installed plugin does nothing."""
         try:
             reinstall = bool((await request.json()).get("reinstall")) if request.can_read_body else False
         except (ValueError, AttributeError):
             reinstall = False
+        result = await self.install_mod(reinstall)
+        return web.json_response(result, status=200 if result["ok"] or result.get("installed") else 500)
+
+    async def configure_mcp_entry(self) -> tuple[str, list[dict]]:
+        """The user-scope ``voitta`` MCP entry: created if missing, pointed at
+        this Voitta's MCP proxy, with the header script on it."""
+        return await window_header.ensure_voitta_entry(self.window_header_script, self.mcp_url, self._claude_cmd)
+
+    async def install_mod(self, reinstall: bool = False) -> dict:
+        """Register the bundled marketplace (re-registering it if it points
+        somewhere else, e.g. an older copy), then install or update the mod,
+        and make the voitta MCP entry right. ``reinstall`` uninstalls the mod
+        first (keeping its data): a plain install of an installed plugin does
+        nothing. Returns ``{"ok", "steps", **mod view}``."""
         steps = []
 
         async def run(*args):
@@ -517,17 +529,17 @@ class LlmAccounts:
         for args in plan:
             code, _ = await run(*args)
             if code != 0:
-                return web.json_response({"ok": False, "steps": steps, **await self._mod_view()}, status=500)
+                return {"ok": False, "steps": steps, **await self._mod_view()}
         view = await self._mod_view()
         if view["installed"] != view["available"]:
             await run("update", f"{MOD_NAME}@{MOD_MARKETPLACE}")
             view = await self._mod_view()
         # /mcp per-window tools need the voitta MCP entry to name its window.
-        _, header_steps = await window_header.ensure_on_voitta_entry(self.window_header_script, self._claude_cmd)
+        _, header_steps = await self.configure_mcp_entry()
         steps += header_steps
         view = await self._mod_view()
         log.info("mod %s: %s", "reinstall" if reinstall else "install", [(s["command"], s["exit"]) for s in steps])
-        return web.json_response({"ok": view["installed"] == view["available"], "steps": steps, **view})
+        return {"ok": view["installed"] == view["available"], "steps": steps, **view}
 
     # ---- /mcp: one Claude Code window's own tools (the voitta-llm mod) ---------
 

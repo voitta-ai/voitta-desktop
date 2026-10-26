@@ -315,7 +315,8 @@
     background: radial-gradient(ellipse at 50% 0%, #0e3a5c 0%, #051a2b 80%);
     border-radius: 12px;
     padding: 8px;
-    height: 480px;
+    height: calc(100vh - 150px);
+    min-height: 440px;
     box-shadow:
       inset 0 0 60px rgba(0, 80, 140, 0.35),
       0 4px 20px rgba(0, 0, 0, 0.4);
@@ -446,9 +447,53 @@
     letter-spacing: 0.5px;
   }
 
+  .info-svg .comp-rect.default { stroke: #ffd83d; stroke-width: 2; }
+  .info-svg .comp-rect.broken { stroke: #ff453a; stroke-width: 2; fill: rgba(255, 69, 58, 0.10); }
+  .info-svg .comp-sub.warn { fill: #ff9f0a; }
+  .info-svg .chip { stroke-width: 1; }
+  .info-svg .chip.ok { fill: rgba(48, 209, 88, 0.14); stroke: rgba(48, 209, 88, 0.7); }
+  .info-svg .chip.todo { fill: rgba(255, 159, 10, 0.14); stroke: rgba(255, 159, 10, 0.8); }
+  .info-svg .chip.bad { fill: rgba(255, 69, 58, 0.14); stroke: rgba(255, 69, 58, 0.8); }
+  .info-svg .chip.off { fill: rgba(180, 220, 255, 0.05); stroke: rgba(140, 180, 220, 0.3); }
+  .info-svg .chip-text { font-family: -apple-system, "Helvetica Neue", sans-serif; font-size: 10px;
+                         font-weight: 600; text-anchor: middle; fill: #d8ecff; }
+  .info-svg .chip-text.ok { fill: #30d158; }
+  .info-svg .chip-text.todo { fill: #ff9f0a; }
+  .info-svg .chip-text.bad { fill: #ff453a; }
+  .info-svg .chip-text.off { fill: rgba(216, 236, 255, 0.45); }
   @keyframes infoMarch {
     to { stroke-dashoffset: -12; }
   }
+
+  /* ── Actions tab ─────────────────────────────────────────────────── */
+  .act-card { display: flex; flex-direction: column; gap: 10px; }
+  .act-intro, .act-note { font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+  .act-note code, .act-intro code { font-family: ui-monospace, monospace; font-size: 11px; }
+  .act-rows { display: flex; flex-direction: column; gap: 6px; }
+  .act-row { display: grid; grid-template-columns: 22px 150px 1fr; gap: 8px; align-items: baseline;
+             font-size: 13px; }
+  .act-row .mark { font-weight: 700; text-align: center; }
+  .act-row .mark.ok { color: #30d158; }
+  .act-row .mark.todo { color: #ff9f0a; }
+  .act-row .mark.bad { color: var(--danger); }
+  .act-row .mark.off { color: var(--text-secondary); }
+  .act-row .name { font-weight: 600; }
+  .act-row .what { color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; }
+  .act-row .what code { font-family: ui-monospace, monospace; font-size: 11px; color: var(--text); }
+  .act-row .change { display: block; font-family: ui-monospace, monospace; font-size: 11px; color: #ff9f0a; }
+  .act-buttons { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .act-summary { font-size: 12px; color: var(--text-secondary); }
+  .act-summary.ok { color: #30d158; }
+  .act-summary.bad { color: var(--danger); }
+  .act-result:empty { display: none; }
+  .act-result { font-size: 12px; border-top: 1px solid var(--card-border); padding-top: 8px; }
+  .act-result .step { margin: 3px 0; }
+  .act-result .step.ok::before { content: "✓ "; color: #30d158; font-weight: 700; }
+  .act-result .step.bad::before { content: "✗ "; color: var(--danger); font-weight: 700; }
+  .act-result details { margin: 2px 0 6px 18px; }
+  .act-result pre { font-family: ui-monospace, monospace; font-size: 11px; white-space: pre-wrap;
+                    background: var(--bg); border: 1px solid var(--card-border); border-radius: 6px;
+                    padding: 6px 8px; margin: 4px 0; max-height: 220px; overflow: auto; }
 </style>
 </head>
 <body>
@@ -461,6 +506,7 @@
   <button class="tab" data-tab="mcps" onclick="switchTab('mcps')">MCPs</button>
   <button class="tab" data-tab="bash" onclick="switchTab('bash')">Bash</button>
   <button class="tab" data-tab="time" onclick="switchTab('time')">Time</button>
+  <button class="tab" data-tab="actions" onclick="switchTab('actions')">Actions</button>
   <button class="tab" data-tab="info" onclick="switchTab('info')">Info</button>
 </nav>
 
@@ -659,159 +705,66 @@
 </div>
 
 <!-- ── Info ───────────────────────────────────────────────────────────────── -->
+<!-- ── Actions: everything that changes something outside Voitta ──────────── -->
+<div class="tab-pane" id="tab-actions">
+  <h2>Claude Code</h2>
+  <div class="card act-card">
+    <div class="act-intro">Makes Claude Code use Voitta Desktop for your user, in every project and window:
+      its LLM requests, its MCP tools, and the <code>/llm</code>, <code>/voitta-store</code> and
+      <code>/mcp</code> commands.</div>
+    <div id="act-claude-rows" class="act-rows"></div>
+    <div class="act-buttons">
+      <button class="btn btn-primary" id="act-configure" onclick="runAction('configure_claude')">Configure Claude</button>
+      <button class="btn" id="act-disconnect" onclick="runAction('disconnect_claude')">Disconnect LLM proxy…</button>
+      <span class="act-summary" id="act-claude-summary"></span>
+    </div>
+    <div class="act-result" id="act-claude-result"></div>
+    <div class="act-note">Claude Code reads its user settings from <code>~/.claude/settings.json</code> and keeps
+      user-level MCP servers in <code>~/.claude.json</code> (where <code>claude mcp add -s user</code> writes).
+      Configure Claude changes both through the same rules Claude Code uses, and keeps everything else in them.
+      New Claude Code windows pick the changes up.</div>
+  </div>
+
+  <h2>/llm, /voitta-store and /mcp in Claude Code</h2>
+  <div class="card act-card">
+    <div class="act-intro">The voitta-llm mod, installed in Claude Code from this app.</div>
+    <div id="act-mod-rows" class="act-rows"></div>
+    <div class="act-buttons">
+      <button class="btn" id="act-mod" onclick="runAction(_modAction())">Install</button>
+      <span class="act-summary" id="act-mod-summary"></span>
+    </div>
+    <div class="act-result" id="act-mod-result"></div>
+  </div>
+
+  <h2>MCP tools</h2>
+  <div class="card act-card">
+    <div class="act-buttons">
+      <button class="btn" onclick="runAction('refresh_tools')">Refresh LLM tools…</button>
+      <button class="btn" onclick="runAction('reset_tool_gate')">Reset tool gate</button>
+      <span class="act-summary" id="act-tools-summary"></span>
+    </div>
+    <div class="act-note">Refresh asks each MCP server for its tools again. Reset forgets the answers given in
+      the tool popup, so the next tool listing asks again.</div>
+    <div class="act-rows" id="act-codex-rows"></div>
+  </div>
+
+  <h2>Logs and data</h2>
+  <div class="card act-card">
+    <div class="act-buttons">
+      <button class="btn" onclick="runAction('show_log')">Show desktop.log</button>
+      <button class="btn" onclick="runAction('stored_conversations')">Stored conversations…</button>
+    </div>
+  </div>
+</div>
+
 <div class="tab-pane" id="tab-info">
   <div class="info-stage">
-    <!--
-      Single SVG, viewBox 480x500. All layout is grid-aligned: Claude at top
-      center; LLM proxy bottom-left, MCP proxy bottom-right; everything else
-      flows from those four anchors via H/V-only paths.
-
-      Coordinate map:
-        Claude:    (180, 70)   120 wide, 70 tall  → center x=240
-        LLM box:   (40, 220)   140 wide, 90 tall  → center x=110
-        MCP box:   (300, 220)  140 wide, 90 tall  → center x=370
-        Upstream:  (40, 360)   140 wide, 60 tall
-        Backends:  (240, 360)  220 wide, 60 tall
-    -->
-    <svg class="info-svg" viewBox="0 0 480 500" preserveAspectRatio="xMidYMid meet">
-
-      <!-- ── Status pills (top-right) ─────────────────────────────────── -->
-      <g transform="translate(310, 10)">
-        <rect class="pill-bg" width="160" height="58" rx="6"/>
-        <text class="pill-key" x="10" y="18">LLM</text>
-        <text class="pill-val ok" id="info-llm-pill" x="150" y="18">—</text>
-        <text class="pill-key" x="10" y="36">CLAUDE MCP</text>
-        <text class="pill-val ok" id="info-mcp-claude-pill" x="150" y="36">—</text>
-        <text class="pill-key" x="10" y="54">CODEX MCP</text>
-        <text class="pill-val ok" id="info-mcp-codex-pill" x="150" y="54">—</text>
-      </g>
-
-      <!-- ── LLM routing (top-left): the default account, and what last
-           actually answered (an account's own model, not what Claude Code asked for). -->
-      <g transform="translate(10, 10)" class="clickable" onclick="switchTab('llms')">
-        <title>Open Settings → LLMs</title>
-        <rect class="pill-bg" width="150" height="72" rx="6"/>
-        <text class="pill-key" x="10" y="17">DEFAULT LLM</text>
-        <text class="pill-val neutral" style="text-anchor:start" id="info-default-pill" x="10" y="31">—</text>
-        <text class="pill-key" x="10" y="51">LAST ANSWERED BY</text>
-        <text class="pill-val neutral" style="text-anchor:start" id="info-model-pill" x="10" y="65">—</text>
-      </g>
-
-      <!-- ── CLAUDE CODE (top center) ─────────────────────────────────── -->
-      <g id="info-comp-claude" transform="translate(180, 70)">
-        <rect class="comp-rect" id="info-claude-rect" width="120" height="70" rx="10"/>
-        <!-- Icon: terminal cursor (chevron + underscore) -->
-        <g transform="translate(46, 16)">
-          <path class="icon-stroke live" id="info-claude-icon"
-                d="M 4 6 L 12 14 L 4 22 M 16 24 L 28 24"/>
-        </g>
-        <text class="comp-label" x="60" y="60">CLAUDE CODE</text>
-      </g>
-      <!-- Conversations indicator (small text, just below Claude box) -->
-      <text class="comp-sub" id="info-claude-sub" x="240" y="155">—</text>
-
-      <!-- ── Trunk and arms: Claude → LLM, Claude → MCP ────────────────
-           Path 1 (LLM):  (240, 158)  ↓  (240, 192)  ←  (110, 192)  ↓  (110, 220) -->
-      <path id="info-arrow-llm" class="arrow live"
-            d="M 240 158 V 192 H 110 V 218" />
-      <polygon id="info-arrow-llm-tip" points="105,212 115,212 110,222" fill="#ffd83d"/>
-
-      <!-- Path 2 (MCP): mirror -->
-      <path id="info-arrow-mcp" class="arrow live"
-            d="M 240 158 V 192 H 370 V 218" />
-      <polygon id="info-arrow-mcp-tip" points="365,212 375,212 370,222" fill="#ffd83d"/>
-
-      <!-- ── LLM PROXY (bottom-left) ──────────────────────────────────── -->
-      <g id="info-comp-llm" transform="translate(40, 220)">
-        <rect class="comp-rect" id="info-llm-rect" width="140" height="90" rx="10"/>
-        <!-- Icon: lightning bolt -->
-        <path class="icon-stroke live" id="info-llm-icon"
-              d="M 76 18 L 64 44 L 74 44 L 68 60 L 80 36 L 70 36 L 76 18 Z"
-              fill="rgba(255,216,61,0.15)"/>
-        <text class="comp-label" x="70" y="80">LLM PROXY</text>
-      </g>
-
-      <!-- ── MCP PROXY (bottom-right) ─────────────────────────────────── -->
-      <g id="info-comp-mcp" transform="translate(300, 220)">
-        <rect class="comp-rect" id="info-mcp-rect" width="140" height="90" rx="10"/>
-        <!-- Icon: chip — square with pins -->
-        <g transform="translate(56, 18)" id="info-mcp-icon">
-          <rect class="icon-stroke live" x="0" y="0" width="28" height="28" rx="2" fill="rgba(48,209,88,0.10)"/>
-          <line class="icon-stroke live" x1="6"  y1="-4" x2="6"  y2="0"/>
-          <line class="icon-stroke live" x1="14" y1="-4" x2="14" y2="0"/>
-          <line class="icon-stroke live" x1="22" y1="-4" x2="22" y2="0"/>
-          <line class="icon-stroke live" x1="6"  y1="28" x2="6"  y2="32"/>
-          <line class="icon-stroke live" x1="14" y1="28" x2="14" y2="32"/>
-          <line class="icon-stroke live" x1="22" y1="28" x2="22" y2="32"/>
-        </g>
-        <text class="comp-label" x="70" y="80">MCP PROXY</text>
-      </g>
-
-      <!-- ── LLM Proxy → Upstream ─────────────────────────────────────── -->
-      <path id="info-arrow-upstream" class="arrow live"
-            d="M 110 310 V 358" />
-      <polygon id="info-arrow-upstream-tip" points="105,352 115,352 110,362" fill="#ffd83d"/>
-
-      <!-- ── MCP Proxy → Backends ─────────────────────────────────────── -->
-      <path id="info-arrow-backends" class="arrow live"
-            d="M 370 310 V 358" />
-      <polygon id="info-arrow-backends-tip" points="365,352 375,352 370,362" fill="#ffd83d"/>
-
-      <!-- ── LLM ACCOUNTS (bottom-bottom-left) ────────────────────────── -->
-      <!-- One dot per account the LLM proxy can route to ("As is" first); the
-           default is ringed. Each window goes to its /llm pick or the default. -->
-      <g id="info-comp-upstream" transform="translate(20, 360)" class="clickable"
-         onclick="switchTab('llms')">
-        <title>Open Settings → LLMs</title>
-        <rect class="comp-rect" id="info-upstream-rect" width="180" height="60" rx="10"/>
-        <text class="comp-sub" x="90" y="14" style="letter-spacing:2px;">LLM ACCOUNTS</text>
-        <g id="info-account-dots" transform="translate(18, 32)"></g>
-        <text class="comp-sub" x="90" y="52" id="info-upstream-host">—</text>
-      </g>
-
-      <!-- ── BACKENDS (bottom-bottom-right) ───────────────────────────── -->
-      <g id="info-comp-backends" transform="translate(240, 360)">
-        <rect class="comp-rect" id="info-backends-rect" width="220" height="60" rx="10"/>
-        <text class="comp-sub" x="110" y="14" style="letter-spacing:2px;">BACKENDS</text>
-        <!-- Up to 8 dots in a row, generated by JS -->
-        <g id="info-backend-dots" transform="translate(20, 32)"></g>
-        <text class="comp-sub" x="110" y="52" id="info-backends-summary">—</text>
-      </g>
-
-      <!-- ── X marks (broken-lane overlay) ────────────────────────────── -->
-      <g id="info-x-llm" style="display:none;" transform="translate(175, 192)">
-        <circle class="x-circle" r="13"/>
-        <line class="x-stroke" x1="-6" y1="-6" x2="6" y2="6"/>
-        <line class="x-stroke" x1="6"  y1="-6" x2="-6" y2="6"/>
-      </g>
-      <g id="info-x-mcp" style="display:none;" transform="translate(305, 192)">
-        <circle class="x-circle" r="13"/>
-        <line class="x-stroke" x1="-6" y1="-6" x2="6" y2="6"/>
-        <line class="x-stroke" x1="6"  y1="-6" x2="-6" y2="6"/>
-      </g>
-
-      <!-- ── Hint line (only when something is broken) ────────────────── -->
-      <text class="hint-text" id="info-hint" x="240" y="442" style="display:none;">—</text>
-
-      <!-- ── Headline metric: SAVED $X.XX ─────────────────────────────── -->
-      <g transform="translate(60, 450)">
-        <rect class="saved-bg" width="360" height="40" rx="8"/>
-        <text class="saved-label" x="20" y="26">SAVED</text>
-        <text class="saved-value" id="info-saved-value" x="346" y="29">$0.00</text>
-      </g>
-
-    </svg>
+    <!-- Drawn by _setInfoState (settings.js) from the live state, every ~3 s. -->
+    <svg class="info-svg" id="info-svg" viewBox="0 0 920 590" preserveAspectRatio="xMidYMid meet"></svg>
   </div>
 </div>
 
 <div class="bottom-bar">
-  <!-- Bottom-left button: only visible on the Proxies tab. Label flips
-       between "Connect Claude" and "Disconnect Claude" based on the live
-       state of ~/.claude/settings.json (computed Python-side and injected
-       as window._claudeLinked at popup-open). -->
-  <button class="btn" id="claude-link-btn"
-          style="margin-right:auto; display:none;"
-          onclick="toggleClaudeLink()">Connect Claude</button>
   <button class="btn" onclick="cancel()">Cancel</button>
   <button class="btn btn-primary" onclick="save()">Save</button>
 </div>

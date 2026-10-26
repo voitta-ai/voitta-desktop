@@ -100,6 +100,8 @@ class _InfoTicker(NSObject):
         try:
             state = app._collect_info_state()
             js = f"_setInfoState({json.dumps(state)})"
+            if hasattr(app, "_actions_state"):
+                js += f";_setActionsState({json.dumps(app._actions_state())})"
             webview.evaluateJavaScript_completionHandler_(js, None)
         except Exception as e:
             logger.debug("info ticker failed: %s", e)
@@ -285,13 +287,21 @@ class _SettingsTitleObserver(NSObject):
             runtime.run_blocking(_do_log)
             return
 
-        if title.startswith(("VOITTA_OPEN_URL:", "VOITTA_COPY:", "VOITTA_SETTINGS_SIZE:")):
+        if title.startswith(("VOITTA_OPEN_URL:", "VOITTA_COPY:")):
             # From the LLMs tab (settings.js's _bridge): "<command>:<payload>#<salt>".
             obj.evaluateJavaScript_completionHandler_(
                 "document.title = 'Voitta Desktop — Settings'", None
             )
             command, _, rest = title.partition(":")
             self._llm_tab_request(command, rest.rpartition("#")[0])
+            return
+
+        if title.startswith("VOITTA_ACTION:"):
+            # Settings → Actions: "VOITTA_ACTION:<name>#<salt>".
+            obj.evaluateJavaScript_completionHandler_(
+                "document.title = 'Voitta Desktop — Settings'", None
+            )
+            self._app._run_action(title.partition(":")[2].rpartition("#")[0])
             return
 
         if title.startswith("VOITTA_CLAUDE_LINK_TOGGLE:"):
@@ -329,21 +339,6 @@ class _SettingsTitleObserver(NSObject):
             board = NSPasteboard.generalPasteboard()
             board.clearContents()
             board.setString_forType_(unquote(payload), NSPasteboardTypeString)
-        elif command == "VOITTA_SETTINGS_SIZE":
-            # Wide for the LLM accounts table; back to where it was otherwise.
-            frame = self._window.frame()
-            if payload == "wide":
-                self._normal_frame = frame
-                width, height = max(frame.size.width, 1240), max(frame.size.height, 860)
-                screen = self._window.screen().visibleFrame()
-                width, height = min(width, screen.size.width), min(height, screen.size.height)
-                top = frame.origin.y + frame.size.height
-                x = max(screen.origin.x, min(frame.origin.x, screen.origin.x + screen.size.width - width))
-                y = max(screen.origin.y, top - height)
-                self._window.setFrame_display_animate_(((x, y), (width, height)), True, True)
-            elif getattr(self, "_normal_frame", None) is not None:
-                self._window.setFrame_display_animate_(self._normal_frame, True, True)
-                self._normal_frame = None
 
     def onSaveData_error_(self, result, error):
         # Close the window immediately so the user isn't blocked

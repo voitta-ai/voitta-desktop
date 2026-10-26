@@ -50,35 +50,25 @@ A dog icon appears in your menu bar. That's it — both proxies start automatica
 
 ### 4. Configure Claude Code
 
-Claude Code needs two things pointed at Voitta Desktop:
+Settings → **Actions** → **Configure Claude**. It sets up Claude Code for your
+user (every project and window) in the three places Claude Code reads, and
+shows what it will change before you click:
 
-#### A. LLM Proxy — set the base URL
+| What | Where | Value |
+|---|---|---|
+| LLM proxy | `~/.claude/settings.json` → `env.ANTHROPIC_BASE_URL` | `http://127.0.0.1:<LLM proxy port>` |
+| MCP server | Claude Code's user MCP servers, `~/.claude.json` → `voitta` | `http://127.0.0.1:<MCP proxy port>/mcp`, with Voitta's header script |
+| `/llm` mod | `claude plugin install voitta-llm@voitta` | `/llm`, `/voitta-store`, the `/mcp` tool popup |
 
-Add to your shell profile (`~/.zshrc` or `~/.bashrc`):
+Everything else in those files is kept. The MCP entry and the mod are changed
+only through Claude Code's own CLI (`claude mcp add-json -s user`,
+`claude plugin`). A previous `ANTHROPIC_BASE_URL` (a company gateway, say) is
+kept behind Voitta as its upstream and restored by **Disconnect LLM proxy**.
+Running it again repairs whatever has drifted (a changed port, a missing header
+script); open Claude Code windows pick the changes up when restarted. If
+`CLAUDE_CONFIG_DIR` is set, both files are in that folder instead.
 
-```bash
-export ANTHROPIC_BASE_URL=http://127.0.0.1:18900
-```
-
-This routes all Claude API traffic through the local proxy, enabling conversation tracking, token usage visualization, and context optimization (image stripping, stale file read removal).
-
-Your `ANTHROPIC_API_KEY` stays the same — the proxy forwards it to `api.anthropic.com` transparently.
-
-#### B. MCP Auth Proxy — register the MCP server
-
-Add to your project's `.mcp.json` (or `~/.claude/.mcp.json` for global):
-
-```json
-{
-  "mcpServers": {
-    "voitta": {
-      "url": "http://127.0.0.1:18765/mcp"
-    }
-  }
-}
-```
-
-This gives Claude access to all mounted backends through a single endpoint:
+The MCP server gives Claude access to all mounted backends through one endpoint:
 
 | Tool prefix | Backend | What it does |
 |---|---|---|
@@ -86,24 +76,13 @@ This gives Claude access to all mounted backends through a single endpoint:
 | `google_workspace_*` | Google Workspace | Gmail, Drive, Sheets, Docs, Calendar, Slides |
 | `jira_*` | Jira Cloud | Issues, sprints, boards, comments |
 
-#### Full example — `.mcp.json` in your project root:
+By hand instead: `claude mcp add --transport http -s user voitta
+http://127.0.0.1:18765/mcp`, and `"env": {"ANTHROPIC_BASE_URL":
+"http://127.0.0.1:18900"}` in `~/.claude/settings.json`.
 
-```json
-{
-  "mcpServers": {
-    "voitta": {
-      "url": "http://127.0.0.1:18765/mcp"
-    }
-  }
-}
-```
-
-#### Full example — `~/.zshrc` addition:
-
-```bash
-# Route Claude Code through Voitta Desktop proxy
-export ANTHROPIC_BASE_URL=http://127.0.0.1:18900
-```
+The **Actions** tab also holds the other one-off actions: install/update the
+mod on its own, refresh MCP tools, reset the tool gate, show the log, stored
+conversations.
 
 ### 5. Authenticate providers
 
@@ -126,7 +105,7 @@ Anthropic- or OpenAI-compatible endpoint) — and sets the **default**. The
 menu bar's **LLM ▸** submenu switches the default too.
 
 Each Claude Code window can pick its own account with `/llm`, a Claude Code
-mod (Claude Code 2.1.287+) installed with one click from the LLMs tab.
+mod (Claude Code 2.1.287+) installed with Settings → Actions → Configure Claude.
 Requests still pass every optimizer first; non-Anthropic providers are
 translated to and from the Anthropic Messages API. There is no fallback: a
 failing account returns its error to Claude Code. Accounts live in
@@ -144,7 +123,7 @@ Voitta's tool popup for **that window only**; the answer applies to the window
 at once (no reconnect) and lasts until it closes or Voitta restarts, while other
 windows keep the saved selection. It needs Voitta's header script
 (`~/.voitta-desktop/bin/claude-window-header`) on the user-level `voitta` MCP
-entry, which **Install / Reinstall** in Settings → LLMs adds with `claude mcp`;
+entry, which Settings → Actions → **Configure Claude** adds with `claude mcp`;
 it applies to windows opened after that. Windows without the mod are
 unchanged.
 

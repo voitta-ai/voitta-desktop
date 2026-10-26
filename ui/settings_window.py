@@ -229,13 +229,14 @@ class SettingsWindowMixin:
         gen = self._settings_gen
 
         mask = 1 | 2 | 8
-        # Wide enough for every tab label on one row (8 tabs and counting).
-        frame = NSMakeRect(200, 200, 780, 720)
+        # One size for every tab: wide enough for the LLM accounts table and
+        # every tab label on one row (no tab resizes the window).
+        frame = NSMakeRect(200, 200, 980, 760)
         window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             frame, mask, NSBackingStoreBuffered, False
         )
         window.setTitle_("Voitta Desktop — Settings")
-        window.setContentMinSize_((640, 480))
+        window.setContentMinSize_((760, 520))
         window.setReleasedWhenClosed_(False)
         window.center()
 
@@ -265,6 +266,7 @@ class SettingsWindowMixin:
             "/*INJECT_CONFIG*/",
             f"var _initialConfig = {_safe_json(self._config)};\n"
             f"var _initialClaudeLinked = {_safe_json(linked)};\n"
+            f"var _initialActions = {_safe_json(self._actions_state() if hasattr(self, '_actions_state') else None)};\n"
             f"var _initialInfo = {_safe_json(info_state)};\n"
             f"var _toolTree = {_safe_json(tool_tree)};\n"
             # The LLMs tab embeds the LLM proxy's own accounts page.
@@ -457,8 +459,51 @@ class SettingsWindowMixin:
                 state = "empty"
             backends.append({"label": label, "tools_count": count, "state": state})
 
+        # What Claude Code has set up for this user (the Actions tab's view;
+        # the mod version is the last one Actions asked Claude Code for).
+        setup = {}
+        if hasattr(self, "_actions_state"):
+            try:
+                a = self._actions_state()
+                me = a.get("mcp_entry") or {}
+                setup = {
+                    "settings_linked": a["settings"]["linked"],
+                    "mcp_entry_ok": bool(me.get("present") and me.get("url_ok")),
+                    "header": me.get("header"),
+                    "mod": a.get("mod") or {},
+                    "mod_known": bool(a.get("mod")) and not (a.get("mod") or {}).get("error"),
+                }
+            except Exception:
+                logger.debug("info: setup state failed", exc_info=True)
+        health = getattr(self, "_mcp_health", None)
+        mcp_health = {}
+        if health is not None:
+            snap = health.snapshot()
+            mcp_health = {"state": snap["state"], "failures": snap["failures"], "since": snap["since"]}
+        stored = 0
+        if hasattr(self, "_stored_dir"):
+            try:
+                from llmgw import conversations
+                stored = conversations.count(self._stored_dir())
+            except Exception:
+                pass
+        gate = {
+            "claude_silent": bool(getattr(self, "suppress_claude_popup", False)),
+            "codex_silent": bool(getattr(self, "suppress_codex_popup", True)),
+            "disabled": len(getattr(self, "disabled_tools", set()) or ()),
+            "tools": sum(b["tools_count"] for b in backends),
+        }
+        pipeline = self._optimizer_pipeline
+        optimizer = {"enabled": bool(pipeline.enabled),
+                     "haiku_only": bool(getattr(pipeline, "haiku_only", False))}
+
         return {
             "llm": self._collect_llm_info(),
+            "setup": setup,
+            "mcp_health": mcp_health,
+            "gate": gate,
+            "optimizer": optimizer,
+            "stored_conversations": stored,
             "llm_wired": llm_wired,
             "mcp_wired": mcp_wired,
             "mcp_wired_claude": mcp_wired_claude,
@@ -563,56 +608,49 @@ class SettingsWindowMixin:
 
         def _on_confirm():
             try:
-                apply_changes(plan)
+                self._apply_claude_link_plan(plan)
             except Exception as e:
                 logger.error("Claude link apply failed: %s", e, exc_info=True)
                 _notify("Voitta Desktop", "Claude link failed", str(e)[:200])
                 return
-
-            # Record the user's intent. Connect → armed=True so the next
-            # start auto-arms after quit-time disarm; Disconnect → armed=False
-            # so quit stops touching settings.json.
-            self.claude_link_armed = (plan.target == "connect")
-            self._config.setdefault("claude_link", {})["armed"] = self.claude_link_armed
-            save_config(self._config)
-
-            # Inherited upstream goes into apps.json + the live proxy. The
-            # llm_proxy_port hasn't changed, so the running proxy keeps its
-            # listener; only the upstream URL it forwards to is different.
-            # The aiohttp proxy reads upstream_url at construction time, so
-            # a full effect requires restart — surface that.
-            if plan.voitta_upstream_change is not None:
-                new_upstream = plan.voitta_upstream_change.new
-                self._config.setdefault("llm_proxy", {})["upstream_url"] = new_upstream
-                save_config(self._config)
-                self.llm_upstream_url = new_upstream
-                _notify(
-                    "Voitta Desktop",
-                    "Upstream URL updated",
-                    "Restart Voitta Desktop for the new upstream to take effect.",
-                )
-
-            # Push the new state into the still-open settings webview so the
-            # button flips label without requiring the user to reopen it.
-            new_state = plan.target == "connect"
-            refs = getattr(self, "_settings_refs", None)
-            if refs is not None:
-                wv = refs[1]
-                @on_main_thread
-                def _flip():
-                    try:
-                        wv.evaluateJavaScript_completionHandler_(
-                            f"_setClaudeLinkState({json.dumps(new_state)})", None
-                        )
-                    except Exception:
-                        logger.debug("claude-link state flip failed", exc_info=True)
-                _flip()
-
             verb = "Connected" if plan.target == "connect" else "Disconnected"
             _notify("Voitta Desktop", verb + " Claude Code", "~/.claude/settings.json")
 
         popup.set_handlers(_on_confirm, lambda: None)
         popup.open(plan, title=title, ok_label=ok_label)
+
+    def _apply_claude_link_plan(self, plan) -> list[str]:
+        """Write a Connect/Disconnect plan to ~/.claude/settings.json and keep
+        Voitta's own bookkeeping in step. Used by the Connect popup and by
+        Settings → Actions → Configure Claude. Raises if the file can't be
+        written. Returns notes worth showing (e.g. "restart needed")."""
+        from claude_link import apply_changes
+        apply_changes(plan)
+        notes = []
+        # Record the user's intent. Connect → armed=True so the next start
+        # auto-arms after quit-time disarm; Disconnect → armed=False so quit
+        # stops touching settings.json.
+        self.claude_link_armed = (plan.target == "connect")
+        self._config.setdefault("claude_link", {})["armed"] = self.claude_link_armed
+        save_config(self._config)
+        # Inherited upstream goes into apps.json + the live proxy. The
+        # llm_proxy_port hasn't changed, so the running proxy keeps its
+        # listener; only the upstream URL it forwards to is different. The
+        # aiohttp proxy reads upstream_url at construction time, so a full
+        # effect requires a restart — say so.
+        if plan.voitta_upstream_change is not None:
+            new_upstream = plan.voitta_upstream_change.new
+            self._config.setdefault("llm_proxy", {})["upstream_url"] = new_upstream
+            save_config(self._config)
+            self.llm_upstream_url = new_upstream
+            notes.append(f"Voitta's upstream is now {new_upstream}: restart Voitta Desktop for it to take effect")
+            _notify("Voitta Desktop", "Upstream URL updated",
+                    "Restart Voitta Desktop for the new upstream to take effect.")
+        # The Actions tab shows the new state at once.
+        push = getattr(self, "_push_actions", None)
+        if push:
+            push()
+        return notes
 
     # ── LLM Tools Status popup ───────────────────────────────────────────────
 

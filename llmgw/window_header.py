@@ -104,18 +104,27 @@ def status(script: Path, config_path: Path | None = None) -> str:
 
 
 async def ensure_on_voitta_entry(script: Path, run_claude, config_path: Path | None = None) -> tuple[str, list[dict]]:
-    """Put the script on the user's voitta entry, keeping every other field.
+    """Put the script on the user's existing voitta entry (never creates one)."""
+    return await ensure_voitta_entry(script, None, run_claude, config_path)
 
-    ``run_claude(*args) -> (exit code, output)`` runs ``claude <args>``.
-    Returns (status, steps). Never replaces a headersHelper the user set
-    themselves, and puts the original entry back if the new one is refused.
+
+async def ensure_voitta_entry(script: Path, mcp_url: str | None, run_claude,
+                              config_path: Path | None = None) -> tuple[str, list[dict]]:
+    """Make the user-scope ``voitta`` MCP entry right, keeping every other field.
+
+    With ``mcp_url``: create the entry if it is missing (an HTTP server at that
+    URL), and point it there if it points elsewhere (a port changed). Always:
+    put Voitta's header script on it, unless the user set a header script of
+    their own (left alone: ``other_helper``). An entry that is not HTTP (e.g. a
+    command the user wired themselves) is left alone too (``not_http``).
+
+    ``run_claude(*args) -> (exit code, output)`` runs ``claude <args>``; the
+    entry is changed only through Claude Code's own CLI (``claude mcp
+    remove`` + ``add-json -s user``), and put back as it was if the new one is
+    refused. Returns (status, steps).
     """
     ensure_script(script)
-    current = status(script, config_path)
-    if current not in ("missing", "stale"):
-        return current, []
     entry = voitta_entry(config_path)
-    wanted = {**entry, "headersHelper": str(script)}
     steps: list[dict] = []
 
     async def run(*args):
@@ -125,11 +134,44 @@ async def ensure_on_voitta_entry(script: Path, run_claude, config_path: Path | N
                       "exit": code, "output": out[-600:]})
         return code
 
-    if await run("mcp", "remove", "voitta", "-s", "user") != 0:
-        return "missing", steps
-    if await run("mcp", "add-json", "-s", "user", "voitta", json.dumps(wanted)) == 0:
-        log.info("voitta MCP entry: headersHelper set to %s", script)
+    if entry is None:
+        if not mcp_url:
+            return "no_entry", steps
+        wanted = {"type": "http", "url": mcp_url, "headersHelper": str(script)}
+        if await run("mcp", "add-json", "-s", "user", "voitta", json.dumps(wanted)) == 0:
+            log.info("voitta MCP entry: added (%s)", mcp_url)
         return status(script, config_path), steps
-    log.error("voitta MCP entry: the entry with headersHelper was refused; putting the original back")
+
+    current = status(script, config_path)
+    if current == "not_http":
+        return current, steps
+    wanted = dict(entry)
+    if mcp_url and entry.get("url") != mcp_url:
+        wanted["url"] = mcp_url
+    if current in ("missing", "stale"):
+        wanted["headersHelper"] = str(script)
+    if wanted == entry:
+        return current, steps
+
+    if await run("mcp", "remove", "voitta", "-s", "user") != 0:
+        return current, steps
+    if await run("mcp", "add-json", "-s", "user", "voitta", json.dumps(wanted)) == 0:
+        log.info("voitta MCP entry: updated (url %s, headersHelper %s)", wanted.get("url"),
+                 wanted.get("headersHelper"))
+        return status(script, config_path), steps
+    log.error("voitta MCP entry: the updated entry was refused; putting the original back")
     await run("mcp", "add-json", "-s", "user", "voitta", json.dumps(entry))
     return status(script, config_path), steps
+
+
+def entry_summary(script: Path, mcp_url: str | None, config_path: Path | None = None) -> dict:
+    """What the Actions tab shows about the user-scope voitta entry."""
+    entry = voitta_entry(config_path)
+    return {
+        "present": entry is not None,
+        "url": (entry or {}).get("url"),
+        "url_ok": bool(entry) and (not mcp_url or entry.get("url") == mcp_url),
+        "expected_url": mcp_url,
+        "header": status(script, config_path),
+        "config_file": str(config_path or claude_user_config()),
+    }

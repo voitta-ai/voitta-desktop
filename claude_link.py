@@ -25,9 +25,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
-CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
+import os
+
+# Where Claude Code keeps a user's settings: ~/.claude/settings.json and
+# ~/.claude.json, or both inside $CLAUDE_CONFIG_DIR when that is set (as
+# Claude Code itself does; the test suite points it at a throwaway folder).
+_CLAUDE_DIR = Path(os.environ["CLAUDE_CONFIG_DIR"]).expanduser() if os.environ.get("CLAUDE_CONFIG_DIR") else None
+CLAUDE_SETTINGS_PATH = (_CLAUDE_DIR or Path.home() / ".claude") / "settings.json"
 # `claude mcp add` writes here, not to settings.json. Claude Code merges both.
-CLAUDE_USER_CONFIG_PATH = Path.home() / ".claude.json"
+CLAUDE_USER_CONFIG_PATH = (_CLAUDE_DIR / ".claude.json") if _CLAUDE_DIR else Path.home() / ".claude.json"
 CODEX_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
 
 

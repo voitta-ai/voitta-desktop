@@ -856,16 +856,13 @@ function switchTab(name) {
   document.querySelectorAll('.tab-pane').forEach(function(p) {
     p.classList.toggle('active', p.id === 'tab-' + name);
   });
-  var linkBtn = document.getElementById('claude-link-btn');
-  if (linkBtn) linkBtn.style.display = (name === 'proxies') ? '' : 'none';
-  // The LLM accounts page is a wide table: widen the window while it shows.
-  if (name === 'llms' && _currentTab !== 'llms') {
+  if (name === 'llms') {
     var frame = document.getElementById('llm-frame');
     if (!frame.src) frame.src = _llmUrl;
-    _bridge('VOITTA_SETTINGS_SIZE:wide');
-  } else if (name !== 'llms' && _currentTab === 'llms') {
-    _bridge('VOITTA_SETTINGS_SIZE:normal');
   }
+  // Which mod Claude Code has installed takes `claude plugin list` (slow), so
+  // it is asked when the Actions tab opens, not on every refresh.
+  if (name === 'actions' && _currentTab !== 'actions') runAction('refresh');
   _currentTab = name;
 }
 
@@ -888,188 +885,435 @@ if (typeof _initialTab === 'string' && _initialTab) {
   document.addEventListener('DOMContentLoaded', function() { switchTab(_initialTab); });
 }
 
-// Connect/Disconnect button — fires a salt-prefixed title so KVO observes
-// the change even when the button is clicked twice in succession.
-function toggleClaudeLink() {
-  var salt = Math.random().toString(36).slice(2);
-  document.title = 'VOITTA_CLAUDE_LINK_TOGGLE:' + salt;
+// ── Actions tab ───────────────────────────────────────────────────────────
+// State comes from Python (ui/actions.py): _setActionsState(state) with the
+// Info refresh and after each action, _setActionResult(name, result) when an
+// action finishes. Buttons send "VOITTA_ACTION:<name>" over the title bridge.
+// Everything shown is built with textContent: paths and command output are
+// not trusted as HTML.
+
+var _actions = null;
+var _actionResults = {};
+
+function runAction(name) {
+  _bridge('VOITTA_ACTION:' + name);
 }
 
-// Called from Python after the link state changes (or at popup open).
-// `linked` is a boolean from is_voitta_connected().
-function _setClaudeLinkState(linked) {
-  var btn = document.getElementById('claude-link-btn');
-  if (!btn) return;
-  btn.textContent = linked ? 'Disconnect Claude' : 'Connect Claude';
+function _setActionsState(s) {
+  _actions = s;
+  renderActions();
+}
+
+function _setActionResult(name, result) {
+  _actionResults[name] = result;
+  renderActions();
+}
+
+function _el(tag, cls, text) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined && text !== null) e.textContent = text;
+  return e;
+}
+
+// what: an array of strings and {code: "..."} pieces.
+function _actRow(state, name, what, change) {
+  var row = _el('div', 'act-row');
+  var marks = { ok: '✓', todo: '○', bad: '✗', off: '–' };
+  row.appendChild(_el('span', 'mark ' + state, marks[state] || '?'));
+  row.appendChild(_el('span', 'name', name));
+  var cell = _el('span', 'what');
+  (what || []).forEach(function(part) {
+    if (typeof part === 'string') cell.appendChild(document.createTextNode(part));
+    else cell.appendChild(_el('code', null, part.code));
+  });
+  (change || []).forEach(function(c) { cell.appendChild(_el('span', 'change', c)); });
+  row.appendChild(cell);
+  return row;
+}
+
+function _modAction() {
+  var m = (_actions && _actions.mod) || {};
+  return (m.installed && m.installed === m.available) ? 'reinstall_mod' : 'install_mod';
+}
+
+function _renderResult(box, result) {
+  box.textContent = '';
+  if (!result) return;
+  (result.steps || []).forEach(function(st) {
+    box.appendChild(_el('div', 'step ' + (st.ok ? 'ok' : 'bad'), st.step + ': ' + (st.detail || '')));
+    var log = st.log || [];
+    if (log.length) {
+      var d = _el('details');
+      d.appendChild(_el('summary', null, log.length + ' command' + (log.length === 1 ? '' : 's') + ' run'));
+      d.appendChild(_el('pre', null, log.map(function(c) {
+        return '$ ' + c.command + '   (exit ' + c.exit + ')' + (c.output ? '\n' + c.output : '');
+      }).join('\n\n')));
+      box.appendChild(d);
+    }
+  });
+  if (result.message) box.appendChild(_el('div', 'step ' + (result.ok ? 'ok' : 'bad'), result.message));
+}
+
+function renderActions() {
+  var s = _actions;
+  if (!s) return;
+  var busy = s.busy || [];
+  var st = s.settings || {}, me = s.mcp_entry || {}, mod = s.mod || null;
+
+  // ── Claude Code ──
+  var rows = document.getElementById('act-claude-rows');
+  rows.textContent = '';
+  var todo = 0;
+
+  if (st.malformed) {
+    rows.appendChild(_actRow('bad', 'LLM proxy', [{code: st.path}, ' is not valid JSON; fix it by hand first.']));
+    todo++;
+  } else if (st.linked) {
+    rows.appendChild(_actRow('ok', 'LLM proxy', [{code: st.path}, ' sends Claude Code\'s requests to ', {code: st.llm_url}]));
+  } else {
+    var ch = (st.changes || []).map(function(c) {
+      return c.label + ': ' + (c.old === null ? '(not set)' : c.old) + ' → ' + (c.new === null ? '(removed)' : c.new);
+    });
+    if (st.upstream_change) {
+      ch.push('Voitta upstream: ' + st.upstream_change.old + ' → ' + st.upstream_change.new + ' (your current one, kept behind Voitta)');
+    }
+    rows.appendChild(_actRow('todo', 'LLM proxy', [{code: st.path}, ' will send Claude Code\'s requests to ', {code: st.llm_url}], ch));
+    todo++;
+  }
+
+  var url = me.expected_url || '';
+  if (!me.present) {
+    rows.appendChild(_actRow('todo', 'MCP server', ['will add ', {code: 'voitta'}, ' → ', {code: url},
+      ' to Claude Code\'s user MCP servers (', {code: me.config_file || '~/.claude.json'}, ')']));
+    todo++;
+  } else if (me.header === 'not_http') {
+    rows.appendChild(_actRow('off', 'MCP server', [{code: 'voitta'}, ' is set up by hand (not an HTTP entry); left alone']));
+  } else if (!me.url_ok) {
+    rows.appendChild(_actRow('todo', 'MCP server', [{code: 'voitta'}, ' points at ', {code: me.url || '?'},
+      '; will point it at ', {code: url}]));
+    todo++;
+  } else {
+    rows.appendChild(_actRow('ok', 'MCP server', [{code: 'voitta'}, ' → ', {code: url}, ' (user level)']));
+  }
+
+  var hdr = me.header;
+  if (!me.present || hdr === 'missing' || hdr === 'stale') {
+    rows.appendChild(_actRow('todo', 'Window header', ['will add Voitta\'s header script, so ', {code: '/mcp'},
+      ' can give one window its own tools']));
+    todo++;
+  } else if (hdr === 'set') {
+    rows.appendChild(_actRow('ok', 'Window header', ['set: ', {code: '/mcp'}, ' can give one window its own tools']));
+  } else if (hdr === 'other_helper') {
+    rows.appendChild(_actRow('off', 'Window header', ['the entry has a header script of your own; left alone, so ',
+      {code: '/mcp'}, ' can\'t give one window its own tools']));
+  } else {
+    rows.appendChild(_actRow('off', 'Window header', ['n/a']));
+  }
+
+  if (!mod) {
+    rows.appendChild(_actRow('off', '/llm mod', ['asking Claude Code…']));
+  } else if (mod.error) {
+    rows.appendChild(_actRow('bad', '/llm mod', ['couldn\'t ask Claude Code: ' + mod.error]));
+  } else if (!mod.installed) {
+    rows.appendChild(_actRow('todo', '/llm mod', ['will install voitta-llm ' + mod.available]));
+    todo++;
+  } else if (mod.installed !== mod.available) {
+    rows.appendChild(_actRow('todo', '/llm mod', ['will update voitta-llm ' + mod.installed + ' → ' + mod.available]));
+    todo++;
+  } else {
+    rows.appendChild(_actRow('ok', '/llm mod', ['voitta-llm ' + mod.installed + (mod.enabled ? '' : ' (disabled in Claude Code)')]));
+  }
+
+  if (!s.claude_found) {
+    rows.appendChild(_actRow('bad', 'Claude Code', ['the ', {code: 'claude'}, ' command was not found; install Claude Code first']));
+  }
+
+  var configuring = busy.indexOf('configure_claude') >= 0;
+  var cfgBtn = document.getElementById('act-configure');
+  cfgBtn.disabled = configuring || !s.claude_found;
+  cfgBtn.textContent = configuring ? 'Configuring…' : (todo ? 'Configure Claude' : 'Configure Claude again');
+  document.getElementById('act-disconnect').style.display = st.linked ? '' : 'none';
+  var sum = document.getElementById('act-claude-summary');
+  sum.className = 'act-summary' + (todo ? '' : ' ok');
+  sum.textContent = configuring ? '' : (todo ? todo + ' thing' + (todo === 1 ? '' : 's') + ' to set up'
+                                              : 'Claude Code is set up');
+  _renderResult(document.getElementById('act-claude-result'), _actionResults.configure_claude);
+
+  // ── the mod on its own ──
+  var mrows = document.getElementById('act-mod-rows');
+  mrows.textContent = '';
+  var installing = busy.indexOf('install_mod') >= 0 || busy.indexOf('reinstall_mod') >= 0;
+  var mbtn = document.getElementById('act-mod');
+  if (!mod) {
+    mrows.appendChild(_actRow('off', 'voitta-llm', ['asking Claude Code…']));
+  } else if (mod.error) {
+    mrows.appendChild(_actRow('bad', 'voitta-llm', ['couldn\'t ask Claude Code: ' + mod.error]));
+  } else {
+    var state = !mod.installed ? 'todo' : (mod.installed === mod.available ? 'ok' : 'todo');
+    var line = !mod.installed ? 'not installed (this app has ' + mod.available + ')'
+             : (mod.installed === mod.available ? 'installed ' + mod.installed : 'installed ' + mod.installed + '; this app has ' + mod.available);
+    mrows.appendChild(_actRow(state, 'voitta-llm', [line + '. In Claude Code: ', {code: '/llm'}, ', ',
+      {code: '/voitta-store'}, ', and the tool popup on ', {code: '/mcp'}, '.']));
+  }
+  var verb = !mod || !mod.installed ? 'Install' : (mod.installed === mod.available ? 'Reinstall' : 'Update');
+  mbtn.textContent = !installing ? verb + ' /llm and /voitta-store'
+    : (verb === 'Reinstall' ? 'Reinstalling…' : verb === 'Update' ? 'Updating…' : 'Installing…');
+  mbtn.disabled = installing || !mod || !!mod.error || !s.claude_found;
+  document.getElementById('act-mod-summary').textContent =
+    (mod && mod.installed) ? 'Open Claude Code windows pick a new version up after /reload-plugins.' : '';
+  _renderResult(document.getElementById('act-mod-result'), _actionResults.install_mod || _actionResults.reinstall_mod);
+
+  // ── tools ──
+  var tsum = document.getElementById('act-tools-summary');
+  var tr = _actionResults.reset_tool_gate;
+  tsum.className = 'act-summary' + (tr && tr.ok ? ' ok' : '');
+  tsum.textContent = tr ? tr.message : '';
+  var crows = document.getElementById('act-codex-rows');
+  crows.textContent = '';
+  crows.appendChild(_actRow(s.codex_mcp ? 'ok' : 'off', 'Codex', s.codex_mcp
+    ? ['uses Voitta\'s MCP proxy (', {code: '~/.codex/config.toml'}, ')']
+    : ['does not use Voitta\'s MCP proxy (', {code: '~/.codex/config.toml'}, '); set up by hand if wanted']));
 }
 
 // ── Info tab rendering ────────────────────────────────────────────────────
 // Called from Python with a state object every ~3s while the settings
-// window is open. Idempotent — safe to call repeatedly with the same data.
-function _setInfoState(s) {
-  if (!s) return;
+// window is open (ui/settings_window.py _collect_info_state). The whole
+// diagram is drawn from that state each time, so the number of accounts and
+// MCP servers shown follows the data. Labels come from config and are
+// escaped. Coordinates are in the 920×600 viewBox.
+//
+//   CLAUDE CODE (setup chips)             CODEX (config chip)
+//        │ LLM lane          │ MCP lane          │
+//   LLM PROXY ───────────────┼──────────── MCP PROXY (health)
+//   OPTIMIZER                               TOOL GATE
+//   ROUTER                                  │
+//   [account] [account] …                  [server] [server] …
+//   ACTIVE · STORED · SAVED
 
-  var SVG_NS = 'http://www.w3.org/2000/svg';
-
-  // ── Status pills (top right) ───────────────────────────────────────────
-  setPill('info-llm-pill', s.llm_wired ? '✓ WIRED' : '✗ OFF', s.llm_wired ? 'ok' : 'off');
-  setPill('info-mcp-claude-pill',
-          s.mcp_wired_claude ? '✓ WIRED' : '✗ OFF',
-          s.mcp_wired_claude ? 'ok' : 'off');
-  setPill('info-mcp-codex-pill',
-          s.mcp_wired_codex ? '✓ WIRED' : '✗ OFF',
-          s.mcp_wired_codex ? 'ok' : 'off');
-  var llm = s.llm || {};
-  var def = (llm.accounts || []).filter(function(a) { return a.is_default; })[0];
-  setPill('info-default-pill', def ? def.short.toUpperCase() : '—',
-          def && def.state === 'error' ? 'off' : 'neutral');
-  // What actually answered last (an account's own model, not what Claude Code asked for).
-  var last = llm.last_answer;
-  var model = last ? last.model : (s.current_model || '—');
-  setPill('info-model-pill', String(model).toUpperCase().slice(0, 22), 'neutral');
-
-  // ── Conversations subtext beneath Claude Code box ──────────────────────
-  var sub = document.getElementById('info-claude-sub');
-  if (sub) {
-    var n = s.active_conversations || 0;
-    sub.textContent = n === 0 ? '' : (n === 1 ? '1 conversation' : n + ' conversations');
-  }
-
-  // ── Component dimming (broken lane = dim its destination chain) ────────
-  setRectDim('info-llm-rect', !s.llm_wired);
-  setRectDim('info-upstream-rect', !s.llm_wired);
-  setRectDim('info-mcp-rect', !s.mcp_wired);
-  setRectDim('info-backends-rect', !s.mcp_wired);
-  setIconState('info-llm-icon', s.llm_wired);
-  setMcpIconState('info-mcp-icon', s.mcp_wired);
-
-  // ── Arrows: live (animated yellow) when lane is wired, dim otherwise ──
-  setArrowLive('info-arrow-llm', s.llm_wired);
-  setArrowLive('info-arrow-mcp', s.mcp_wired);
-  setArrowLive('info-arrow-upstream', s.llm_wired);
-  setArrowLive('info-arrow-backends', s.mcp_wired);
-  setArrowTipColor('info-arrow-llm-tip', s.llm_wired);
-  setArrowTipColor('info-arrow-mcp-tip', s.mcp_wired);
-  setArrowTipColor('info-arrow-upstream-tip', s.llm_wired);
-  setArrowTipColor('info-arrow-backends-tip', s.mcp_wired);
-
-  // ── Red-X overlays on broken arrows ────────────────────────────────────
-  document.getElementById('info-x-llm').style.display = s.llm_wired ? 'none' : '';
-  document.getElementById('info-x-mcp').style.display = s.mcp_wired ? 'none' : '';
-
-  // ── LLM accounts: a dot each, the default ringed ────────────────────────
-  var acctEl = document.getElementById('info-account-dots');
-  if (acctEl) {
-    while (acctEl.firstChild) acctEl.removeChild(acctEl.firstChild);
-    var accts = llm.accounts || [];
-    var shown = Math.min(accts.length, 7);
-    for (var j = 0; j < shown; j++) {
-      var a = accts[j];
-      var g = document.createElementNS(SVG_NS, 'g');
-      var d = document.createElementNS(SVG_NS, 'circle');
-      d.setAttribute('cx', String(j * 24)); d.setAttribute('cy', '0'); d.setAttribute('r', '5');
-      d.setAttribute('class', 'backend-dot ' + a.state);
-      g.appendChild(d);
-      if (a.is_default) {
-        var ring = document.createElementNS(SVG_NS, 'circle');
-        ring.setAttribute('cx', String(j * 24)); ring.setAttribute('cy', '0'); ring.setAttribute('r', '8.5');
-        ring.setAttribute('class', 'default-ring');
-        g.appendChild(ring);
-      }
-      var t = document.createElementNS(SVG_NS, 'title');
-      t.textContent = a.label + ' (' + a.provider + ')' + (a.is_default ? ' · default' : '') +
-        (a.windows ? ' · ' + a.windows + (a.windows === 1 ? ' window' : ' windows') + ' picked it' : '') +
-        (a.status !== 'ok' ? ' · ' + a.status.replace('_', ' ') : '');
-      g.appendChild(t);
-      acctEl.appendChild(g);
-    }
-  }
-  var host = document.getElementById('info-upstream-host');
-  if (host) {
-    var picked = llm.picked_windows || 0;
-    host.textContent = !def ? (s.upstream_host || 'api.anthropic.com')
-      : 'default: ' + def.short + (picked ? ' · ' + picked + ' on /llm' : '');
-  }
-
-  // ── Backends: row of dots + summary ────────────────────────────────────
-  var dotsEl = document.getElementById('info-backend-dots');
-  if (dotsEl) {
-    while (dotsEl.firstChild) dotsEl.removeChild(dotsEl.firstChild);
-    var backends = s.backends || [];
-    var max = Math.min(backends.length, 8);
-    var spacing = 22;
-    for (var i = 0; i < max; i++) {
-      var b = backends[i];
-      var dot = document.createElementNS(SVG_NS, 'circle');
-      dot.setAttribute('cx', String(i * spacing));
-      dot.setAttribute('cy', '0');
-      dot.setAttribute('r', '5');
-      var stateCls = (b.state === 'ok') ? 'ok' : (b.state === 'error' ? 'error' : 'empty');
-      dot.setAttribute('class', 'backend-dot ' + stateCls);
-      // Tooltip via SVG <title> for hover
-      var tip = document.createElementNS(SVG_NS, 'title');
-      tip.textContent = b.label + ' — ' + (b.state === 'ok' ? (b.tools_count + ' tools') : b.state);
-      dot.appendChild(tip);
-      dotsEl.appendChild(dot);
-    }
-  }
-  var summary = document.getElementById('info-backends-summary');
-  if (summary) {
-    var ok = (s.backends || []).filter(function(b) { return b.state === 'ok'; }).length;
-    var total = (s.backends || []).length;
-    summary.textContent = total === 0 ? 'no backends' : (ok + ' of ' + total + ' ready');
-  }
-
-  // ── Hint line (orange, only shown when something is broken) ────────────
-  var hint = document.getElementById('info-hint');
-  if (hint) {
-    var msg = '';
-    if (def && def.state === 'error') msg = 'Default LLM account needs attention — Settings → LLMs';
-    else if (!s.llm_wired && !s.mcp_wired) msg = 'Settings → Proxies → Connect Claude';
-    else if (!s.llm_wired) msg = 'LLM lane off — click Connect Claude';
-    else if (!s.mcp_wired) msg = 'MCP lane off — wire voitta in Claude or Codex';
-    if (msg) { hint.textContent = msg; hint.setAttribute('style', ''); }
-    else hint.setAttribute('style', 'display:none;');
-  }
-
-  // ── Headline metric ────────────────────────────────────────────────────
-  var savedVal = document.getElementById('info-saved-value');
-  if (savedVal) savedVal.textContent = '$' + (s.savings_usd || 0).toFixed(2);
-}
-
-function setPill(id, text, kind) {
-  var el = document.getElementById(id);
-  if (!el) return;
-  el.textContent = text;
-  el.setAttribute('class', 'pill-val ' + kind);
-}
-function setRectDim(id, dim) {
-  var el = document.getElementById(id);
-  if (!el) return;
-  var cls = 'comp-rect' + (dim ? ' dim' : '');
-  el.setAttribute('class', cls);
-}
-function setIconState(id, live) {
-  var el = document.getElementById(id);
-  if (!el) return;
-  el.setAttribute('class', 'icon-stroke ' + (live ? 'live' : 'dim'));
-}
-function setMcpIconState(groupId, live) {
-  var g = document.getElementById(groupId);
-  if (!g) return;
-  Array.prototype.forEach.call(g.querySelectorAll('.icon-stroke, [class*=icon-stroke]'), function(node) {
-    node.setAttribute('class', 'icon-stroke ' + (live ? 'live' : 'dim'));
+function _svgEsc(s) {
+  return String(s === undefined || s === null ? '' : s).replace(/[&<>"']/g, function(c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
   });
 }
-function setArrowLive(id, live) {
-  var el = document.getElementById(id);
-  if (!el) return;
-  el.setAttribute('class', 'arrow ' + (live ? 'live' : 'dim'));
+
+function _cut(s, n) {
+  s = String(s || '');
+  return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
-function setArrowTipColor(id, live) {
-  var el = document.getElementById(id);
-  if (!el) return;
-  el.setAttribute('fill', live ? '#ffd83d' : 'rgba(140,180,220,0.16)');
+
+function _box(x, y, w, h, opts) {
+  opts = opts || {};
+  var cls = 'comp-rect' + (opts.dim ? ' dim' : '') + (opts.cls ? ' ' + opts.cls : '');
+  var g = '<g transform="translate(' + x + ',' + y + ')"' +
+    (opts.onclick ? ' class="clickable" onclick="' + opts.onclick + '"' : '') + '>';
+  if (opts.title) g += '<title>' + _svgEsc(opts.title) + '</title>';
+  g += '<rect class="' + cls + '" width="' + w + '" height="' + h + '" rx="' + (opts.rx || 10) + '"/>';
+  if (opts.label) g += '<text class="comp-label" x="' + (w / 2) + '" y="' + (opts.labelY || 18) + '">' +
+    _svgEsc(opts.label) + '</text>';
+  (opts.lines || []).forEach(function(line, i) {
+    g += '<text class="comp-sub' + (line.cls ? ' ' + line.cls : '') + '" x="' + (w / 2) + '" y="' +
+      ((opts.labelY || 18) + 15 + i * 13) + '">' + _svgEsc(line.text !== undefined ? line.text : line) + '</text>';
+  });
+  return g + (opts.inner || '') + '</g>';
+}
+
+function _arrow(d, live, tip) {
+  var s = '<path class="arrow ' + (live ? 'live' : 'dim') + '" d="' + d + '"/>';
+  if (tip) {
+    var x = tip[0], y = tip[1];
+    s += '<polygon points="' + (x - 5) + ',' + (y - 8) + ' ' + (x + 5) + ',' + (y - 8) + ' ' + x + ',' + (y + 2) +
+      '" fill="' + (live ? '#ffd83d' : 'rgba(140,180,220,0.16)') + '"/>';
+  }
+  return s;
+}
+
+// A small status chip: ✓ ok, ○ to do, ✗ problem, – off.
+function _chip(x, y, w, text, state, title, onclick) {
+  var mark = { ok: '✓', todo: '○', bad: '✗', off: '–' }[state] || '?';
+  return '<g transform="translate(' + x + ',' + y + ')" class="clickable" onclick="' + (onclick || "switchTab('actions')") + '">' +
+    '<title>' + _svgEsc(title) + '</title>' +
+    '<rect class="chip ' + state + '" width="' + w + '" height="20" rx="10"/>' +
+    '<text class="chip-text ' + state + '" x="' + (w / 2) + '" y="14">' + mark + ' ' + _svgEsc(text) + '</text></g>';
+}
+
+function _pills(x, y, w, rows, onclick) {
+  var s = '<g transform="translate(' + x + ',' + y + ')"' + (onclick ? ' class="clickable" onclick="' + onclick + '"' : '') + '>';
+  s += '<rect class="pill-bg" width="' + w + '" height="' + (rows.length * 18 + 8) + '" rx="6"/>';
+  rows.forEach(function(r, i) {
+    s += '<text class="pill-key" x="10" y="' + (18 + i * 18) + '">' + _svgEsc(r[0]) + '</text>' +
+      '<text class="pill-val ' + (r[2] || 'neutral') + '" x="' + (w - 10) + '" y="' + (18 + i * 18) + '">' +
+      _svgEsc(r[1]) + '</text>';
+  });
+  return s + '</g>';
+}
+
+// Up to five boxes in a row; past that, four and a "+N more" naming the rest.
+function _fitRow(items, name) {
+  if (items.length <= 5) return items;
+  var rest = items.slice(4);
+  return items.slice(0, 4).concat([{ more: rest.length, names: rest.map(name) }]);
+}
+
+// How many characters of text fit a box of width w (charW: px per character).
+function _fitChars(w, charW) {
+  return Math.max(4, Math.floor((w - 10) / charW));
+}
+
+// A row of boxes under (cx, top): a bus from the parent, a drop to each box.
+function _fan(items, x0, x1, top, live, render) {
+  var n = items.length;
+  if (!n) return '';
+  var gap = 10, w = Math.min(130, Math.floor((x1 - x0 - gap * (n - 1)) / n));
+  var total = n * w + gap * (n - 1), start = x0 + Math.floor((x1 - x0 - total) / 2);
+  var centers = items.map(function(_, i) { return start + i * (w + gap) + w / 2; });
+  var s = '';
+  if (n > 1) s += _arrow('M ' + centers[0] + ' ' + (top - 14) + ' H ' + centers[n - 1], live);
+  centers.forEach(function(c, i) {
+    s += _arrow('M ' + c + ' ' + (top - 14) + ' V ' + (top - 2), live, [c, top - 2]);
+    s += render(items[i], start + i * (w + gap), top, w);
+  });
+  return { svg: s, centers: centers };
+}
+
+function _setInfoState(s) {
+  if (!s) return;
+  var svg = document.getElementById('info-svg');
+  if (!svg) return;
+  var llm = s.llm || {}, setup = s.setup || {}, gate = s.gate || {}, health = s.mcp_health || {};
+  var accts = llm.accounts || [], backends = s.backends || [];
+  var def = accts.filter(function(a) { return a.is_default; })[0];
+  var llmLive = !!s.llm_wired;
+  var claudeMcp = !!s.mcp_wired_claude, codexMcp = !!s.mcp_wired_codex;
+  var mcpBroken = health.state === 'broken';
+  var mcpLive = (claudeMcp || codexMcp) && !mcpBroken;
+  var out = '';
+
+  // ── top: routing and MCP server health ──
+  var last = llm.last_answer;
+  out += _pills(10, 8, 230, [
+    ['DEFAULT LLM', def ? _cut(def.short, 16).toUpperCase() : '—', def && def.state === 'error' ? 'off' : 'neutral'],
+    ['LAST ANSWERED BY', _cut(last ? last.model : (s.current_model || '—'), 18).toUpperCase(), 'neutral'],
+  ], "switchTab('llms')");
+  out += _pills(680, 8, 230, [
+    ['MCP SERVER', mcpBroken ? '✗ FAILING' : (health.state === 'healthy' ? '✓ HEALTHY' : '…'), mcpBroken ? 'off' : 'ok'],
+    ['TOOLS ON', (gate.tools ? (gate.tools - (gate.disabled || 0)) + ' / ' + gate.tools : '—'), 'neutral'],
+  ], "switchTab('tools')");
+
+  // ── clients ──
+  var mod = setup.mod || {};
+  var modState = !setup.mod_known ? 'off' : (!mod.installed ? 'todo' : (mod.installed === mod.available ? 'ok' : 'todo'));
+  var hdr = setup.header;
+  var chips =
+    _chip(18, 54, 104, 'LLM proxy', setup.settings_linked ? 'ok' : 'todo',
+          '~/.claude/settings.json → ANTHROPIC_BASE_URL' + (setup.settings_linked ? ' points at Voitta' : ': not set to Voitta')) +
+    _chip(128, 54, 104, 'MCP entry', setup.mcp_entry_ok ? 'ok' : 'todo',
+          'Claude Code user MCP server "voitta"' + (setup.mcp_entry_ok ? ' → Voitta' : ': missing or elsewhere')) +
+    _chip(238, 54, 104, 'win header', hdr === 'set' ? 'ok' : (hdr === 'other_helper' || hdr === 'not_http' ? 'off' : 'todo'),
+          'Header script that lets /mcp give one window its own tools: ' + (hdr || 'n/a')) +
+    _chip(348, 54, 104, '/llm mod', modState,
+          'voitta-llm in Claude Code: ' + (!setup.mod_known ? 'not checked yet (open Actions)' :
+          (mod.installed ? mod.installed + (mod.installed === mod.available ? '' : ', app has ' + mod.available) : 'not installed')));
+  var n = s.active_conversations || 0, picked = llm.picked_windows || 0;
+  out += _box(150, 74, 470, 84, {
+    label: 'CLAUDE CODE', title: 'Claude Code: what is set up for your user (click: Settings → Actions)',
+    onclick: "switchTab('actions')",
+    lines: [(n === 1 ? '1 conversation' : n + ' conversations') + (picked ? ' · ' + picked + ' on their own /llm account' : '')],
+    inner: chips,
+  });
+  out += _box(660, 74, 180, 84, {
+    label: 'CODEX', dim: !codexMcp, title: 'Codex reaches MCP tools through Voitta when ~/.codex/config.toml points at it',
+    lines: ['MCP only'],
+    inner: _chip(38, 54, 104, 'config.toml', codexMcp ? 'ok' : 'off', '~/.codex/config.toml → Voitta MCP proxy: ' + (codexMcp ? 'yes' : 'no'), "switchTab('actions')"),
+  });
+
+  // ── lanes from the clients to the proxies ──
+  out += _arrow('M 250 158 V 206', llmLive, [250, 206]);
+  out += _arrow('M 560 158 V 182 H 650 V 206', claudeMcp && !mcpBroken, [650, 206]);
+  out += _arrow('M 750 158 V 206', codexMcp && !mcpBroken, [750, 206]);
+
+  // ── proxies ──
+  out += _box(110, 208, 280, 58, {
+    label: 'LLM PROXY', dim: !llmLive, onclick: "switchTab('proxies')", title: 'Settings → Proxies',
+    lines: [':' + ((s.llm_proxy || {}).port || '?') + (llmLive ? '' : ' · Claude Code not pointed here')],
+  });
+  out += _box(560, 208, 280, 58, {
+    label: 'MCP PROXY', dim: !(claudeMcp || codexMcp), cls: mcpBroken ? 'broken' : '',
+    onclick: "switchTab('proxies')", title: 'Settings → Proxies',
+    lines: [{ text: ':' + ((s.mcp_proxy || {}).port || '?') + (mcpBroken ? ' · failing: restart Voitta Desktop' : ''),
+              cls: mcpBroken ? 'warn' : '' }],
+  });
+
+  // ── LLM side: optimizer → router → accounts ──
+  var opt = s.optimizer || {};
+  out += _arrow('M 250 266 V 286', llmLive, [250, 286]);
+  out += _box(150, 288, 200, 44, {
+    label: 'OPTIMIZER', dim: !opt.enabled, onclick: "switchTab('proxies')", labelY: 17,
+    title: 'Context optimizers (Settings → Proxies)',
+    lines: [opt.enabled ? ('on' + (opt.haiku_only ? ' · haiku only' : '') + ' · saved $' + (s.savings_usd || 0).toFixed(2)) : 'off'],
+  });
+  out += _arrow('M 250 332 V 352', llmLive, [250, 352]);
+  out += _box(150, 354, 200, 44, {
+    label: 'ROUTER', onclick: "switchTab('llms')", labelY: 17, dim: !llmLive,
+    title: 'Each Claude Code window goes to its /llm pick, or to the default (Settings → LLMs)',
+    lines: ['default: ' + (def ? _cut(def.short, 14) : '—') + (picked ? ' · ' + picked + ' on /llm' : '')],
+  });
+  var shownA = _fitRow(accts, function(a) { return a.label; });
+  var fanA = _fan(shownA, 10, 450, 432, llmLive, function(a, x, y, w) {
+    if (a.more) return _box(x, y, w, 64, { label: '+' + a.more + ' MORE', onclick: "switchTab('llms')", labelY: 36,
+                                           title: a.names.join('\n') });
+    var st = { ok: 'ok', empty: 'todo', error: 'bad' }[a.state] || 'off';
+    return _box(x, y, w, 64, {
+      label: _cut(a.short, _fitChars(w, 8)).toUpperCase(), labelY: 17, cls: a.is_default ? 'default' : '',
+      onclick: "switchTab('llms')",
+      title: a.label + ' (' + a.provider + ')' + (a.is_default ? ' · default' : '') +
+        (a.windows ? ' · ' + a.windows + (a.windows === 1 ? ' window' : ' windows') + ' picked it' : '') +
+        (a.status !== 'ok' ? ' · ' + a.status.replace('_', ' ') : ''),
+      lines: [_cut(a.label, _fitChars(w, 5.6)), { text: (a.is_default ? 'default' : (a.windows ? a.windows + ' on /llm' : ' ')) +
+        (st === 'ok' ? '' : ' · ' + a.status.replace('_', ' ')), cls: st === 'ok' ? '' : 'warn' }],
+    });
+  });
+  if (fanA) out += _arrow('M 250 398 V 418', llmLive) + fanA.svg;
+
+  // ── MCP side: tool gate → servers ──
+  var gateLine = 'Claude ' + (gate.claude_silent ? 'silent' : 'popup') + ' · Codex ' + (gate.codex_silent ? 'silent' : 'popup');
+  out += _arrow('M 700 266 V 286', mcpLive, [700, 286]);
+  out += _box(600, 288, 200, 58, {
+    label: 'TOOL GATE', labelY: 17, onclick: "switchTab('tools')", dim: !mcpLive,
+    title: 'Which tools each client gets (Settings → Tools); /mcp gives one Claude Code window its own',
+    lines: [gateLine, (gate.disabled || 0) + ' tool' + (gate.disabled === 1 ? '' : 's') + ' switched off'],
+  });
+  var shownB = _fitRow(backends, function(b) { return b.label; });
+  var fanB = _fan(shownB, 470, 910, 432, mcpLive, function(b, x, y, w) {
+    if (b.more) return _box(x, y, w, 64, { label: '+' + b.more + ' MORE', onclick: "switchTab('mcps')", labelY: 36,
+                                           title: b.names.join('\n') });
+    var st = b.state === 'ok' ? 'ok' : (b.state === 'error' ? 'bad' : 'todo');
+    return _box(x, y, w, 64, {
+      label: _cut(b.label, _fitChars(w, 8)).toUpperCase(), labelY: 17, onclick: "switchTab('mcps')",
+      dim: b.state !== 'ok',
+      title: b.label + ' — ' + (b.state === 'ok' ? b.tools_count + ' tools' : b.state),
+      lines: [{ text: b.state === 'ok' ? b.tools_count + ' tools' : (b.state === 'error' ? 'not answering' : 'no tools yet'),
+                cls: st === 'ok' ? '' : 'warn' }],
+    });
+  });
+  if (fanB) out += _arrow('M 700 346 V 418', mcpLive) + fanB.svg;
+  if (!backends.length) out += '<text class="comp-sub" x="700" y="460">no MCP servers (Settings → MCPs)</text>';
+
+  // ── footer: hint, conversations, savings ──
+  var msg = '';
+  if (mcpBroken) msg = 'MCP server failing since a while — restart Voitta Desktop';
+  else if (def && def.state === 'error') msg = 'Default LLM account needs attention — Settings → LLMs';
+  else if (!llmLive || !claudeMcp || hdr === 'missing' || hdr === 'stale' || modState === 'todo')
+    msg = 'Claude Code is not fully set up — Settings → Actions → Configure Claude';
+  if (msg) out += '<text class="hint-text" x="460" y="524">' + _svgEsc(msg) + '</text>';
+  out += _pills(10, 540, 230, [['ACTIVE CONVERSATIONS', String(n), 'neutral']]);
+  out += _pills(250, 540, 230, [['STORED CONVERSATIONS', String(s.stored_conversations || 0), 'neutral']],
+                "runAction('stored_conversations')");
+  out += '<g transform="translate(500,536)"><rect class="saved-bg" width="410" height="40" rx="8"/>' +
+    '<text class="saved-label" x="20" y="26">SAVED</text>' +
+    '<text class="saved-value" x="396" y="29">$' + (s.savings_usd || 0).toFixed(2) + '</text></g>';
+
+  svg.innerHTML = out;
 }
 
 // Init from embedded config
@@ -1078,11 +1322,10 @@ renderMcpServers();
 loadJira();
 loadProxy();
 renderToolTree();
-// Proxies tab is active by default; reveal the link button and apply
-// the live link state injected by Python at popup-open time.
-document.getElementById('claude-link-btn').style.display = '';
-if (typeof _initialClaudeLinked !== 'undefined') {
-  _setClaudeLinkState(_initialClaudeLinked);
+// Actions tab: first render from the state injected at popup open; Python
+// pushes updates with the Info refresh and after each action.
+if (typeof _initialActions !== 'undefined' && _initialActions) {
+  _setActionsState(_initialActions);
 }
 // Info tab initial render — Python pushes updates every ~3s after this.
 if (typeof _initialInfo !== 'undefined') {
