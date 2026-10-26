@@ -573,7 +573,11 @@ async def test_mod_reinstall_uninstalls_first_and_keeps_data(tmp_path, monkeypat
             installed["v"] = available
         return 0, "ok"
 
+    async def no_real_claude(*args):
+        raise AssertionError(f"the test ran a real `claude {' '.join(args)}`")
+
     monkeypatch.setattr(llm, "_claude", fake_claude)
+    monkeypatch.setattr(llm, "_claude_cmd", no_real_claude)   # no voitta entry in the test config: never called
 
     class Req:
         def __init__(self, body):

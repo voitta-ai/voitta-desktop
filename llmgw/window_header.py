@@ -84,7 +84,12 @@ def voitta_entry(config_path: Path | None = None) -> dict | None:
 
 
 def status(script: Path, config_path: Path | None = None) -> str:
-    """set | missing | no_entry | other_helper | not_http."""
+    """set | missing | stale | no_entry | other_helper | not_http.
+
+    ``stale``: a Voitta header script, but at another path (an older Voitta
+    home, or a copy that is gone) — replaced like ``missing``. A helper of any
+    other name is the user's own and is left alone (``other_helper``).
+    """
     entry = voitta_entry(config_path)
     if entry is None:
         return "no_entry"
@@ -93,7 +98,9 @@ def status(script: Path, config_path: Path | None = None) -> str:
     helper = entry.get("headersHelper")
     if helper == str(script):
         return "set"
-    return "other_helper" if helper else "missing"
+    if not helper:
+        return "missing"
+    return "stale" if Path(helper).name == script.name else "other_helper"
 
 
 async def ensure_on_voitta_entry(script: Path, run_claude, config_path: Path | None = None) -> tuple[str, list[dict]]:
@@ -105,7 +112,7 @@ async def ensure_on_voitta_entry(script: Path, run_claude, config_path: Path | N
     """
     ensure_script(script)
     current = status(script, config_path)
-    if current != "missing":
+    if current not in ("missing", "stale"):
         return current, []
     entry = voitta_entry(config_path)
     wanted = {**entry, "headersHelper": str(script)}

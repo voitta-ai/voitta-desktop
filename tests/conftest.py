@@ -13,6 +13,14 @@ from pathlib import Path
 
 _TMP_HOME = Path(tempfile.mkdtemp(prefix="voitta-desktop-tests-"))
 os.environ["VOITTA_DESKTOP_HOME"] = str(_TMP_HOME)
+# Claude Code's own config too (~/.claude.json, read by llmgw/window_header and
+# by any real `claude` the code under test might start). On 2026-10-24 a test
+# that faked `claude plugin` but not `claude mcp` re-pointed the developer's
+# real "voitta" MCP entry at a temp file. With this, a real `claude` run here
+# only ever sees a throwaway config.
+_TMP_CLAUDE = _TMP_HOME / "claude-config"
+_TMP_CLAUDE.mkdir()
+os.environ["CLAUDE_CONFIG_DIR"] = str(_TMP_CLAUDE)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 

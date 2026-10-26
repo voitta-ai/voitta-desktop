@@ -289,6 +289,13 @@ async def test_installing_on_the_voitta_entry(tmp_path):
     assert (await window_header.ensure_on_voitta_entry(script, run_claude, cfg))[0] == "other_helper"
     assert not calls
 
+    # a Voitta header script at another path (a deleted temp copy, an older home): replaced
+    write({"type": "http", "url": "u", "headersHelper": "/gone/pytest-16/bin/claude-window-header"})
+    assert window_header.status(script, cfg) == "stale"
+    assert (await window_header.ensure_on_voitta_entry(script, run_claude, cfg))[0] == "set"
+    assert window_header.voitta_entry(cfg)["headersHelper"] == str(script)
+    calls.clear()
+
     write(None)                                     # no voitta entry: nothing written
     assert (await window_header.ensure_on_voitta_entry(script, run_claude, cfg))[0] == "no_entry"
 
