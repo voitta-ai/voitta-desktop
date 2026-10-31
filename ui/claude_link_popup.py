@@ -55,6 +55,20 @@ def _change_rows_html(plan: Plan) -> str:
     return json.dumps(rows)
 
 
+def _subtitle(plan: Plan) -> str:
+    targets = []
+    if plan.claude_changes:
+        targets.append(str(CLAUDE_SETTINGS_PATH))
+    if plan.mcp_change is not None:
+        targets.append("the Claude Code MCP registration")
+    if plan.voitta_upstream_change is not None:
+        targets.append("the Voitta Desktop upstream")
+    if not targets:
+        return "Nothing to change."
+    return "Reviewing changes to " + ", ".join(targets[:-1]) + (
+        " and " if len(targets) > 1 else "") + targets[-1]
+
+
 def _build_html(plan: Plan, title: str, ok_label: str) -> str:
     rows_json = _change_rows_html(plan)
     return r"""<!DOCTYPE html>
@@ -88,9 +102,11 @@ def _build_html(plan: Plan, title: str, ok_label: str) -> str:
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
     font-size: 13px; color: var(--text); background: var(--bg);
-    padding: 18px;
+    padding: 18px; height: 100vh;
+    display: flex; flex-direction: column;
     -webkit-user-select: none; user-select: none;
   }
+  #content { flex: 1; overflow-y: auto; min-height: 0; }
   h1 { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
   .subtitle {
     font-size: 12px; color: var(--text-secondary); margin-bottom: 14px;
@@ -154,7 +170,7 @@ def _build_html(plan: Plan, title: str, ok_label: str) -> str:
     color: var(--text-secondary); font-size: 12px;
   }
   .bottom {
-    display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px;
+    display: flex; justify-content: flex-end; gap: 8px; padding-top: 14px;
   }
   .btn {
     padding: 5px 14px; border-radius: 6px;
@@ -230,7 +246,7 @@ function cancel()  { document.title = 'CLAUDE_LINK_CANCEL:' + _salt(); }
 render();
 </script>
 </body></html>""".replace("__TITLE__", title) \
-                .replace("__SUBTITLE__", f"Reviewing changes to {CLAUDE_SETTINGS_PATH}") \
+                .replace("__SUBTITLE__", _subtitle(plan)) \
                 .replace("__OK_LABEL__", ok_label) \
                 .replace("__ROWS__", rows_json)
 
@@ -278,7 +294,10 @@ class ClaudeLinkPopup:
         screen = NSScreen.mainScreen().frame()
         rows = (len(plan.claude_changes) + (1 if plan.voitta_upstream_change else 0)
                 + (1 if plan.mcp_change else 0))
-        width, height = 580, max(280, 150 + rows * 60)
+        # MCP rows hold a URL and wrap, so allow more than one line per row.
+        # The list scrolls if this is still short; the buttons stay visible.
+        width = 580
+        height = min(max(300, 170 + rows * 75), int(screen.size.height * 0.8))
         x = (screen.size.width - width) / 2
         y = (screen.size.height - height) / 2
 

@@ -491,6 +491,13 @@ class ToolGateMiddleware(FastMCPMiddleware):
                 return tools
 
             tool_groups = self._app_ref._build_tool_tree()
+            # The tree comes from backend caches, so tools the proxy serves
+            # itself (get_vt_object) would otherwise never be listed.
+            grouped = {name for g in tool_groups for name in g["tools"]}
+            builtin = sorted(t.name for t in tools if t.name not in grouped)
+            if builtin:
+                tool_groups = [{"prefix": "", "label": "Voitta Desktop (built-in)",
+                                "tools": builtin}] + tool_groups
             disabled = set(getattr(self._app_ref, "disabled_tools", set()))
 
             meta = {}
