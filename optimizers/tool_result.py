@@ -14,6 +14,10 @@ from .image import vt_object_store
 from middleware.parsing import find_tool_name
 
 TOOL_RESULT_KEEP_TURNS = 5
+# How much of a removed result's text its placeholder keeps. Results shorter
+# than about twice the placeholder are kept whole (see _optimize), so this
+# also sets which small results are never removed.
+HEAD_CHARS = 400
 
 # File-access tools are intentionally untouched (see module docstring).
 _SKIP_TOOLS = frozenset({"Read", "Write", "Edit"})
@@ -53,11 +57,36 @@ def _content_chars(content) -> int:
     return 0
 
 
+def _content_text(content) -> str:
+    """The text of a tool_result content field, images left out."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(b.get("text", "") for b in content
+                         if isinstance(b, dict) and b.get("type") == "text")
+    return ""
+
+def _head(content) -> str:
+    """The result's opening lines, up to HEAD_CHARS, cut at a line end.
+
+    A placeholder that gave only the size left the model unable to tell which
+    of 70 removed screen results held what it needed: it re-ran calls instead
+    of fetching them (a voitta-kvm session, 2026-11-01). Tools put their
+    verdict first, so the opening lines say what the call did.
+    """
+    text = _content_text(content).strip()
+    if len(text) <= HEAD_CHARS:
+        return text
+    cut = text.rfind("\n", 0, HEAD_CHARS)
+    return text[:cut if cut > 0 else HEAD_CHARS].rstrip() + " …"
+
 def _placeholder(content, h: str, tool_name: str) -> str:
     """Build placeholder text that replaces removed tool result."""
     chars = _content_chars(content)
+    head = _head(content)
+    began = f" It began:\n{head}\n" if head else " "
     return (
-        f"[{tool_name} result removed — {chars} chars. "
+        f"[{tool_name} result removed — {chars} chars.{began}"
         f'Use MCP tool get_vt_object(hash="{h}") to retrieve]'
     )
 

@@ -501,6 +501,28 @@ def test_savings_recorded_per_call():
     assert 600 < tu.last_stripped_ids["toolu_0001"] < 900
 
 
+def test_removed_result_keeps_its_opening_lines():
+    """A removed screen result (verdict, then a long ref list and an image)
+    keeps its verdict lines in the placeholder; a short result stays whole."""
+    refs = "\n".join(f"{i}: some text on screen at row {i}" for i in range(1, 200))
+    screen = [{"type": "text", "text": "[Neils NYC PC · Windows · kvm]\nverdict: error. the pointer could "
+                                       "not be confirmed on the target\n" + refs},
+              {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "A" * 90000}}]
+    c = Conversation().human("start")
+    c.tool_call("mcp__voitta__kvm_click_text", {"ref": 61, "text": "OfG"}, screen)
+    c.tool_call("mcp__voitta__kvm_computers", {}, "Computers:\n- Lab PC (id bf6ef94f4070): held by nobody")
+    for t in range(KEEP):
+        c.assistant_text(f"ok {t}")
+        c.human(f"q{t}")
+    results = [b for _, _, _, b in iter_blocks(optimize(c.body())) if b.get("type") == "tool_result"]
+    removed, small = results[0]["content"], results[1]["content"]
+    assert isinstance(removed, str) and "result removed" in removed, removed
+    assert "verdict: error. the pointer could not be confirmed" in removed, removed
+    assert "199: some text" not in removed and len(removed) < 700, len(removed)
+    assert small == "Computers:\n- Lab PC (id bf6ef94f4070): held by nobody", small
+    # byte-identical on re-derivation, so the prompt cache holds
+    assert optimize(c.body()) == optimize(c.body())
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = failed = 0
