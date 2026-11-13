@@ -95,7 +95,7 @@ jobs:
 
   release:
     if: github.event_name != 'pull_request'
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 45
     permissions:
       contents: write  # gh release create/upload needs this
