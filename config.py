@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 
 from paths import CONFIG_PATH, ROOT as CONFIG_DIR  # noqa: F401  (re-exported)
+from paths import write_private
 
 # Whether Voitta rewrites ~/.claude/settings.json to point at our proxy.
 #
@@ -277,6 +278,25 @@ def _deep_backfill(target: dict, defaults: dict) -> None:
             _deep_backfill(target[k], v)
 
 
+# A jira_mcp server added in Settings starts with empty fields. These are what
+# it needs to run: uvx fetches mcp-atlassian itself (no checkout, so no
+# working directory), and the app writes the env file from the Jira
+# credentials in Settings.
+JIRA_MCP_DEFAULTS = {"env_path": str(CONFIG_DIR / "jira.env"), "port": 18767}
+
+
+def _fill_subprocess_defaults(data: dict) -> None:
+    """Fill a jira_mcp server's empty env file and port with the defaults,
+    so the launcher, the env-file writer and the proxy all agree on them."""
+    for server in data.get("mcp_servers") or []:
+        sp = server.get("subprocess") if isinstance(server, dict) else None
+        if not isinstance(sp, dict) or sp.get("template") != "jira_mcp":
+            continue
+        for key, value in JIRA_MCP_DEFAULTS.items():
+            if not sp.get(key):
+                sp[key] = value
+
+
 def load_config() -> dict:
     """Load config from disk, returning defaults if missing or corrupt."""
     defaults = _default_config()
@@ -297,6 +317,7 @@ def load_config() -> dict:
         # window is the single source of truth; .env merely provides initial
         # values on first run.
         _deep_backfill(data, defaults)
+        _fill_subprocess_defaults(data)
         if migrated:
             save_config(data)
         return data
@@ -306,8 +327,8 @@ def load_config() -> dict:
 
 def save_config(config: dict) -> None:
     """Write config to disk."""
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(config, indent=2))
+    # apps.json holds API tokens, bearer tokens and OAuth client secrets.
+    write_private(CONFIG_PATH, json.dumps(config, indent=2))
 
 
 def migrate_from_legacy(settings: dict, env_defaults: dict | None = None) -> dict:

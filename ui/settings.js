@@ -231,14 +231,21 @@ function _renderMcpCard(s, i) {
       };
       card.appendChild(_field('Command (space-separated; {port}, {env_path} tokens)', cmdInput));
       card.appendChild(_field('Working directory', _textInputObj(sp, 'cwd', '~/DEVEL/...')));
-      card.appendChild(_field('Env file (optional)', _textInputObj(sp, 'env_path', '~/.voitta_desktop/...env')));
+      card.appendChild(_field('Env file (optional)', _textInputObj(sp, 'env_path', '~/.voitta-desktop/...env')));
       const portInput = _textInputObj(sp, 'port', '18766');
       portInput.onchange = () => { sp.port = parseInt(portInput.value) || 0; };
       card.appendChild(_field('Port', portInput));
       card.appendChild(_field('Port env var (optional, e.g. PORT)', _textInputObj(sp, 'port_env', 'PORT')));
+    } else if (tpl === 'jira_mcp') {
+      // Runs `uvx mcp-atlassian`: no working directory. The env file is
+      // written from the Jira credentials above; empty fields take the defaults.
+      card.appendChild(_field('Env file (default ~/.voitta-desktop/jira.env)', _textInputObj(sp, 'env_path', '~/.voitta-desktop/jira.env')));
+      const portInput = _textInputObj(sp, 'port', '18767');
+      portInput.onchange = () => { sp.port = parseInt(portInput.value) || 0; };
+      card.appendChild(_field('Port (default 18767)', portInput));
     } else {
       card.appendChild(_field('Working directory', _textInputObj(sp, 'cwd', '~/DEVEL/...')));
-      card.appendChild(_field('Env file', _textInputObj(sp, 'env_path', '~/.voitta_desktop/...env')));
+      card.appendChild(_field('Env file', _textInputObj(sp, 'env_path', '~/.voitta-desktop/...env')));
       const portInput = _textInputObj(sp, 'port', '18766');
       portInput.onchange = () => { sp.port = parseInt(portInput.value) || 0; };
       card.appendChild(_field('Port', portInput));
