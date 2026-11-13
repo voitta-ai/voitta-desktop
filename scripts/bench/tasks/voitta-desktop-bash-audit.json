@@ -1,0 +1,33 @@
+{
+  "name": "voitta-desktop-bash-audit",
+  "repo": "~/g/git.voitta/voitta-desktop",
+  "model": "sonnet",
+  "allowed_tools": [
+    "Bash(git show:*)",
+    "Bash(git --no-pager show:*)",
+    "Bash(git log:*)",
+    "Bash(git --no-pager log:*)",
+    "Bash(grep:*)",
+    "Grep",
+    "Glob"
+  ],
+  "disallowed_tools": [
+    "Read",
+    "Edit",
+    "Write",
+    "NotebookEdit",
+    "WebFetch",
+    "WebSearch",
+    "Agent"
+  ],
+  "prompts": [
+    "Run `git show d89f5ed` with Bash. In at most 4 lines: what file name pattern does _dump_failure now use, and what happens when the name is taken?",
+    "Run `git show e430af8 -- claude_link.py` with Bash. In at most 4 lines: what argument list does mcp_add_command(url) return?",
+    "Run `git show 7be5b8a` with Bash. In at most 4 lines: what does can_resolve_refs look at to decide?",
+    "Run `grep -rn \"def \" middleware/ --include=*.py` with Bash. In at most 3 lines: how many functions or methods are defined in middleware/tracker.py?",
+    "Run `git log --stat -20` with Bash. In at most 4 lines: which three files changed in the most of those commits?",
+    "Run `grep -rn keep_turns --include=*.py --exclude-dir=.venv .` with Bash. In at most 4 lines: the default keep_turns of each optimizer.",
+    "Run `git show 7c84b20` with Bash. In at most 3 lines: what label does the tool gate give the group of built-in tools?",
+    "Answer from the command output earlier in this session, re-running nothing unless you no longer have it: (a) the file name pattern _dump_failure uses, and (b) the exact argument list mcp_add_command returns. At most 3 lines."
+  ]
+}
