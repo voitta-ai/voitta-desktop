@@ -11,6 +11,11 @@ MODE:
   on       the current pipeline (get_vt_object assumed available)
   on+bp    as on, but the pipeline's own cache breakpoint is always injected
   stepK    as on, but the strip threshold advances K typed turns at a time
+  cold     as on, but the strip threshold moves only on a request whose cache
+           is cold anyway: the session's first, the first after a gap longer
+           than the TTL, or the first after compaction. In between, the same
+           messages stay stripped, so no cached prefix is rewritten (#5,
+           option b). BashCompressor still runs on every request.
 
 The cache model: blocks in tools -> system -> messages order, an entry per
 cache_control breakpoint, a lookup that walks back up to 20 blocks from each
@@ -148,12 +153,24 @@ def build_pipeline(mode):
                 return None
             return starts[n]
         BaseOptimizer._threshold_msg_index = stepped
+    if mode.startswith("cold"):
+        frozen = {}
+        def frozen_threshold(self, messages):
+            starts = self._find_user_turn_starts(messages)
+            n = len(starts) - self.keep_turns
+            if COLD["now"] or id(self) not in frozen:
+                frozen[id(self)] = max(0, n)
+            n = min(frozen[id(self)], n)
+            return starts[n] if n > 0 else None
+        BaseOptimizer._threshold_msg_index = frozen_threshold
     pipe = OptimizerPipeline([BashCompressor(), ToolUseOptimizer(), ToolResultOptimizer(),
                               ImageOptimizer(), ThinkingOptimizer()], enabled=mode != "off")
     if "+bp" in mode:
         pipe.CACHE_BP_API_MAX = 99
     return pipe
 
+
+COLD = {"now": False}  # set per request by run(); read by the cold threshold
 
 VT_TOOL = {"name": "mcp__voitta__get_vt_object", "description": "x",
            "input_schema": {"type": "object"}}
@@ -173,6 +190,7 @@ def run(mode, path):
     cache = Cache()
     warm = True
     rows = []
+    prev_ts, prev_first = None, None
     for r in reqs:
         if any(m is None for m in r["messages"]) or r["shape"] not in shapes:
             continue
@@ -182,12 +200,16 @@ def run(mode, path):
                 "messages": copy.deepcopy(r["messages"])}
         set_cc(body, r["cache_control"])
         body["tools"].append(VT_TOOL)  # treat the session as able to resolve refs
+        now = datetime.fromisoformat(r["ts"].replace("Z", "+00:00")).timestamp()
+        ttl = max((TTL_S[c["value"].get("ttl", "5m")] for c in r["cache_control"]), default=300)
+        first = json.dumps(r["messages"][0], sort_keys=True) if r["messages"] else None
+        COLD["now"] = prev_ts is None or now - prev_ts > ttl or first != prev_first
+        prev_ts, prev_first = now, first
         req = ProxyRequest(method="POST", path="/v1/messages", headers={}, body=b"")
         req.json = body
         req = asyncio.run(pipe.on_request(req))
         body = req.json
         body["tools"] = [t for t in body["tools"] if t is not VT_TOOL and t.get("name") != VT_TOOL["name"]]
-        now = datetime.fromisoformat(r["ts"].replace("Z", "+00:00")).timestamp()
         blocks = blocks_of(body)
         if warm:
             # Other sessions keep tools + system cached; start with them warm.
@@ -200,7 +222,7 @@ def run(mode, path):
         a = actual.get(r["id"], {})
         rows.append({"ts": r["ts"], "inp": inp, "read": read, "w5": write["5m"], "w1": write["1h"],
                      "a_inp": a.get("input_tokens"), "a_read": a.get("cache_read_input_tokens"),
-                     "a_write": a.get("cache_creation_input_tokens")})
+                     "a_write": a.get("cache_creation_input_tokens"), "cold": COLD["now"]})
     claimed = sum(sum(o.tokens_saved.values()) for o in pipe.optimizers)
     return rows, claimed
 
