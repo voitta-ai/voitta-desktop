@@ -1,0 +1,17 @@
+{
+  "name": "voitta-desktop-audit",
+  "repo": "~/g/git.voitta/voitta-desktop",
+  "model": "sonnet",
+  "allowed_tools": ["Read", "Grep", "Glob"],
+  "disallowed_tools": ["Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Agent"],
+  "prompts": [
+    "Read proxy/server.py in full. In at most 4 lines: what does _dump_failure name the files it writes, and what does it do when the name is taken?",
+    "Read middleware/tracker.py in full. In at most 4 lines: which numbers does the 'tokens |' log line report?",
+    "Read middleware/parsing.py in full. In at most 4 lines: which function parses an SSE stream, and which SSE event types does it take usage from?",
+    "Read mcpproxy/server.py in full. In at most 4 lines: what are ToolGateMiddleware.ANSWER_TTL_S and MAX_REMEMBERED, and what does Cancel in the gate popup do to the tool list?",
+    "Read mcpproxy/resilient.py in full. In at most 4 lines: what are LISTING_TIMEOUT_S and LISTING_FIRST_FILL_TIMEOUT_S, and when does each apply?",
+    "Read every .py file in optimizers/. As a list: each optimizer class, its chart_key, and whether emits_refs is True.",
+    "Read config.py in full. In at most 4 lines: the defaults for tool_result_keep_turns, image_keep_turns, thinking_keep_turns and tool_use_ref_min_chars.",
+    "Answer from what you read earlier in this session, re-reading only if you no longer have it: (a) the file name pattern _dump_failure uses, and (b) the value of ToolGateMiddleware.ANSWER_TTL_S. At most 3 lines."
+  ]
+}
