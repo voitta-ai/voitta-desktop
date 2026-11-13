@@ -261,10 +261,17 @@ class BaseOptimizer(Middleware):
         messages = list(messages)
         tokens_removed = self._optimize(messages, threshold)
 
+        # Send whatever _optimize changed, even when it rounds to 0 tokens.
+        # Dropping a sub-token edit (BashCompressor trimming whitespace) means
+        # the same message goes out unedited now and edited on a later
+        # request, once the total reaches a token. That rewrites the prompt
+        # cache from that message on (about 88k tokens in one replayed
+        # session, #5).
+        if any(a is not b for a, b in zip(messages, body["messages"])):
+            request.json = dict(body, messages=messages)
         if tokens_removed > 0:
             family = model_family(model)
             self.tokens_saved[family] = self.tokens_saved.get(family, 0) + tokens_removed
-            request.json = dict(body, messages=messages)
             logger.info("%s: saved %d tokens (family=%s, cumulative $%.4f)",
                         self.__class__.__name__, tokens_removed, family, self.total_savings_usd)
 
