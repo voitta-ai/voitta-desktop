@@ -68,10 +68,24 @@ only through Claude Code's own CLI (`claude mcp add-json -s user`,
 `claude plugin`). A previous `ANTHROPIC_BASE_URL` (a company gateway, say) is
 kept behind Voitta as its upstream and restored by **Disconnect LLM proxy**.
 Running it again repairs whatever has drifted (a changed port, a missing header
-script); open Claude Code windows pick the changes up when restarted. If
-`CLAUDE_CONFIG_DIR` is set, both files are in that folder instead.
+script). Claude Code windows that are already open switch to the LLM proxy
+within seconds, mid-conversation; MCP tools and the mod reach them when they
+are restarted. If `CLAUDE_CONFIG_DIR` is set, both files are in that folder
+instead.
 
-The MCP server gives Claude access to all mounted backends through one endpoint:
+This is user-wide: while it is set, every Claude Code session in every project
+goes through Voitta, and what those sessions send is kept under
+`~/.voitta-desktop/` (request logs and removed tool results) until Voitta
+Desktop next starts.
+
+Claude Code's own credentials (a subscription login, a gateway token or an API
+key) travel with each request and are passed upstream unchanged, so there is
+no API key to enter in Voitta Desktop.
+
+The MCP server gives Claude access to all mounted backends through one
+endpoint. A fresh install has one backend, Enterprise Voitta MCP (`vim_*`),
+which needs its bearer token in Settings → MCPs; until then the only tool is
+`get_vt_object`. Add the others in Settings → MCPs:
 
 | Tool prefix | Backend | What it does |
 |---|---|---|
