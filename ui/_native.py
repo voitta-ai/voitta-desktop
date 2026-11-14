@@ -111,6 +111,10 @@ class _InfoTicker(NSObject):
 def _is_port_free(port: int) -> bool:
     """True if 127.0.0.1:<port> is bindable right now."""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # Sockets a previous instance left in TIME_WAIT must not count as "in
+    # use" (a relaunch seconds after a quit would show a false port dialog);
+    # a live listener still fails the bind.
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         s.bind(("127.0.0.1", port))
     except OSError:

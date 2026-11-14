@@ -630,7 +630,7 @@ Settings UI (the proxy reconnects per call, so no remount is needed).
 | Template | What launches | Port conveyance |
 |---|---|---|
 | `google_mcp` | `uv run main.py --transport streamable-http` in `cwd` | `PORT` env |
-| `jira_mcp` | `uvx mcp-atlassian --transport streamable-http --port N --env-file …` | argv |
+| `jira_mcp` | `uvx mcp-atlassian --transport streamable-http --host 127.0.0.1 --port N --env-file …`, with `ALLOW_GLOBAL_CRED_FALLBACK=true` (mcp-atlassian 0.24 refuses HTTP requests without a user token otherwise) | argv |
 | `http_command` | arbitrary user argv | `{port}` / `{env_path}` tokens or `port_env` |
 | `npx` / `command` | *nothing here* — stdio, owned by fastmcp ([§7](#7-mcp-proxy-aggregation-auth-injection-resilience)) | — |
 

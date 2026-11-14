@@ -153,9 +153,16 @@ def _resolve_subprocess_launch(server: dict, base_env: dict):
             return None, f"env_path {env_path!r} missing"
         if not port:
             return None, "no port"
-        return (["uvx", "mcp-atlassian", "--transport", "streamable-http",
-                 "--port", str(port), "--env-file", env_path],
-                dict(base_env))
+        # mcp-atlassian 0.24 answers 401 to every HTTP request that carries no
+        # user token unless ALLOW_GLOBAL_CRED_FALLBACK is set. This server is
+        # single-user (the env file holds the user's own credentials), so opt
+        # in, and bind to loopback so only this machine can use them (the
+        # default bind is 0.0.0.0).
+        argv = ["uvx", "mcp-atlassian", "--transport", "streamable-http",
+                "--host", "127.0.0.1", "--port", str(port), "--env-file", env_path]
+        env = {**base_env, "ALLOW_GLOBAL_CRED_FALLBACK": "true"}
+        retval = (argv, env)
+        return retval
 
     if template == "http_command":
         # Generic HTTP subprocess: a user-supplied command that serves MCP over
