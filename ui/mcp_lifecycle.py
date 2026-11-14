@@ -34,6 +34,7 @@ import time
 from pathlib import Path
 
 from config import load_config
+from paths import write_private
 
 logger = logging.getLogger("voitta-desktop")
 
@@ -147,15 +148,21 @@ def _resolve_subprocess_launch(server: dict, base_env: dict):
                 {**base_env, "PORT": str(port)})
 
     if template == "jira_mcp":
-        if not cwd or not Path(cwd).is_dir():
-            return None, f"cwd {cwd!r} missing"
+        # uvx fetches mcp-atlassian on its own; there is no checkout to run in.
         if not env_path or not Path(env_path).exists():
             return None, f"env_path {env_path!r} missing"
         if not port:
             return None, "no port"
-        return (["uvx", "mcp-atlassian", "--transport", "streamable-http",
-                 "--port", str(port), "--env-file", env_path],
-                dict(base_env))
+        # mcp-atlassian 0.24 answers 401 to every HTTP request that carries no
+        # user token unless ALLOW_GLOBAL_CRED_FALLBACK is set. This server is
+        # single-user (the env file holds the user's own credentials), so opt
+        # in, and bind to loopback so only this machine can use them (the
+        # default bind is 0.0.0.0).
+        argv = ["uvx", "mcp-atlassian", "--transport", "streamable-http",
+                "--host", "127.0.0.1", "--port", str(port), "--env-file", env_path]
+        env = {**base_env, "ALLOW_GLOBAL_CRED_FALLBACK": "true"}
+        retval = (argv, env)
+        return retval
 
     if template == "http_command":
         # Generic HTTP subprocess: a user-supplied command that serves MCP over
@@ -226,8 +233,7 @@ class MCPLifecycleMixin:
             "",
         ]
         try:
-            Path(env_path).parent.mkdir(parents=True, exist_ok=True)
-            Path(env_path).write_text("\n".join(lines))
+            write_private(Path(env_path), "\n".join(lines))
         except Exception as e:
             logger.warning("Failed to write Google MCP .env: %s", e)
 
@@ -258,8 +264,7 @@ class MCPLifecycleMixin:
             lines.append(f"JIRA_PROJECTS_FILTER={project}")
         lines.append("")
         try:
-            Path(env_path).parent.mkdir(parents=True, exist_ok=True)
-            Path(env_path).write_text("\n".join(lines))
+            write_private(Path(env_path), "\n".join(lines))
         except Exception as e:
             logger.warning("Failed to write Jira MCP .env: %s", e)
 
@@ -295,10 +300,14 @@ class MCPLifecycleMixin:
         name = server.get("name") or sid
         argv, env_or_reason = _resolve_subprocess_launch(server, self._mcp_base_env())
         if argv is None:
-            logger.info("subprocess %r skipped: %s", name, env_or_reason)
+            # A configured server that silently never starts is a support
+            # question; say why at a level that shows up.
+            logger.warning("subprocess %r not started: %s", name, env_or_reason)
             return None
         env = env_or_reason
         cwd = os.path.expanduser((server.get("subprocess") or {}).get("cwd", "") or "")
+        if cwd and not Path(cwd).is_dir():
+            cwd = ""  # only templates that need no checkout get this far
         port = int((server.get("subprocess") or {}).get("port", 0) or 0)
         log_path = _mcp_log_path(sid)
         # Reclaim the port from any orphan listener before binding. atexit

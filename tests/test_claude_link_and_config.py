@@ -52,13 +52,13 @@ def test_arm_twice_is_a_no_op(settings):
     assert settings.read_text() == before
 
 
-def test_disarm_removes_it_again(settings):
+def test_disarm_points_back_at_anthropic(settings):
     claude_link.arm_claude_link(PORT, UPSTREAM)
 
     assert claude_link.disarm_claude_link(PORT) is True
 
     env = json.loads(settings.read_text()).get("env", {})
-    assert "ANTHROPIC_BASE_URL" not in env
+    assert env["ANTHROPIC_BASE_URL"] == claude_link.ANTHROPIC_DEFAULT_URL
 
 
 def test_disarm_when_not_armed_is_a_no_op(settings):
@@ -102,7 +102,7 @@ def test_round_trip_restores_the_base_url(settings):
     claude_link.disarm_claude_link(PORT)
 
     env = json.loads(settings.read_text())["env"]
-    assert "ANTHROPIC_BASE_URL" not in env
+    assert env["ANTHROPIC_BASE_URL"] == claude_link.ANTHROPIC_DEFAULT_URL
     assert "VOITTA_ANTHROPIC_BASE_URL" not in env
     assert env["MY_VAR"] == "keep me"
 
@@ -159,14 +159,14 @@ def test_port_drift_does_not_save_our_own_url(settings):
     assert "VOITTA_ANTHROPIC_BASE_URL" not in env
 
 
-def test_disarm_after_port_drift_removes_the_url(settings):
+def test_disarm_after_port_drift_points_back_at_anthropic(settings):
     claude_link.arm_claude_link(18900, UPSTREAM)
     claude_link.arm_claude_link(18901, UPSTREAM)
 
     claude_link.disarm_claude_link(18901)
 
     env = json.loads(settings.read_text()).get("env", {})
-    assert "ANTHROPIC_BASE_URL" not in env
+    assert env["ANTHROPIC_BASE_URL"] == claude_link.ANTHROPIC_DEFAULT_URL
     assert "VOITTA_ANTHROPIC_BASE_URL" not in env
 
 
@@ -181,7 +181,7 @@ def test_disarm_heals_an_already_poisoned_file(settings):
     claude_link.disarm_claude_link(18901)
 
     env = json.loads(settings.read_text()).get("env", {})
-    assert "ANTHROPIC_BASE_URL" not in env
+    assert env["ANTHROPIC_BASE_URL"] == claude_link.ANTHROPIC_DEFAULT_URL
     assert "VOITTA_ANTHROPIC_BASE_URL" not in env
     assert env["ENABLE_TOOL_SEARCH"] == "true"
 
