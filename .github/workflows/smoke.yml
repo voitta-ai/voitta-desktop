@@ -2,7 +2,8 @@
 #
 # Assembles the .app via briefcase (ad-hoc signed, no notarization, no DMG,
 # no upload). Catches breakage between releases without burning a notary slot
-# or producing publishable artifacts. Runs on macos-14 to match
+# or producing publishable artifacts. Runs on macos-15 (GitHub retired the
+# macos-14 images on 2026-11-02); the bundle still targets
 # `min_os_version = 14.0` and the arm64-only `universal_build = false`
 # settings in pyproject.toml.
 name: smoke
@@ -18,7 +19,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
