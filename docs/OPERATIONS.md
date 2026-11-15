@@ -334,7 +334,10 @@ re-derives the conversation from the request body:
 One JSONL file per day: `~/.voitta-desktop/logs/YYYY-MM-DD.jsonl`, **wiped on
 every app start** (`*.jsonl` only — `desktop.log` survives). Bodies are
 trimmed: last 2 messages kept + `[N omitted]` placeholder, tools reduced to a
-name list, strings truncated at 2000 chars, credentials removed. A watchdog
+name list, strings truncated at 2000 chars, credentials removed. The system
+prompt is also kept whole, once per distinct prompt, in
+`~/.voitta-desktop/logs/system_<hash>.json`; each JSONL line names its file in
+`request_body.system_file`. A watchdog
 task on the shared runtime warns when a request has been in flight > 60 s,
 and doubles as the RSS heartbeat (see [§14](#14-ports-paths--logging)).
 
