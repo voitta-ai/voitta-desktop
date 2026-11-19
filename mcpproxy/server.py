@@ -39,9 +39,10 @@ logger = logging.getLogger("voitta-desktop.mcp")
 # Headers are read when the client is BUILT, which is once per session. A
 # token that changes mid-session therefore reaches new sessions, not live
 # ones — the same restart-to-apply contract Settings already states for URL
-# edits. There is deliberately no header-diffing or silent reconnect here:
-# a dead upstream surfaces as the real error and the library reconnects on
-# the session's next call.
+# edits. There is no header-diffing here. VoittaStatefulProxyClient invalidates
+# an established HTTP session on the SDK's explicit session-terminated error;
+# the next call reconnects after in-flight calls drain. The failed call is never
+# replayed. Other errors keep the library's behavior.
 #
 # Stdio factories (npx / command) create the transport ONCE at setup time and
 # close over it. Creating a new NpxStdioTransport per call would spawn a fresh

@@ -334,7 +334,10 @@ re-derives the conversation from the request body:
 One JSONL file per day: `~/.voitta-desktop/logs/YYYY-MM-DD.jsonl`, **wiped on
 every app start** (`*.jsonl` only — `desktop.log` survives). Bodies are
 trimmed: last 2 messages kept + `[N omitted]` placeholder, tools reduced to a
-name list, strings truncated at 2000 chars, credentials removed. A watchdog
+name list, strings truncated at 2000 chars, credentials removed. The system
+prompt is also kept whole, once per distinct prompt, in
+`~/.voitta-desktop/logs/system_<hash>.json`; each JSONL line names its file in
+`request_body.system_file`. A watchdog
 task on the shared runtime warns when a request has been in flight > 60 s,
 and doubles as the RSS heartbeat (see [§14](#14-ports-paths--logging)).
 
@@ -516,6 +519,47 @@ the status popups. Two deliberate root-server tweaks:
 - **`instructions` are rebuilt per MCP session**, describing only backends
   that currently have ≥ 1 enabled tool (upstream instruction text is fetched
   once in the background and cached).
+
+### Recovery of expired upstream MCP sessions
+
+Remote HTTP tools keep one upstream connection per downstream session and backend
+(`VoittaStatefulProxyClient` in [mcpproxy/resilient.py](../mcpproxy/resilient.py)).
+The MCP SDK turns a POST 404 into `McpError(32600, "Session terminated")` without
+closing its receive task. Previously the cached client reused that dead session
+indefinitely, until the user reconnected Voitta.
+
+An established session returning that exact protocol error is now marked invalid.
+The next call waits for any other in-flight calls on that client to finish, closes
+the invalid connection, then initializes a new one. The cached client object and
+its downstream-exit cleanup remain the same; other windows/backends are unaffected.
+If initialization fails, that error reaches the caller: there is no retry loop.
+
+The same cleanup runs when the background transport task has ended, even without
+an explicit 404. A gateway 502 on Gaba's connection exposed this second path:
+FastMCP tried to reconnect with the old nesting counter (14 completed calls),
+then refused with "nesting counter should be 0". Completed calls deliberately
+retain the stateful connection, so forced cleanup must reset that counter before
+reconnection. A regression test ends the runner after fourteen calls, verifies
+active calls drain, and checks concurrent callers share one replacement.
+
+**The failed call is never replayed.** The SDK maps *any* POST 404 to this error,
+so it does not establish whether a browser action already happened. The error
+asks the caller to inspect the current state before retrying an action. Ordinary
+tool error results (even text saying "Session terminated"), authentication errors,
+and ambiguous timeouts do not trigger this invalidation path.
+
+Logs name the backend, a generated non-secret connection tag, generation number,
+and active-call count on invalidation. They log connections, invalidations and
+recoveries, but not wire session IDs, arguments, page contents or credentials.
+Healthy server-to-client heartbeats are still answered by the MCP SDK between
+calls; no dummy browser actions or timeout changes were added. A Playwright
+heartbeat failure was reproduced separately, but the original production drops'
+cause is still unconfirmed; these logs establish recovery, not heartbeat timing.
+
+Regression tests: [tests/test_session_recovery.py](../tests/test_session_recovery.py)
+uses HTTP to expire one session, discard a response after a side effect, exercise
+concurrent calls/cancellation, isolate other clients/backends, reject bad endpoints
+and authentication, and check server pings before and after recovery.
 
 ### Resilience: stale-while-revalidate listings
 

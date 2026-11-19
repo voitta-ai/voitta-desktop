@@ -5,9 +5,13 @@ import json
 import logging
 import re
 import time
+import uuid
 from pathlib import Path
 
+import anyio
 import mcp.types
+from mcp.shared.exceptions import McpError
+from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp import FastMCP as FastMCPServer
 from fastmcp.server.providers.proxy import (
     FastMCPProxy, ProxyClient, ProxyProvider, ProxyTool, StatefulProxyClient,
@@ -45,12 +49,95 @@ class VoittaStatefulProxyClient(StatefulProxyClient):
     unwinding half-way, and the StreamableHTTP session manager died with it:
     every MCP request answered 500 until Voitta was restarted.
 
-    The error is logged here, naming the backend, and the connection is
-    dropped; the session then closes normally. Nothing is retried, and errors
-    the session's tool calls already returned are untouched.
+    An established HTTP session can also return the SDK's 404 error, McpError
+    (32600, "Session terminated"), while its receive task stays alive. FastMCP
+    then keeps reusing the dead session. Mark it expired on context exit and
+    disconnect before the NEXT call, after other in-flight calls drain. Keep
+    the cached client object: its existing session-exit callback still owns it.
+    Nothing is replayed, even when the server may have rejected a call before
+    running it — the SDK maps every POST 404 to the same error. A background
+    transport task that ends (for example after a gateway error) needs the same
+    cleanup: without it FastMCP reconnects with a nonzero nesting counter.
     """
 
     backend_name = "?"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._reset_recovery()
+
+    def _reset_recovery(self):
+        self._recovery = asyncio.Condition()
+        self._active_calls = 0
+        self._expired = False
+        self._generation = 0
+        self._connection_tag = uuid.uuid4().hex[:12]  # not a wire session id or credential
+
+    def new(self):
+        client = super().new()
+        client._reset_recovery()  # FastMCP clones with copy.copy: no shared lock/state between windows
+        return client
+
+    async def __aenter__(self):
+        async with self._recovery:
+            # Don't tear down another call's transport or let a new call use a
+            # known-dead session. Condition.wait releases the lock for exits.
+            while True:
+                task = self._session_state.session_task
+                if task is not None and task.done() and not self._expired:
+                    self._expired = True
+                    logger.warning("[%s] upstream session invalidated connection=%s generation=%d "
+                                   "reason=transport_task_ended in_flight=%d replayed=false",
+                                   self.backend_name, self._connection_tag, self._generation, self._active_calls)
+                if not self._expired or self._active_calls == 0:
+                    break
+                await self._recovery.wait()
+            if self._expired:
+                # StatefulProxyClient deliberately skips per-call disconnects;
+                # its nesting counter includes completed calls. A dead runner
+                # cannot reconnect until force-disconnect clears that counter.
+                await self._disconnect(force=True)
+            previous = self._session_state.session
+            try:
+                await super().__aenter__()
+            except Exception as e:
+                # Error text/URLs may contain credentials. Log types, not bodies.
+                logger.warning("[%s] upstream connect failed connection=%s generation=%d error=%s",
+                               self.backend_name, self._connection_tag, self._generation + 1, type(e).__name__)
+                raise
+            if self._session_state.session is not previous:
+                self._generation += 1
+                logger.info("[%s] upstream %s connection=%s generation=%d",
+                            self.backend_name, "recovered" if self._expired else "connected",
+                            self._connection_tag, self._generation)
+            self._expired = False
+            self._active_calls += 1
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        expired = (isinstance(self.transport, StreamableHttpTransport)
+                   and isinstance(exc_value, McpError)
+                   and exc_value.error.code == 32600
+                   and exc_value.error.message == "Session terminated")
+        # A cancelled tool must still drain its active count, otherwise future
+        # calls could wait forever to retire the expired connection.
+        with anyio.CancelScope(shield=True):
+            async with self._recovery:
+                self._active_calls -= 1
+                if expired and not self._expired:
+                    self._expired = True
+                    logger.warning("[%s] upstream session invalidated connection=%s generation=%d "
+                                   "reason=post_404 in_flight=%d replayed=false",
+                                   self.backend_name, self._connection_tag, self._generation, self._active_calls)
+                self._recovery.notify_all()
+        if expired:
+            raise McpError(mcp.types.ErrorData(
+                code=32600,
+                message="Upstream MCP session expired (HTTP 404). This call was not replayed. "
+                        "The next call will establish a new session. Inspect the current state before "
+                        "retrying an action that may already have happened.",
+            )) from exc_value
+        # Like StatefulProxyClient: a successful call does not disconnect.
 
     async def _disconnect(self, force: bool = False):
         try:

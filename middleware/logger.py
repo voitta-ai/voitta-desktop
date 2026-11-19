@@ -1,6 +1,7 @@
 """Request logger middleware — writes every request/response to JSONL."""
 
 import asyncio
+import hashlib
 import json
 import logging
 import threading
@@ -90,8 +91,26 @@ class RequestLogger(Middleware):
         system = body.get("system")
         if system is not None:
             trimmed["system"] = self._truncate(system)
+            trimmed["system_file"] = self._keep_system(system)
 
         return trimmed
+
+    def _keep_system(self, system) -> str:
+        """Write the whole system prompt once to ``system_<hash>.json`` beside the
+        day's JSONL and return the file name. The trimmed copy in the JSONL cuts
+        each string at ``max_str``, so what a client puts deep in its prompt
+        (Claude Code's own rules sit past the first 2,000 characters) was never
+        visible. It is the same on every call of a session, so it is written once
+        per distinct prompt, not per request."""
+        text = json.dumps(system, ensure_ascii=False, sort_keys=True)
+        name = f"system_{hashlib.sha256(text.encode()).hexdigest()[:16]}.json"
+        path = self._log_dir / name
+        if not path.exists():
+            try:
+                path.write_text(text, encoding="utf-8")
+            except OSError as e:
+                logger.warning("could not keep the system prompt in %s: %s", path, e)
+        return name
 
     def _log_path(self) -> Path:
         return self._log_dir / f"{time.strftime('%Y-%m-%d')}.jsonl"
