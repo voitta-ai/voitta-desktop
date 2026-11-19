@@ -9,24 +9,35 @@ The dog in your menu bar shows token savings and active conversation count. Clic
 
 ## Setup
 
-### 1. Install dependencies
+### 1. Install
+
+Download `Voitta.Desktop-<version>.dmg` from the
+[latest release](https://github.com/voitta-ai/voitta-desktop/releases/latest),
+open it and drag **Voitta Desktop** to **Applications**. The build is signed
+and notarized, and runs on Apple silicon with macOS 14 or later.
+
+Launch it. A dog icon appears in your menu bar, both proxies start, and on
+first launch the Settings window opens, where credentials and backends are
+configured. Later, open Settings from the dog's menu. macOS hides menu bar
+icons that don't fit (on a notched MacBook with a busy menu bar, the dog may
+never be drawn). Launching Voitta Desktop again while it runs, from
+Spotlight or Applications, also opens Settings.
+
+<details>
+<summary>Run from source instead</summary>
 
 ```bash
 cd voitta-desktop
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.sample .env   # optional, see below
+python app.py
 ```
 
-### 2. Configure credentials
-
-Copy `.env.sample` to `.env` and fill in your OAuth credentials:
-
-```bash
-cp .env.sample .env
-```
-
-Key fields:
+On first start the app seeds `~/.voitta-desktop/apps.json` from the
+environment, including a `.env` in the working directory. After that
+`apps.json` wins; change settings in the Settings window. Key fields:
 
 | Variable | What it is |
 |---|---|
@@ -38,17 +49,9 @@ Key fields:
 | `JIRA_EMAIL` | Your Jira account email |
 | `JIRA_API_TOKEN` | Jira API token (create at https://id.atlassian.com/manage-profile/security/api-tokens) |
 
-You can also configure these through the Settings UI (click the dog > Settings).
+</details>
 
-### 3. Run it
-
-```bash
-python app.py
-```
-
-A dog icon appears in your menu bar. That's it — both proxies start automatically.
-
-### 4. Configure Claude Code
+### 2. Configure Claude Code
 
 Settings → **Actions** → **Configure Claude**. It sets up Claude Code for your
 user (every project and window) in the three places Claude Code reads, and
@@ -65,10 +68,24 @@ only through Claude Code's own CLI (`claude mcp add-json -s user`,
 `claude plugin`). A previous `ANTHROPIC_BASE_URL` (a company gateway, say) is
 kept behind Voitta as its upstream and restored by **Disconnect LLM proxy**.
 Running it again repairs whatever has drifted (a changed port, a missing header
-script); open Claude Code windows pick the changes up when restarted. If
-`CLAUDE_CONFIG_DIR` is set, both files are in that folder instead.
+script). Claude Code windows that are already open switch to the LLM proxy
+within seconds, mid-conversation; MCP tools and the mod reach them when they
+are restarted. If `CLAUDE_CONFIG_DIR` is set, both files are in that folder
+instead.
 
-The MCP server gives Claude access to all mounted backends through one endpoint:
+This is user-wide: while it is set, every Claude Code session in every project
+goes through Voitta, and what those sessions send is kept under
+`~/.voitta-desktop/` (request logs and removed tool results) until Voitta
+Desktop next starts.
+
+Claude Code's own credentials (a subscription login, a gateway token or an API
+key) travel with each request and are passed upstream unchanged, so there is
+no API key to enter in Voitta Desktop.
+
+The MCP server gives Claude access to all mounted backends through one
+endpoint. A fresh install has one backend, Enterprise Voitta MCP (`vim_*`),
+which needs its bearer token in Settings → MCPs; until then the only tool is
+`get_vt_object`. Add the others in Settings → MCPs:
 
 | Tool prefix | Backend | What it does |
 |---|---|---|
@@ -84,7 +101,7 @@ The **Actions** tab also holds the other one-off actions: install/update the
 mod on its own, refresh MCP tools, reset the tool gate, show the log, stored
 conversations.
 
-### 5. Authenticate providers
+### 3. Authenticate providers
 
 After launching Voitta Desktop:
 
@@ -146,7 +163,8 @@ Reveal in Finder; Delete removes Voitta's copy only, never Claude Code's files.
 | 18767 | Jira MCP (mcp-atlassian) subprocess | `JIRA_MCP_PORT` |
 | 53214 | OAuth2 redirect callback | `OAUTH_REDIRECT_PORT` |
 
-All configurable in `.env`.
+Saved in `~/.voitta-desktop/apps.json` and editable in Settings. The
+variables only seed a fresh config.
 
 ## What you see in the menu bar
 
@@ -187,19 +205,24 @@ Click a conversation to see a token usage chart. Click "Open conversation detail
 
 ## Config storage
 
-- `~/.voitta_desktop/apps.json` — OAuth apps, Jira credentials, proxy ports
-- `~/.voitta_desktop/logs/` — Debug logs, request JSONL
-- `~/.voitta-desktop/llm/` — LLM accounts and credentials, `/llm` window picks, open invites (mode 0600)
-- `~/.voitta-desktop/conversations/` — conversations stored with `/voitta-store`, one folder each (mode 0600; never purged)
-- `~/.voitta-desktop/state/objects.db` — Removed tool results, images and calls, retrievable via `get_vt_object`
+Everything lives under `~/.voitta-desktop/` (set `VOITTA_DESKTOP_HOME` to
+move it):
+
+- `apps.json` — OAuth apps, MCP servers, Jira credentials, proxy ports
+- `logs/` — `desktop.log`, request JSONL, per-conversation dumps, MCP subprocess logs
+- `llm/` — LLM accounts and credentials, `/llm` window picks, open invites (mode 0600)
+- `conversations/` — conversations stored with `/voitta-store`, one folder each (mode 0600; never purged)
+- `state/objects.db` — Removed tool results, images and calls, retrievable via `get_vt_object`
+- `cache/tools/` — Cached MCP tool listings (resilience)
+- `jira.env` — Auto-generated for the mcp-atlassian subprocess
 
 Every restart deletes the previous runs' conversations: the request JSONL,
 the per-conversation and rejected-request dumps, and the object store.
 Claude Code's own transcripts are untouched.
-- `~/.voitta_desktop_cache/` — Cached MCP tool listings (resilience)
-- `~/.voitta_desktop/jira.env` — Auto-generated for mcp-atlassian subprocess
 
-On first run, Voitta Desktop migrates config from `~/.voitta_auth/apps.json` if it exists.
+On first run, Voitta Desktop picks up config from the older
+`~/.voitta_desktop/`, `~/.voitta_desktop_cache/` and `~/.voitta_auth/`
+locations if they exist.
 
 ## MCP subprocess dependencies
 

@@ -43,9 +43,34 @@ _ALL_DIRS = (ROOT, LOG_DIR, STATE_DIR, CACHE_DIR, TOOL_CACHE_DIR)
 
 
 def ensure_dirs() -> None:
-    """Create the whole tree. Safe to call repeatedly."""
+    """Create the whole tree. Safe to call repeatedly.
+
+    ROOT holds plaintext secrets (apps.json, the generated .env files) and
+    conversation content, so it is kept to the owner (0700), including on
+    installs that created it with the default 0755.
+    """
     for d in _ALL_DIRS:
         d.mkdir(parents=True, exist_ok=True)
+    try:
+        ROOT.chmod(0o700)
+    except OSError as e:
+        logger.warning("could not restrict %s to its owner: %s", ROOT, e)
+
+
+def write_private(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` readable by the owner only (0600).
+
+    Goes through a temp file and a rename, so the file is never briefly
+    world-readable and a crash mid-write leaves the old copy in place.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.chmod(tmp, 0o600)  # O_CREAT's mode does not apply to an existing tmp
+    os.replace(tmp, path)
 
 
 def migrate_legacy_dirs() -> None:

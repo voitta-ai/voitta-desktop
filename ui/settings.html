@@ -570,6 +570,10 @@
     <div class="field">
       <label>Upstream URL</label>
       <input type="text" id="llm_upstream_url" placeholder="https://api.anthropic.com">
+      <div style="font-size:11px; color:var(--text-secondary); margin-top:4px;">
+        No API key goes here. Claude Code sends its own credentials with every request
+        (a subscription login or gateway token, or an API key) and the proxy passes them on unchanged.
+      </div>
     </div>
     <div class="field">
       <label>Port</label>
@@ -722,7 +726,11 @@
     <div class="act-note">Claude Code reads its user settings from <code>~/.claude/settings.json</code> and keeps
       user-level MCP servers in <code>~/.claude.json</code> (where <code>claude mcp add -s user</code> writes).
       Configure Claude changes both through the same rules Claude Code uses, and keeps everything else in them.
-      New Claude Code windows pick the changes up.</div>
+      Claude Code windows that are already open switch to the LLM proxy within seconds, in the middle of
+      a conversation; MCP tools and the mod reach them when they are restarted.
+      <br><br>This is for your whole user: while it is set, every Claude Code session in every project goes
+      through Voitta, and what those sessions send is kept in <code>~/.voitta-desktop/</code> (request logs
+      and removed tool results) until Voitta Desktop next starts.</div>
   </div>
 
   <h2>/llm, /voitta-store and /mcp in Claude Code</h2>

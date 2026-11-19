@@ -60,6 +60,7 @@ class ImageOptimizer(BaseOptimizer):
 
     chart_key = "image"
     trims_within_runs = True
+    emits_refs = True
 
     def __init__(self, keep_turns: int = IMAGE_KEEP_TURNS):
         super().__init__(keep_turns=keep_turns)

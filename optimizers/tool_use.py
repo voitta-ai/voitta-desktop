@@ -87,6 +87,7 @@ class ToolUseOptimizer(BaseOptimizer):
     """Truncates large tool-call arguments in older turns; the call stays."""
 
     chart_key = "tool_use"
+    emits_refs = True
 
     def __init__(self, keep_turns: int = 5, min_chars: int = TOOL_USE_REF_MIN_CHARS):
         super().__init__(keep_turns=keep_turns)
