@@ -22,6 +22,7 @@ from fastmcp.utilities.types import Image
 
 from optimizers.image import vt_object_store
 from .resilient import ResilientFastMCPProxy, VoittaStatefulProxyClient
+from .cancel import install as install_cancel_forwarding
 
 logger = logging.getLogger("voitta-desktop.mcp")
 
@@ -779,6 +780,7 @@ def build_mcp_proxy(app_ref, port: int):
     """Assemble the unified FastMCP proxy mounting every entry in
     ``app_ref.mcp_servers``. Returns the server; does not start it."""
     logger.info("building MCP proxy (port=%d)", port)
+    install_cancel_forwarding()   # a client's cancel stops the backend's call (mcpproxy/cancel.py)
     gate = ToolGateMiddleware(app_ref)
     app_ref._tool_gate = gate
 
