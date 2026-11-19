@@ -51,11 +51,23 @@ def _run(n_calls: int, human_image: bool = False) -> list:
         ]}]})
     return msgs
 
-def _optimize(msgs: list, pipe: OptimizerPipeline | None = None) -> list:
-    req = ProxyRequest(method="POST", path="/v1/messages", headers={}, body=json.dumps(
-        {"model": "claude-opus-5-5", "messages": msgs}).encode())
+# A client that can fetch a trimmed result back: Voitta's MCP tools include get_vt_object. Without it the pipeline
+# trims nothing (can_resolve_refs), since the placeholder would be all that is left.
+_VT_TOOLS = [{"name": "mcp__voitta__get_vt_object", "input_schema": {"type": "object"}}]
+
+
+def _optimize(msgs: list, pipe: OptimizerPipeline | None = None, tools: list | None = _VT_TOOLS) -> list:
+    body = {"model": "claude-opus-5-5", "messages": msgs}
+    if tools:
+        body["tools"] = tools
+    req = ProxyRequest(method="POST", path="/v1/messages", headers={}, body=json.dumps(body).encode())
     req = asyncio.run((pipe or _pipeline()).on_request(req))
     return req.json["messages"]
+
+
+def test_a_client_that_cannot_fetch_placeholders_keeps_everything():
+    msgs = _run(40)
+    assert _whole(_optimize(msgs, tools=None)) == _whole(msgs)
 
 def _whole(msgs: list) -> list[int]:
     """Indices (round-trip numbers) of tool results still whole (text over 1000 chars and the image)."""
