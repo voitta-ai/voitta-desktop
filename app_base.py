@@ -118,7 +118,7 @@ class AppBase:
         """
         from middleware import ConversationTracker, RequestLogger
         from middleware.cache_sim import CacheSimulator
-        from optimizers import OptimizerPipeline
+        from optimizers import OptimizerPipeline, configure_tool_window
         from optimizers.bash_compress import BashCompressor
         from optimizers.image import ImageOptimizer
         from optimizers.thinking import ThinkingOptimizer
@@ -165,6 +165,7 @@ class AppBase:
             haiku_only=bool(opt_cfg.get("haiku_only", False)),
             tracker=self._tracker,
         )
+        configure_tool_window(self._optimizer_pipeline.optimizers, time_cfg)
         self._cache_sim = CacheSimulator(tracker=self._tracker)
         # LLM accounts: which upstream each Claude Code window's requests go
         # to, after the middleware above. "As is" (the default) changes nothing.

@@ -59,6 +59,7 @@ class ImageOptimizer(BaseOptimizer):
     """
 
     chart_key = "image"
+    trims_within_runs = True
 
     def __init__(self, keep_turns: int = IMAGE_KEEP_TURNS):
         super().__init__(keep_turns=keep_turns)
@@ -80,7 +81,10 @@ class ImageOptimizer(BaseOptimizer):
                     new_content.append(item)
                     continue
 
-                if item.get("type") == "image":
+                if item.get("type") == "image" and i >= self._human_threshold:
+                    new_content.append(item)    # a human's image in the run in progress: kept
+
+                elif item.get("type") == "image":
                     tokens_removed += image_tokens(item)
                     img_hash = _store_image(item)
                     new_content.append(_image_placeholder(item, img_hash))

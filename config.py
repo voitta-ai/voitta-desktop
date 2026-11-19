@@ -234,6 +234,13 @@ def _default_config() -> dict:
             "tool_result_keep_turns": 5,
             "image_keep_turns": 5,
             "thinking_keep_turns": 5,
+            # Inside one long agent run: tool results (and their images)
+            # older than the last tool_call_keep round-trips are replaced by
+            # get_vt_object references too, the cut moving in steps of
+            # tool_call_block round-trips so the prompt cache holds between
+            # steps. 0 for either turns it off.
+            "tool_call_keep": 10,
+            "tool_call_block": 20,
         },
         "mcp_subprocess": {
             "google_mcp_port": int(os.environ.get("GOOGLE_MCP_PORT", "18766")),

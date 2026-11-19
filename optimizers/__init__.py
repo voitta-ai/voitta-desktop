@@ -8,6 +8,39 @@ from middleware.models import parse_image_dimensions
 
 logger = logging.getLogger("voitta-desktop.optimizers")
 
+# The tool-call window (in addition to keep_turns). A long agent run ("go on")
+# has one human message and hundreds of tool round-trips; counted in human
+# turns alone, nothing in it is ever old, and on 2026-11-18 a 100-email KVM run
+# sent every screenshot and screen listing whole until the context filled
+# (0 of 789 large requests trimmed). Optimizers that set trims_within_runs also
+# trim tool results older than the last TOOL_CALL_KEEP round-trips. The cut
+# moves in steps of TOOL_CALL_BLOCK round-trips, so between steps every request
+# re-derives a byte-identical trimmed prefix and the prompt cache keeps
+# hitting; each step costs one re-write of the context after the old cut.
+# Between TOOL_CALL_KEEP and TOOL_CALL_KEEP + TOOL_CALL_BLOCK - 1 round-trips
+# stay whole. 0 for either turns the window off.
+TOOL_CALL_KEEP = 10
+TOOL_CALL_BLOCK = 20
+
+def tool_round_starts(messages: list) -> list[int]:
+    """Indices of the user messages that carry tool results: one per round-trip."""
+    return [i for i, m in enumerate(messages)
+            if m.get("role") == "user" and isinstance(m.get("content"), list)
+            and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in m["content"])]
+
+def tool_call_cut(messages: list, keep: int = TOOL_CALL_KEEP, block: int = TOOL_CALL_BLOCK) -> int | None:
+    """The message index before which tool results are old by the tool-call window, or None.
+
+    Whole blocks only: with R round-trips, the first ((R - keep) // block) * block
+    are old. The index is that of the first round-trip kept, so it only changes
+    when R crosses keep + k * block.
+    """
+    if keep <= 0 or block <= 0:
+        return None
+    rounds = tool_round_starts(messages)
+    n = (len(rounds) - keep) // block * block
+    return rounds[n] if n > 0 else None
+
 # Per-million token pricing by model family.
 # Stripped tokens would, in steady state, have been served as cache reads
 # (not fresh input) — Anthropic prices cache reads at 10% of input. We use
@@ -185,9 +218,20 @@ class BaseOptimizer(Middleware):
     """
 
     chart_key: str = ""
+    # True for optimizers whose stripping is safe inside one agent run (tool
+    # results, images in them): they also follow the tool-call window. Left
+    # False for thinking blocks and tool_use arguments, which belong to the
+    # assistant messages of the run in progress.
+    trims_within_runs: bool = False
 
     def __init__(self, keep_turns: int = 5):
         self.keep_turns = keep_turns
+        self.keep_tool_calls = TOOL_CALL_KEEP
+        self.tool_call_block = TOOL_CALL_BLOCK
+        # The human-turn threshold of the request being optimized (0: none).
+        # Content a human put in a message (a pasted image) is only stripped
+        # below it, never by the tool-call window.
+        self._human_threshold = 0
         self.tokens_saved: dict[str, int] = {}
         # Populated by _optimize(): tool_use_id → chars stripped
         self.last_stripped_ids: dict[str, int] = {}
@@ -237,6 +281,12 @@ class BaseOptimizer(Middleware):
             return None
         return starts[len(starts) - self.keep_turns]
 
+    def _tool_call_threshold(self, messages: list) -> int | None:
+        """The tool-call window's cut for this optimizer, or None (see TOOL_CALL_KEEP)."""
+        if not self.trims_within_runs:
+            return None
+        return tool_call_cut(messages, self.keep_tool_calls, self.tool_call_block)
+
     async def on_request(self, request: ProxyRequest) -> ProxyRequest:
         body = request.json
         if not body or not body.get("messages"):
@@ -249,6 +299,10 @@ class BaseOptimizer(Middleware):
         self.last_stripped_msg_indices = {}
 
         threshold = self._threshold_msg_index(messages)
+        self._human_threshold = threshold or 0
+        cut = self._tool_call_threshold(messages)
+        if cut is not None and (threshold is None or cut > threshold):
+            threshold = cut
         if threshold is None:
             return request
 
@@ -501,3 +555,12 @@ class OptimizerPipeline(Middleware):
         conv = self._tracker.conversations.get(sid)
         if conv and conv.turns:
             conv.turns[-1].stripped_chars = stripped
+
+
+def configure_tool_window(optimizers: list[BaseOptimizer], time_cfg: dict) -> None:
+    """Apply config's tool-call window ("time": tool_call_keep / tool_call_block) to every optimizer."""
+    keep = int(time_cfg.get("tool_call_keep", TOOL_CALL_KEEP))
+    block = int(time_cfg.get("tool_call_block", TOOL_CALL_BLOCK))
+    for o in optimizers:
+        o.keep_tool_calls = keep
+        o.tool_call_block = block
